@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIN=${TOKENMETER_BIN:-tokenmeter}
+if ! command -v "$BIN" >/dev/null 2>&1; then
+  echo "TokenMeter is not installed." >&2
+  echo "Run: curl -fsSL https://raw.githubusercontent.com/helloimdevman/tokenmeter/main/install.sh | sh" >&2
+  exit 1
+fi
+
+exec "$BIN" "$@"

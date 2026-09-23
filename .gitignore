@@ -1,0 +1,9 @@
+data/
+.env
+dist/
+.DS_Store
+.worktrees/
+.superpowers/sdd/
+native/hook/target/
+native/target/
+native/meter/target/

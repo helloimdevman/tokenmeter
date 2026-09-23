@@ -1,0 +1,9 @@
+[package]
+name = "tokenmeter-hook"
+version = "0.0.1"
+edition = "2021"
+description = "Fast TokenMeter agent hook"
+publish = false
+
+[dependencies]
+serde_json = "1"

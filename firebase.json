@@ -1,0 +1,14 @@
+{
+  "database": {
+    "rules": "firebase/database.rules.json"
+  },
+  "hosting": {
+    "public": "firebase/hosting",
+    "rewrites": [
+      {
+        "source": "/j/:id",
+        "destination": "/j/index.html"
+      }
+    ]
+  }
+}

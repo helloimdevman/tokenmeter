@@ -1,0 +1,51 @@
+name: Bug report
+description: Something is wrong with measuring, the overlay, hooks, or the CLI.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please don't paste prompts, session logs, credentials, home paths, or `league-auth.json`.
+        The output of `tokenmeter doctor --json` is safe to share.
+  - type: input
+    id: version
+    attributes:
+      label: TokenMeter version
+      description: Output of `tokenmeter --version`
+      placeholder: tokenmeter 0.0.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (x86_64)
+        - Linux (arm64)
+    validations:
+      required: true
+  - type: dropdown
+    id: agents
+    attributes:
+      label: Agents involved
+      multiple: true
+      options:
+        - Claude Code
+        - Codex
+        - OpenCode
+        - Grok CLI
+        - Cursor
+        - Other
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `tokenmeter doctor --json`
+      render: json

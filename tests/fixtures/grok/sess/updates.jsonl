@@ -1,0 +1,1 @@
+{"method": "_x.ai/session/update", "params": {"sessionId": "sess-grok-1", "_meta": {"eventId": "e-1"}, "update": {"sessionUpdate": "turn_completed", "prompt_id": "prompt-1", "usage": {"inputTokens": 1174839, "cachedReadTokens": 1052672, "cacheCreationTokens": 0, "outputTokens": 12855, "reasoningTokens": 7308, "totalTokens": 1187694}}}}

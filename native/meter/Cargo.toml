@@ -1,0 +1,21 @@
+[package]
+name = "tokenmeter"
+version = "0.0.1"
+edition = "2021"
+description = "Native TokenMeter daemon and overlay — this crate is the product runtime"
+publish = false
+
+[[bin]]
+name = "tokenmeter"
+path = "src/bin/tokenmeter.rs"
+
+[dependencies]
+ctrlc = "3"
+eframe = { version = "0.31", default-features = true }
+egui = "0.31"
+glob = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokenmeter-hook = { path = "../hook" }
+ureq = { version = "2", features = ["json"] }

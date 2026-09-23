@@ -1,0 +1,46 @@
+name: Provider or route
+description: Add a public model provider, API route, or gateway so it gets a name, prices, and speed stats.
+title: "[provider] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only public endpoints belong here. Never post company-internal hosts; TokenMeter groups those as `self-hosted`.
+  - type: input
+    id: name
+    attributes:
+      label: Provider name
+      placeholder: Z.ai (GLM)
+    validations:
+      required: true
+  - type: textarea
+    id: urls
+    attributes:
+      label: Public base URL(s)
+      placeholder: https://api.z.ai/api/anthropic
+    validations:
+      required: true
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: API style
+      multiple: true
+      options:
+        - Anthropic Messages compatible
+        - OpenAI Chat Completions compatible
+        - OpenAI Responses compatible
+        - Other
+  - type: dropdown
+    id: plans
+    attributes:
+      label: Billing
+      options:
+        - Pay as you go
+        - Subscription or coding plan
+        - Both on the same host
+        - Free or local
+  - type: input
+    id: pricing
+    attributes:
+      label: Pricing page or models.dev entry

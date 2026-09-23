@@ -1,0 +1,40 @@
+name: Support a new agent
+description: Ask TokenMeter to measure another coding agent or CLI.
+title: "[agent] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most agents only need a YAML adapter. See docs/add-service.md; a pull request with a sample log is the fastest route.
+        Redact prompts, file names, and paths from any sample you paste.
+  - type: input
+    id: agent
+    attributes:
+      label: Agent name and link
+      placeholder: Gemini CLI, https://github.com/google-gemini/gemini-cli
+    validations:
+      required: true
+  - type: input
+    id: logs
+    attributes:
+      label: Where it writes session logs
+      placeholder: ~/.gemini/tmp/**/*.json
+  - type: dropdown
+    id: format
+    attributes:
+      label: Log format
+      options:
+        - JSON Lines
+        - One JSON file per record
+        - SQLite
+        - Other or unknown
+  - type: textarea
+    id: sample
+    attributes:
+      label: One redacted record that contains token counts
+      render: json
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else (hooks, telemetry, docs)

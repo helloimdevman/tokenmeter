@@ -1,0 +1,47 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            tag: linux-x64
+          - os: macos-latest
+            tag: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev pkg-config
+      - run: cargo test --manifest-path native/Cargo.toml
+      - run: cargo build --release --bins --manifest-path native/Cargo.toml
+      - run: |
+          mkdir -p dist
+          cp native/target/release/tokenmeter "dist/tokenmeter-${{ matrix.tag }}"
+          cp native/target/release/tokenmeter-hook "dist/tokenmeter-hook-${{ matrix.tag }}"
+          (cd dist && shasum -a 256 tokenmeter-${{ matrix.tag }} tokenmeter-hook-${{ matrix.tag }} > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-${{ matrix.tag }}
+          path: dist/
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: shellcheck install.sh skills/tokenmeter/tm

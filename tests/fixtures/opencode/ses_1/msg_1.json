@@ -1,0 +1,1 @@
+{"id": "msg_1", "role": "assistant", "sessionID": "ses_1", "modelID": "nemotron-3-ultra-free", "providerID": "opencode", "path": {"cwd": "/Users/dev"}, "cost": 0, "tokens": {"total": 28697, "input": 3265, "output": 88, "reasoning": 68, "cache": {"read": 25344, "write": 0}}}

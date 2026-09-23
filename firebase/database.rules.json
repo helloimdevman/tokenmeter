@@ -1,0 +1,36 @@
+{
+  "rules": {
+    "rooms": {
+      "$id": {
+        ".read": "auth != null && $id.matches(/^[A-Za-z0-9_-]{4,22}$/)",
+        ".write": "auth != null && ((!data.exists() && newData.child('host_uid').val() === auth.uid) || (data.exists() && data.child('host_uid').val() === auth.uid))",
+        "claimed": {
+          ".write": "auth != null && ((newData.isBoolean() && newData.val() === true) || data.parent().child('host_uid').val() === auth.uid)"
+        },
+        "member_count": {
+          ".write": "auth != null && newData.isNumber() && newData.val() >= 0 && newData.val() <= 20"
+        },
+        "members": {
+          "$uid": {
+            ".write": "auth != null && $uid === auth.uid",
+            ".validate": "newData.hasChildren(['handle', 'at']) && !newData.hasChild('project') && !newData.hasChild('email') && !newData.hasChild('path')"
+          }
+        }
+      }
+    },
+    "season": {
+      "$w": {
+        ".read": "auth != null",
+        "live_room": {
+          ".write": "auth != null && ((!newData.exists() && data.hasChild('id') && root.child('rooms').child(data.child('id').val()).child('host_uid').val() === auth.uid) || (newData.exists() && newData.hasChild('id') && root.child('rooms').child(newData.child('id').val()).child('host_uid').val() === auth.uid))"
+        },
+        "members": {
+          "$uid": {
+            ".write": "auth != null && $uid === auth.uid",
+            ".validate": "!newData.hasChild('project') && !newData.hasChild('email')"
+          }
+        }
+      }
+    }
+  }
+}

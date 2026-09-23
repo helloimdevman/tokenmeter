@@ -1213,7 +1213,8 @@ mod tests {
         assert_eq!(parse_version("1.2"), None);
         assert_eq!(update_package(false), (Some(false), String::new()), "켜지 않으면 네트워크를 타지 않는다");
         let toggle = data_dir().join("toggle.json");
-        let checked = crate::watch::now_secs() - 60.0;
+        // 정수 시각만 쓴다 — serde_json 기본 파서는 소수 끝자리를 정확히 되돌리지 못해 비교가 가끔 깨진다
+        let checked = (crate::watch::now_secs() - 60.0).floor();
         fs::write(&toggle, json!({"auto_update": true, "update_checked_at": checked}).to_string()).unwrap();
         assert_eq!(update_package(false), (Some(false), String::new()), "하루 안에는 다시 확인하지 않는다");
         assert_eq!(read(&toggle)["update_checked_at"], checked);

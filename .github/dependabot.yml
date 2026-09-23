@@ -4,6 +4,10 @@ updates:
     directory: /native
     schedule:
       interval: weekly
+    # Minor bumps of 0.x crates (egui, eframe) and majors (ureq 3) need code changes; take them by hand.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       cargo:
         patterns: ["*"]

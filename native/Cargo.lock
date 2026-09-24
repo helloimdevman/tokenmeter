@@ -3085,7 +3085,7 @@ dependencies = [
 
 [[package]]
 name = "tokenmeter"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "ctrlc",
  "eframe",
@@ -3100,7 +3100,7 @@ dependencies = [
 
 [[package]]
 name = "tokenmeter-hook"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde_json",
 ]

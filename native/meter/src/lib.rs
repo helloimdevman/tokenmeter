@@ -15,7 +15,7 @@ pub mod pricing;
 pub mod quota;
 pub mod watch;
 
-pub const VERSION: &str = "0.0.1";
+pub const VERSION: &str = "0.0.2";
 
 #[cfg(test)]
 pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

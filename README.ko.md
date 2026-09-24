@@ -65,7 +65,8 @@ tokenmeter watch --jsonl
 tokenmeter receipt --format markdown
 tokenmeter adapter init gemini-cli --log ~/.gemini/tmp
 tokenmeter adapter check ./gemini-cli-adapter
-tokenmeter league login           # Token League
+tokenmeter share on|off|preview   # 익명 사용 통계(동의할 때만)
+tokenmeter account delete         # 이 기기가 보낸 데이터 삭제
 tokenmeter quota                  # Claude/Codex/Grok 잔여 한도
 tokenmeter services               # 로그 감지와 훅 상태
 tokenmeter doctor                 # 파서와 설치 검증
@@ -78,7 +79,7 @@ tokenmeter uninstall --purge      # 훅+데몬+로컬 상태+리그 토큰
 tokenmeter doctor --json          # 지원용 (홈 경로·프롬프트 없음)
 ```
 
-오버레이는 드래그로 옮깁니다. 휠은 목록 행 위에서 목록을 스크롤하고, 그 밖에서는 창 배율을 바꿉니다. 화면의 `S/M/L`로 심플(계기판만)·보통(세션·프로젝트·한도)·상세(속도·일별까지)를 바로 오갑니다. `⌘K`/`Ctrl+K`는 선택형 빠른 검색입니다. 테마, 투명도·모션 감소, 리그 초대는 `⋯` 또는 우클릭으로 열리는 설정 창에 있습니다. `×`는 오버레이만 숨기며 측정은 계속됩니다. 측정까지 끝내려면 설정이나 트레이의 `TokenMeter 종료 · 측정 중지`를 고릅니다.
+오버레이는 드래그로 옮깁니다. 휠은 목록 행 위에서 목록을 스크롤하고, 그 밖에서는 창 배율을 바꿉니다. 화면의 `S/M/L`로 심플(계기판만)·보통(세션·프로젝트·한도)·상세(속도·일별까지)를 바로 오갑니다. `⌘K`/`Ctrl+K`는 선택형 빠른 검색입니다. 테마, 투명도·모션 감소는 `⋯` 또는 우클릭으로 열리는 설정 창에 있습니다. `×`는 오버레이만 숨기며 측정은 계속됩니다. 측정까지 끝내려면 설정이나 트레이의 `TokenMeter 종료 · 측정 중지`를 고릅니다.
 
 계기판의 **전체 출력**은 서브에이전트를 포함한 출력 처리량입니다. 세션 칸 **메인**은 서브에이전트를 뺀 메인 모델 처리량입니다. 둘 다 제공자의 실제 스트리밍 생성 속도 벤치마크가 아니라 로그 델타 도착률입니다. 세션 표는 상태·누적 출력·컨텍스트 점유율을 서로 다른 칸에 표시합니다. 소셜 면은 Token League입니다. 남은 자체 호스팅 `leaderboard.endpoint` / `team` 명령은 [레퍼런스](docs/reference.ko.md)에만 있고, endpoint가 없으면 숨습니다.
 
@@ -100,23 +101,12 @@ npx skills add helloimdevman/tokenmeter -g -a claude-code
 - 사용자 설정: `${XDG_CONFIG_HOME:-~/.config}/tokenmeter`.
 - 한도(`tokenmeter quota`)는 이미 저장된 Claude/Codex/Grok 자격 증명으로 잔여 창만 읽습니다. 세션 로그는 보내지 않습니다.
 - 금액은 **API 환산 추정**입니다. 청구서가 아닙니다.
-- Token League(`tokenmeter league login`)는 `settings.league`에 리그 백엔드를 설정하기 전까지 아무것도 보내지 않습니다. 레거시 `leaderboard.endpoint`는 직접 켜기 전까지 꺼져 있습니다.
+- 익명 사용 통계는 동의할 때만 보냅니다. 설치할 때 한 번 묻고, `tokenmeter share on|off`로 바꿉니다. 도구·경로 라벨·모델 계열별 시간당 토큰 수를 TokenMeter 서버로 보내며, 프롬프트·코드·경로·프로젝트명·세션 ID·사설 호스트 이름·사용자 모델 이름은 보내지 않습니다. `tokenmeter share preview`는 다음에 보낼 내용을 보여 주고, `tokenmeter account delete`는 보낸 데이터를 지웁니다. 자세한 내용: [docs/protocol](docs/protocol/README.md)
+- 레거시 `leaderboard.endpoint`는 직접 켜기 전까지 꺼져 있습니다.
 
 ## Token League
 
-Token League는 친구들의 실시간 출력 속도를 방에서 함께 봅니다. 호스팅 리그는 TokenMeter 서버와 P2P 방으로 다시 만드는 중입니다. 그 전까지 아래 명령은 `settings.league`(`databaseURL`, `apiKey`, `clientId`, `clientSecret`, `hostingBaseUrl`)에 직접 만든 Firebase 프로젝트를 넣었을 때만 동작합니다.
-
-```bash
-tokenmeter league login
-tokenmeter league open          # 방을 만들고 초대 URL 출력
-tokenmeter league join <id>
-tokenmeter league leave [id]    # id 를 빼면 모든 방에서 나갑니다
-tokenmeter league close [id]    # 호스트가 방을 지웁니다
-```
-
-`open` 이 방을 만들고 초대 URL을 출력합니다. 여러 방에 동시에 있을 수 있습니다. 호스트가 `close` 하기 전까지 방은 유지되고, 손님이 한 명도 안 들어온 채 하루가 지나면 자동으로 사라집니다. 오버레이 설정에서 초대 링크를 복사할 수 있습니다.
-
-`status`와 `doctor`가 리그를 한 줄로 보여 줍니다. 로그인, 방 열기, 또는 초대 URL입니다. 오버레이는 Google 로그인을 시작하지 않습니다. `settings.league.databaseURL`이 비어 있으면(기본값) 리그는 네트워크를 전혀 쓰지 않습니다.
+Token League는 공유 방에서 친구의 실시간 출력 속도를 보여 줍니다. 방은 TokenMeter 서버와 P2P 실시간 연결로 다시 만드는 중이라 다음 릴리스에서 열립니다. 그전까지 `tokenmeter league …`는 안내만 출력하고 네트워크를 쓰지 않습니다.
 
 ## 업데이트와 제거
 

@@ -65,7 +65,8 @@ tokenmeter watch --jsonl
 tokenmeter receipt --format markdown
 tokenmeter adapter init gemini-cli --log ~/.gemini/tmp
 tokenmeter adapter check ./gemini-cli-adapter
-tokenmeter league login           # Token League
+tokenmeter share on|off|preview   # anonymous usage stats (opt-in)
+tokenmeter account delete         # delete what this device sent
 tokenmeter quota                  # remaining Claude/Codex/Grok plan windows
 tokenmeter services               # detected logs and hook state
 tokenmeter doctor                 # validate parsers and installation
@@ -78,7 +79,7 @@ tokenmeter uninstall --purge      # hooks + daemon + local state + league tokens
 tokenmeter doctor --json          # support paste (no home paths or prompts)
 ```
 
-Drag the overlay to move it. The wheel scrolls when it is over a list row and resizes the window elsewhere. Use the visible `S/M/L` controls to switch between simple (meter only), normal (Sessions, Projects, Quota), and detail (adds Speed and Daily). `⌘K`/`Ctrl+K` is an optional quick search. Theme, reduced transparency, reduced motion, and league invites live in the settings window (`⋯` or right-click). `×` hides only the overlay, so measurement continues. To stop measurement, choose `TokenMeter 종료 · 측정 중지` from settings or the tray.
+Drag the overlay to move it. The wheel scrolls when it is over a list row and resizes the window elsewhere. Use the visible `S/M/L` controls to switch between simple (meter only), normal (Sessions, Projects, Quota), and detail (adds Speed and Daily). `⌘K`/`Ctrl+K` is an optional quick search. Theme, reduced transparency, and reduced motion live in the settings window (`⋯` or right-click). `×` hides only the overlay, so measurement continues. To stop measurement, choose `TokenMeter 종료 · 측정 중지` from settings or the tray.
 
 The global meter label is **전체 출력** (aggregate output throughput, including sub-agents). Session column **메인** excludes sub-agent output. Both rates are log-delta arrival rates, not a provider streaming benchmark. Session rows keep status, cumulative output, and context usage in separate columns. The social surface is Token League. The leftover self-hosted `leaderboard.endpoint` / `team` command stays in [the reference](docs/reference.ko.md) and is hidden while offline.
 
@@ -100,23 +101,12 @@ It provides `/tm`, `/tm-meter`, `/tm-measure`, and `/tm-doctor`.
 - User overrides: `${XDG_CONFIG_HOME:-~/.config}/tokenmeter`.
 - Quota (`tokenmeter quota`) reuses already-stored Claude/Codex/Grok credentials to read remaining plan windows. Session logs are not sent.
 - Dollar amounts are **API-list estimates**, not invoices.
-- Token League (`tokenmeter league login`) sends nothing until a league backend is configured in `settings.league`. A leftover self-hosted `leaderboard.endpoint` stays off until you set it.
+- Anonymous usage sharing is opt-in: the installer asks once, and `tokenmeter share on|off` changes it. It sends hourly token counts per tool, route label and model family to the TokenMeter server — never prompts, code, paths, project names, session ids, private hostnames or custom model names. `tokenmeter share preview` shows the next upload and `tokenmeter account delete` removes what was sent. Details: [docs/protocol](docs/protocol/README.md).
+- A leftover self-hosted `leaderboard.endpoint` stays off until you set it.
 
 ## Token League
 
-Token League shows friends' live output rate in shared rooms. The hosted league is being rebuilt on a TokenMeter server with peer-to-peer rooms. Until it ships, the commands below work only with your own Firebase project in `settings.league` (`databaseURL`, `apiKey`, `clientId`, `clientSecret`, `hostingBaseUrl`).
-
-```bash
-tokenmeter league login
-tokenmeter league open          # creates a room and prints its invite URL
-tokenmeter league join <id>
-tokenmeter league leave [id]    # omit id to leave every room
-tokenmeter league close [id]    # host deletes the room
-```
-
-`open` creates a room and copies the invite URL. You can belong to more than one room at a time. The host can `close` a room; empty rooms with no guests are deleted automatically after one day.
-
-`status` and `doctor` print one league line: login, open a room, or the invite URL. Overlay never starts Google login. With `settings.league.databaseURL` empty (the default), the league never touches the network.
+Token League shows friends' live output rate in shared rooms. Rooms are being rebuilt on the TokenMeter server with peer-to-peer live rates and arrive in the next release; until then `tokenmeter league …` prints a notice and the league never touches the network.
 
 ## Update or remove
 

@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UsageUpload",
+  "type": "object",
+  "properties": {
+    "endpoint_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hours": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HourCells"
+      }
+    },
+    "share": {
+      "type": "boolean"
+    },
+    "v": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "v",
+    "share",
+    "hours"
+  ],
+  "$defs": {
+    "Cell": {
+      "type": "object",
+      "properties": {
+        "api_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "api_out": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cache_read": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cache_write": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "calls": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "client": {
+          "type": "string"
+        },
+        "cost_usd": {
+          "type": "number",
+          "format": "double"
+        },
+        "gap_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gap_out": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "model": {
+          "type": "string"
+        },
+        "output_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "plan": {
+          "type": "string"
+        },
+        "route": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client",
+        "route",
+        "plan",
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "cache_read",
+        "cache_write",
+        "calls",
+        "cost_usd",
+        "api_out",
+        "api_ms",
+        "gap_out",
+        "gap_ms"
+      ]
+    },
+    "HourCells": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Cell"
+          }
+        },
+        "t": {
+          "description": "로컬 시각 정각의 유닉스 초.",
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "t",
+        "cells"
+      ]
+    }
+  }
+}

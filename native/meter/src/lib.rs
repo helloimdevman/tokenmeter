@@ -13,6 +13,7 @@ pub mod overlay;
 pub mod pixel_faces;
 pub mod pricing;
 pub mod quota;
+pub mod server;
 pub mod share;
 pub mod watch;
 

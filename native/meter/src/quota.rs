@@ -877,7 +877,8 @@ pub fn panel_rows(windows: &[Value], now: Option<f64>) -> Vec<(String, String, f
         .map(|row| {
             let used = row.get("used").and_then(Value::as_f64).unwrap_or(-1.0);
             let reset = reset_caption(as_f64(row.get("resets_at")), now);
-            let label = if row.get("remaining_usd").is_some()
+            // 파이썬 `is not None`: Grok 처럼 null 로 오면 잔액 대신 기간 이름을 쓴다
+            let label = if row.get("remaining_usd").is_some_and(|v| !v.is_null())
                 && row.get("kind").and_then(Value::as_str) == Some("credits")
             {
                 let remain = row.get("remaining_usd").and_then(Value::as_f64).unwrap_or(0.0);
@@ -1049,5 +1050,14 @@ mod tests {
             invalid[field] = value;
             assert!(pace_gap(&invalid, Some(now)).is_none() && !is_underused(&invalid, Some(now)), "{field}");
         }
+    }
+
+    #[test]
+    fn credits_label_treats_null_balance_as_missing() {
+        let grok = json!({"kind": "credits", "label": "주간", "remaining_usd": null, "source": "grok"});
+        let paid = json!({"kind": "credits", "label": "주간", "remaining_usd": 3.5, "cap_usd": 10.0});
+        let rows = panel_rows(&[grok, paid], Some(0.0));
+        assert_eq!(rows[0].1, "주간");
+        assert_eq!(rows[1].1, "$3.50 / $10");
     }
 }

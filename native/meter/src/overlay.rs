@@ -118,7 +118,7 @@ struct Theme {
 fn hex(s: &str, a: u8) -> Color32 {
     let t = s.trim_start_matches('#');
     let n = u32::from_str_radix(t, 16).unwrap_or(0);
-    Color32::from_rgba_unmultiplied(
+    rgba(
         ((n >> 16) & 255) as u8,
         ((n >> 8) & 255) as u8,
         (n & 255) as u8,
@@ -165,11 +165,26 @@ fn theme_named(name: &str) -> Theme {
 }
 
 fn fade(c: Color32, a: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+    rgba(c.r(), c.g(), c.b(), a)
 }
+
+/// Qt 처럼 sRGB 값에 알파를 곱한다. egui 0.31 의 `from_rgba_unmultiplied` 는 선형 공간에서 곱해서
+/// 반투명 채움이 파이썬 계기판보다 2~3배 밝게 나온다.
+fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
+    let m = |c: u8| ((c as u16 * a as u16 + 127) / 255) as u8;
+    Color32::from_rgba_premultiplied(m(r), m(g), m(b), a)
+}
+
+const BOLD_FAMILY: &str = "bold";
+const MONO_BOLD_FAMILY: &str = "mono-bold";
 
 fn pretendard_regular() -> Option<FontData> {
     const BYTES: &[u8] = include_bytes!("../fonts/Pretendard-Regular.otf");
+    (BYTES.len() > 100).then(|| FontData::from_static(BYTES))
+}
+
+fn pretendard_semibold() -> Option<FontData> {
+    const BYTES: &[u8] = include_bytes!("../fonts/Pretendard-SemiBold.otf");
     (BYTES.len() > 100).then(|| FontData::from_static(BYTES))
 }
 
@@ -221,6 +236,11 @@ fn install_cjk_fonts(ctx: &egui::Context) {
             fam.push("pretendard".into());
         }
     }
+    if let Some(font) = pretendard_semibold() {
+        fonts
+            .font_data
+            .insert("pretendard-bold".into(), std::sync::Arc::new(font));
+    }
     #[cfg(target_os = "macos")]
     {
         if fonts.font_data.get("pretendard").is_none() {
@@ -234,6 +254,11 @@ fn install_cjk_fonts(ctx: &egui::Context) {
             }
         }
         if let Ok(bytes) = std::fs::read("/System/Library/Fonts/Menlo.ttc") {
+            let mut bold = FontData::from_owned(bytes.clone());
+            bold.index = 1;
+            fonts
+                .font_data
+                .insert("menlo-bold".into(), std::sync::Arc::new(bold));
             let mut font = FontData::from_owned(bytes);
             font.index = 0;
             fonts
@@ -258,6 +283,23 @@ fn install_cjk_fonts(ctx: &egui::Context) {
         if let Some(fam) = fonts.families.get_mut(&FontFamily::Monospace) {
             fam.push(name);
         }
+    }
+    // 파이썬 `_f(size, True)`: 같은 대체 순서에서 Pretendard·Menlo 만 굵은 면으로 바꾼다.
+    let bolder = |name: &String| match name.as_str() {
+        "pretendard" if fonts.font_data.contains_key("pretendard-bold") => "pretendard-bold".to_string(),
+        "menlo" if fonts.font_data.contains_key("menlo-bold") => "menlo-bold".to_string(),
+        _ => name.clone(),
+    };
+    for (base, bold) in [
+        (FontFamily::Proportional, BOLD_FAMILY),
+        (FontFamily::Monospace, MONO_BOLD_FAMILY),
+    ] {
+        let list: Vec<String> = fonts
+            .families
+            .get(&base)
+            .map(|l| l.iter().map(bolder).collect())
+            .unwrap_or_default();
+        fonts.families.insert(FontFamily::Name(bold.into()), list);
     }
     ctx.set_fonts(fonts);
 }
@@ -1558,31 +1600,33 @@ impl Paint<'_> {
         self.ui.painter().rect_filled(r, CornerRadius::ZERO, c);
     }
 
-    fn font(&self, size: f32, mono: bool) -> FontId {
+    /// 파이썬 `_f(size, bold, mono)` 와 같은 글꼴. bold 는 `install_cjk_fonts` 가 묶은 가족을 쓴다.
+    fn font(&self, size: f32, mono: bool, bold: bool) -> FontId {
         FontId::new(
             (size * self.scale).max(6.0),
-            if mono {
-                FontFamily::Monospace
-            } else {
-                FontFamily::Proportional
+            match (mono, bold) {
+                (false, false) => FontFamily::Proportional,
+                (true, false) => FontFamily::Monospace,
+                (false, true) => FontFamily::Name(BOLD_FAMILY.into()),
+                (true, true) => FontFamily::Name(MONO_BOLD_FAMILY.into()),
             },
         )
     }
 
-    fn measure(&self, text: &str, size: f32, mono: bool) -> f32 {
-        let font = self.font(size, mono);
+    fn measure(&self, text: &str, size: f32, mono: bool, bold: bool) -> f32 {
+        let font = self.font(size, mono, bold);
         self.ui
             .fonts(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE).size().x)
     }
 
-    fn elide(&self, text: &str, width: f32, size: f32, mono: bool) -> String {
-        if self.measure(text, size, mono) <= width || text.is_empty() {
+    fn elide(&self, text: &str, width: f32, size: f32, mono: bool, bold: bool) -> String {
+        if self.measure(text, size, mono, bold) <= width || text.is_empty() {
             return text.to_string();
         }
         let mut t: String = text.chars().collect();
         while !t.is_empty() {
             let shown = format!("{t}…");
-            if self.measure(&shown, size, mono) <= width {
+            if self.measure(&shown, size, mono, bold) <= width {
                 return shown;
             }
             t.pop();
@@ -1600,10 +1644,11 @@ impl Paint<'_> {
         center: bool,
         elide: bool,
         mono: bool,
+        bold: bool,
     ) {
         let localized = crate::i18n::tr(self.lang, text);
         let shown = if elide {
-            self.elide(&localized, r.width().max(0.0), size, mono)
+            self.elide(&localized, r.width().max(0.0), size, mono, bold)
         } else {
             localized
         };
@@ -1623,7 +1668,7 @@ impl Paint<'_> {
         };
         self.ui
             .painter()
-            .text(pos, align, shown, self.font(size, mono), color);
+            .text(pos, align, shown, self.font(size, mono, bold), color);
     }
 
     fn hit(&mut self, name: impl Into<String>, r: Rect) {
@@ -2496,6 +2541,7 @@ fn paint_mini(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot) {
         false,
         false,
         true,
+        true,
     );
     let tot = scoped(snap, app.scope_today);
     let money = money_caption(approx(&snap.status), tot.4);
@@ -2508,17 +2554,19 @@ fn paint_mini(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot) {
         false,
         false,
         true,
+        true,
     );
     let menu_x = x + w - MODE_BTN * s;
     p.text(
         r(menu_x, y, MODE_BTN * s, h),
-        "...",
+        "⋯",
         p.theme.text_tertiary,
         10.0,
         true,
         false,
         false,
         false,
+        true,
     );
     p.hit("menu", r(menu_x, y, MODE_BTN * s, h));
     let segments = SEGMENTS / 2;
@@ -2563,13 +2611,14 @@ fn paint_s_skin(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot) {
     let mx = x + w - bw;
     p.text(
         r(mx, y, bw, bh),
-        "...",
+        "⋯",
         p.theme.text_tertiary,
         10.0,
         true,
         false,
         false,
         false,
+        true,
     );
     p.hit("menu", r(mx, y, bw, bh));
 }
@@ -2648,6 +2697,7 @@ fn paint_skin_dial(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f32
         true,
         false,
         true,
+        true,
     );
     p.text(
         r(x, y + h - foot, w, foot),
@@ -2657,6 +2707,7 @@ fn paint_skin_dial(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f32
         false,
         true,
         false,
+        true,
         true,
     );
 }
@@ -2696,8 +2747,8 @@ fn paint_skin_horse(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
     let fare_x = x + w * 0.38;
     let fare_w = w * 0.58;
     let led = hex("#5CFF7A", 255);
-    p.text(r(fare_x, y + 10.0 * s, fare_w, 12.0 * s), "요금 · 추정", fade(led, 180), 7.0, false, false, false, true);
-    p.text(r(fare_x, y + 22.0 * s, fare_w - 6.0 * s, 28.0 * s), &money, led, 18.0, false, false, false, true);
+    p.text(r(fare_x, y + 10.0 * s, fare_w, 12.0 * s), "요금 · 추정", fade(led, 180), 7.0, false, false, false, true, true);
+    p.text(r(fare_x, y + 22.0 * s, fare_w - 6.0 * s, 28.0 * s), &money, led, 18.0, false, false, false, true, true);
     p.text(
         r(fare_x, y + h - 20.0 * s, fare_w - 6.0 * s, 14.0 * s),
         &mini_rate_caption(snap.rate),
@@ -2706,6 +2757,7 @@ fn paint_skin_horse(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
         false,
         false,
         false,
+        true,
         true,
     );
 }
@@ -2772,7 +2824,7 @@ fn paint_skin_loot(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f32
         cr * 0.35,
         Stroke::new(1.4 * s, fade(hex("#FFF4B8", 255), 200)),
     );
-    p.text(r(cx - cr, cy - cr * 0.55, cr * 2.0, cr * 1.1), "$", hex("#6B4A00", 255), 16.0, false, true, false, false);
+    p.text(r(cx - cr, cy - cr * 0.55, cr * 2.0, cr * 1.1), "$", hex("#6B4A00", 255), 16.0, false, true, false, false, true);
     let origin_y = cy - cr - 4.0 * s;
     let now = crate::watch::now_secs();
     if !app.reduce_motion {
@@ -2793,6 +2845,7 @@ fn paint_skin_loot(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f32
                 true,
                 false,
                 true,
+                true,
             );
         }
     }
@@ -2804,6 +2857,7 @@ fn paint_skin_loot(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f32
         false,
         true,
         false,
+        true,
         true,
     );
 }
@@ -2868,6 +2922,7 @@ fn paint_body(
             false,
             true,
             false,
+            false,
         );
         return;
     }
@@ -2904,15 +2959,17 @@ fn paint_body(
             false,
             false,
             false,
+            false,
         );
-        let lead = p.measure("오늘/누적 · ", 7.5, false);
+        let lead = p.measure("오늘/누적 · ", 7.5, false, false);
         p.text(
             r(x + lead, fy, w - lead, FOOT_H * s),
-            "S/M/L · ... 메뉴",
+            "S/M/L · ⋯ 메뉴",
             p.theme.tint,
             7.5,
             false,
             false,
+            true,
             true,
             true,
         );
@@ -2929,6 +2986,7 @@ fn paint_body(
             false,
             false,
             true,
+            false,
             false,
         );
     }
@@ -2955,6 +3013,7 @@ fn paint_meter(
         false,
         false,
         true,
+        true,
     );
     let bar = MODE_BTN * s * 5.0;
     let label = if app.scope_today { "오늘" } else { "누적" };
@@ -2969,6 +3028,7 @@ fn paint_meter(
         false,
         true,
         false,
+        true,
         true,
     );
     p.hit("scope", r(scope_x, y0, lw, MODE_BTN * s));
@@ -3001,6 +3061,7 @@ fn paint_meter(
         false,
         true,
         true,
+        true,
     );
     let unit_w = 34.0 * s;
     p.text(
@@ -3021,6 +3082,7 @@ fn paint_meter(
         false,
         false,
         true,
+        true,
     );
     p.text(
         r(
@@ -3035,6 +3097,7 @@ fn paint_meter(
         true,
         false,
         false,
+        true,
         true,
     );
 
@@ -3087,6 +3150,7 @@ fn paint_meter(
             false,
             false,
             true,
+            true,
         );
         p.text(
             r(x, y0 + 89.0 * s, w, 10.0 * s),
@@ -3096,6 +3160,7 @@ fn paint_meter(
             true,
             false,
             false,
+            true,
             true,
         );
     }
@@ -3122,8 +3187,9 @@ fn paint_meter(
             false,
             false,
             false,
+            false,
         );
-        let lw = p.measure(&label, 7.5, false);
+        let lw = p.measure(&label, 7.5, false, false);
         p.text(
             r(cell_x + lw, y, cw - 3.0 * s - lw, 15.0 * s),
             val,
@@ -3135,6 +3201,7 @@ fn paint_meter(
             7.5,
             false,
             false,
+            true,
             true,
             true,
         );
@@ -3166,14 +3233,15 @@ fn paint_modes(p: &mut Paint, app: &OverlayApp, x: f32, y: f32) {
             true,
             false,
             true,
+            true,
         );
         p.hit(format!("mode:{name}"), r(bx, y, bw, h));
     }
     let mut bx = x + 3.0 * bw;
-    p.text(r(bx, y, bw, h), "...", p.theme.text_tertiary, 10.0, false, true, false, false);
+    p.text(r(bx, y, bw, h), "⋯", p.theme.text_tertiary, 10.0, false, true, false, false, true);
     p.hit("menu", r(bx, y, bw, h));
     bx += bw;
-    p.text(r(bx, y, bw, h), "×", p.theme.text_tertiary, 9.0, false, true, false, false);
+    p.text(r(bx, y, bw, h), "×", p.theme.text_tertiary, 9.0, false, true, false, false, true);
     p.hit("close", r(bx, y, bw, h));
 }
 
@@ -3202,6 +3270,7 @@ fn paint_chips(p: &mut Paint, marks: &[(String, String)], x: f32, y: f32, w: f32
             true,
             true,
             true,
+            true,
         );
         p.hit(format!("chip:{i}"), r(x + i as f32 * cw, y, cw, CHIP_H * s));
     }
@@ -3216,7 +3285,7 @@ fn paint_search(p: &mut Paint, app: &mut OverlayApp, x: f32, y: f32, w: f32) -> 
         r(x + 10.0 * s, y, w - 20.0 * s, SEARCH_H * s),
         egui::TextEdit::singleline(&mut app.palette_query)
             .hint_text("세션 또는 명령 · ⌘K")
-            .font(p.font(12.0, false))
+            .font(p.font(12.0, false, false))
             .text_color(p.theme.text_primary),
     );
     resp.request_focus();
@@ -3242,6 +3311,7 @@ fn paint_palette(
             false,
             false,
             false,
+            false,
         );
         return;
     }
@@ -3262,6 +3332,7 @@ fn paint_palette(
             false,
             true,
             false,
+            true,
         );
         p.text(
             r(x + 14.0 * s, ry + 21.0 * s, w - 92.0 * s, 18.0 * s),
@@ -3271,6 +3342,7 @@ fn paint_palette(
             false,
             false,
             true,
+            false,
             false,
         );
         p.text(
@@ -3282,6 +3354,7 @@ fn paint_palette(
             false,
             false,
             false,
+            true,
         );
         p.hit(format!("palette:{i}"), r(x, ry, w, h));
     }
@@ -3342,6 +3415,7 @@ fn paint_graph(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32
         false,
         true,
         false,
+        true,
     );
     if !kind.is_empty() {
         p.hit("back", r(x, y, w * 0.46, HEAD_H * s));
@@ -3355,6 +3429,7 @@ fn paint_graph(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32
         false,
         true,
         true,
+        false,
     );
     paint_spans(p, app, x + w - span_w, y, kind == "day");
     y += HEAD_H * s + 3.0 * s;
@@ -3368,6 +3443,7 @@ fn paint_graph(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32
             false,
             false,
             true,
+            false,
             false,
         );
         return y + bh + 11.0 * s;
@@ -3395,9 +3471,9 @@ fn paint_graph(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32
         p.fill(r(bx, cy, bw - GRAPH_GAP * s, part), fade(p.theme.tint, 190));
         if i == tallest {
             let label = money_short(bar.total);
-            let lw = p.measure(&label, 7.0, true);
+            let lw = p.measure(&label, 7.0, true, false);
             let lx = (bx + (bw - lw) / 2.0).clamp(x, x + (w - lw).max(0.0));
-            p.text(r(lx, cy - 10.0 * s, lw, 10.0 * s), &label, p.theme.text_primary, 7.0, false, false, false, true);
+            p.text(r(lx, cy - 10.0 * s, lw, 10.0 * s), &label, p.theme.text_primary, 7.0, false, false, false, true, false);
         }
     }
     y += bh + 1.0 * s;
@@ -3413,6 +3489,7 @@ fn paint_graph(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32
                 false,
                 false,
                 true,
+                false,
             );
         }
     }
@@ -3424,7 +3501,7 @@ fn paint_rate_graph(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
     let data = current_rates(app, snap);
     let span_w = RATE_BTN_W * 4.0 * s;
     let tok = format!("{} 토큰", compact_num(data.total_tokens as f64));
-    let tok_w = p.measure(&tok, 7.5, true).min((w * 0.22).max(48.0 * s)) + 8.0 * s;
+    let tok_w = p.measure(&tok, 7.5, true, false).min((w * 0.22).max(48.0 * s)) + 8.0 * s;
     let title_w = (w - span_w - tok_w - 8.0 * s).max(0.0);
     let mut y = y0;
     p.text(
@@ -3436,6 +3513,7 @@ fn paint_rate_graph(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
         false,
         true,
         false,
+        true,
     );
     p.text(
         r(x + title_w, y, tok_w, HEAD_H * s),
@@ -3446,6 +3524,7 @@ fn paint_rate_graph(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
         false,
         true,
         true,
+        false,
     );
     paint_rate_spans(p, app, x + w - span_w, y);
     y += HEAD_H * s + 3.0 * s;
@@ -3459,6 +3538,7 @@ fn paint_rate_graph(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
             false,
             false,
             true,
+            false,
             false,
         );
         return y + bh + 11.0 * s;
@@ -3488,7 +3568,7 @@ fn paint_rate_graph(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
         );
         if i == tallest {
             let label = format!("{:.0}", bar.rate);
-            let lw = p.measure(&label, 7.0, true);
+            let lw = p.measure(&label, 7.0, true, false);
             let lx = (bx + (bw - lw) / 2.0).clamp(x, x + (w - lw).max(0.0));
             p.text(
                 r(lx, y + bh - part - 10.0 * s, lw, 10.0 * s),
@@ -3499,6 +3579,7 @@ fn paint_rate_graph(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
                 false,
                 false,
                 true,
+                false,
             );
         }
     }
@@ -3515,6 +3596,7 @@ fn paint_rate_graph(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f3
                 false,
                 false,
                 true,
+                false,
             );
         }
     }
@@ -3545,6 +3627,7 @@ fn paint_spans(p: &mut Paint, app: &OverlayApp, x: f32, y: f32, disabled: bool) 
             true,
             false,
             false,
+            true,
         );
         p.hit(format!("span:{name}"), r(bx, y, BTN_W * s - 2.0 * s, BTN_H * s));
     }
@@ -3571,6 +3654,7 @@ fn paint_rate_spans(p: &mut Paint, app: &OverlayApp, x: f32, y: f32) {
             true,
             false,
             false,
+            true,
         );
         p.hit(format!("rate:{name}"), r(bx, y, RATE_BTN_W * s - 2.0 * s, BTN_H * s));
     }
@@ -3603,9 +3687,10 @@ fn paint_rows(
             true,
             true,
             false,
+            true,
         );
         if on {
-            let mark_w = (p.measure(title, 8.0, false) + SPACE_2 * s).min(tab_w);
+            let mark_w = (p.measure(title, 8.0, false, true) + SPACE_2 * s).min(tab_w);
             p.fill(
                 r(bx + (tab_w - mark_w) / 2.0, y + (HEAD_H - 2.0) * s, mark_w, 2.0 * s),
                 p.theme.tint,
@@ -3653,6 +3738,7 @@ fn paint_empty(p: &mut Paint, app: &OverlayApp, x: f32, y: f32, w: f32) -> f32 {
         false,
         true,
         false,
+        false,
     );
     y + ROW_H * s + 6.0 * s
 }
@@ -3691,6 +3777,7 @@ fn paint_sessions(
                 true,
                 false,
                 false,
+                true,
             );
             p.hit(format!("filter:{name}"), r(bx, y, width - 3.0 * s, FILTER_H * s));
         }
@@ -3731,6 +3818,7 @@ fn paint_sessions(
             false,
             false,
             false,
+            true,
         );
     }
     y += COLHEAD_H * s;
@@ -3834,9 +3922,9 @@ fn paint_sessions(
         } else {
             String::new()
         };
-        let cells: Vec<(String, Color32)> = if wide {
+        let cells: Vec<(String, Color32, bool)> = if wide {
             vec![
-                (attention_label(&row.attention).into(), sc),
+                (attention_label(&row.attention).into(), sc, true),
                 (
                     project,
                     if row.live {
@@ -3844,8 +3932,9 @@ fn paint_sessions(
                     } else {
                         p.theme.text_secondary
                     },
+                    row.live,
                 ),
-                (engine, p.theme.text_secondary),
+                (engine, p.theme.text_secondary, false),
                 (
                     speed,
                     if rate >= 0.01 {
@@ -3853,8 +3942,9 @@ fn paint_sessions(
                     } else {
                         p.theme.text_tertiary
                     },
+                    rate >= 0.01,
                 ),
-                (compact_num(row.total_tokens as f64), p.theme.text_tertiary),
+                (compact_num(row.total_tokens as f64), p.theme.text_tertiary, false),
                 (
                     context,
                     if row.ctx_win > 0 {
@@ -3862,12 +3952,13 @@ fn paint_sessions(
                     } else {
                         p.theme.text_tertiary
                     },
+                    ctx >= CTX_WARN,
                 ),
-                (stamp(row.started_at), p.theme.text_tertiary),
+                (stamp(row.started_at), p.theme.text_tertiary, false),
             ]
         } else {
             vec![
-                (attention_label(&row.attention).into(), sc),
+                (attention_label(&row.attention).into(), sc, true),
                 (
                     project,
                     if row.live {
@@ -3875,6 +3966,7 @@ fn paint_sessions(
                     } else {
                         p.theme.text_secondary
                     },
+                    row.live,
                 ),
                 (
                     speed,
@@ -3883,8 +3975,9 @@ fn paint_sessions(
                     } else {
                         p.theme.text_tertiary
                     },
+                    rate >= 0.01,
                 ),
-                (compact_num(row.total_tokens as f64), p.theme.text_tertiary),
+                (compact_num(row.total_tokens as f64), p.theme.text_tertiary, false),
                 (
                     context,
                     if row.ctx_win > 0 {
@@ -3892,10 +3985,11 @@ fn paint_sessions(
                     } else {
                         p.theme.text_tertiary
                     },
+                    ctx >= CTX_WARN,
                 ),
             ]
         };
-        for (index, ((text, color), (start, end, right, size))) in cells.iter().zip(cols.iter()).enumerate()
+        for (index, ((text, color, bold), (start, end, right, size))) in cells.iter().zip(cols.iter()).enumerate()
         {
             if text.is_empty() {
                 continue;
@@ -3909,6 +4003,7 @@ fn paint_sessions(
                 false,
                 true,
                 index >= 2,
+                *bold,
             );
         }
     }
@@ -3981,6 +4076,7 @@ fn paint_session_detail(
         false,
         true,
         false,
+        true,
     );
     p.text(
         r(x + 6.0 * s, y + h * 0.5, 56.0 * s, h * 0.5),
@@ -3991,6 +4087,7 @@ fn paint_session_detail(
         false,
         false,
         false,
+        true,
     );
     p.hit("act:copy", r(x + 6.0 * s, y + h * 0.5, 56.0 * s, h * 0.5));
     y + DETAIL_H * s
@@ -3998,9 +4095,9 @@ fn paint_session_detail(
 
 fn paint_projects(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32, y0: f32, w: f32) -> f32 {
     let s = p.s();
-    p.text(r(x, y0, w * 0.54, COLHEAD_H * s), "프로젝트", fade(p.theme.text_tertiary, 180), 7.5, false, false, false, false);
-    p.text(r(x + w * 0.54, y0, w * 0.23, COLHEAD_H * s), "최근 세션", fade(p.theme.text_tertiary, 180), 7.5, false, false, false, false);
-    p.text(r(x + w * 0.77, y0, w * 0.23 - 6.0 * s, COLHEAD_H * s), "누적 토큰", fade(p.theme.text_tertiary, 180), 7.5, true, false, false, false);
+    p.text(r(x, y0, w * 0.54, COLHEAD_H * s), "프로젝트", fade(p.theme.text_tertiary, 180), 7.5, false, false, false, false, true);
+    p.text(r(x + w * 0.54, y0, w * 0.23, COLHEAD_H * s), "최근 세션", fade(p.theme.text_tertiary, 180), 7.5, false, false, false, false, true);
+    p.text(r(x + w * 0.77, y0, w * 0.23 - 6.0 * s, COLHEAD_H * s), "누적 토큰", fade(p.theme.text_tertiary, 180), 7.5, true, false, false, false, true);
     let mut y = y0 + COLHEAD_H * s;
     let rows = display_projects(&snap.status);
     if rows.is_empty() {
@@ -4038,8 +4135,9 @@ fn paint_projects(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: 
             false,
             true,
             false,
+            i == 0,
         );
-        p.text(r(x + w * 0.54, ry, w * 0.23, h), &stamp(*last), p.theme.text_tertiary, 7.5, false, false, false, true);
+        p.text(r(x + w * 0.54, ry, w * 0.23, h), &stamp(*last), p.theme.text_tertiary, 7.5, false, false, false, true, false);
         p.text(
             r(x + w * 0.77, ry, w * 0.23 - 6.0 * s, h),
             &compact_num(*tokens as f64),
@@ -4048,6 +4146,7 @@ fn paint_projects(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: 
             true,
             false,
             false,
+            true,
             true,
         );
     }
@@ -4061,10 +4160,10 @@ fn paint_rate_rows(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x:
         paint_rate_spans(p, app, x + w - RATE_BTN_W * 4.0 * s, y);
         y += BTN_H * s + 2.0 * s;
     }
-    p.text(r(x, y, w * 0.34, COLHEAD_H * s), "프로바이더", fade(p.theme.text_tertiary, 180), 7.5, false, false, false, false);
-    p.text(r(x + w * 0.34, y, w * 0.30, COLHEAD_H * s), "메인 모델", fade(p.theme.text_tertiary, 180), 7.5, false, false, false, false);
-    p.text(r(x + w * 0.64, y, w * 0.18 - 4.0 * s, COLHEAD_H * s), "누적", fade(p.theme.text_tertiary, 180), 7.5, true, false, false, false);
-    p.text(r(x + w * 0.82, y, w * 0.18 - 6.0 * s, COLHEAD_H * s), "tok/s", fade(p.theme.text_tertiary, 180), 7.5, true, false, false, false);
+    p.text(r(x, y, w * 0.34, COLHEAD_H * s), "프로바이더", fade(p.theme.text_tertiary, 180), 7.5, false, false, false, false, true);
+    p.text(r(x + w * 0.34, y, w * 0.30, COLHEAD_H * s), "메인 모델", fade(p.theme.text_tertiary, 180), 7.5, false, false, false, false, true);
+    p.text(r(x + w * 0.64, y, w * 0.18 - 4.0 * s, COLHEAD_H * s), "누적", fade(p.theme.text_tertiary, 180), 7.5, true, false, false, false, true);
+    p.text(r(x + w * 0.82, y, w * 0.18 - 6.0 * s, COLHEAD_H * s), "tok/s", fade(p.theme.text_tertiary, 180), 7.5, true, false, false, false, true);
     y += COLHEAD_H * s;
     let data = current_rates(app, snap);
     app.note = rate_summary(&data);
@@ -4085,10 +4184,10 @@ fn paint_rate_rows(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x:
             ),
             p.theme.tint,
         );
-        p.text(r(x + 6.0 * s, ry, w * 0.34 - 6.0 * s, h), &row.vendor, p.theme.text_primary, 8.5, false, false, true, false);
-        p.text(r(x + w * 0.34, ry, w * 0.30, h), &short_model(&row.model), p.theme.text_secondary, 8.5, false, false, true, true);
-        p.text(r(x + w * 0.64, ry, w * 0.18 - 4.0 * s, h), &compact_num(row.tokens as f64), p.theme.text_tertiary, 8.5, true, false, false, true);
-        p.text(r(x + w * 0.82, ry, w * 0.18 - 6.0 * s, h), &format!("{:.1}", row.rate), p.theme.tint, 9.0, true, false, false, true);
+        p.text(r(x + 6.0 * s, ry, w * 0.34 - 6.0 * s, h), &row.vendor, p.theme.text_primary, 8.5, false, false, true, false, true);
+        p.text(r(x + w * 0.34, ry, w * 0.30, h), &short_model(&row.model), p.theme.text_secondary, 8.5, false, false, true, true, false);
+        p.text(r(x + w * 0.64, ry, w * 0.18 - 4.0 * s, h), &compact_num(row.tokens as f64), p.theme.text_tertiary, 8.5, true, false, false, true, false);
+        p.text(r(x + w * 0.82, ry, w * 0.18 - 6.0 * s, h), &format!("{:.1}", row.rate), p.theme.tint, 9.0, true, false, false, true, true);
     }
     y + rows.len().max(1) as f32 * ROW_H * s + 6.0 * s
 }
@@ -4114,6 +4213,7 @@ fn paint_quota(p: &mut Paint, app: &mut OverlayApp, windows: &[Value], x: f32, y
             false,
             false,
             false,
+            true,
         );
     }
     let mut y = y0 + COLHEAD_H * s;
@@ -4211,7 +4311,6 @@ fn paint_quota(p: &mut Paint, app: &mut OverlayApp, windows: &[Value], x: f32, y
         ];
         for (index, ((text, color, bold), (start, end, right, size))) in cells.iter().zip(cols.iter()).enumerate()
         {
-            let _ = bold;
             p.text(
                 r(x + start * w + CELL_PAD * s, ry, (end - start) * w - CELL_PAD * s * 2.0, h),
                 text,
@@ -4221,6 +4320,7 @@ fn paint_quota(p: &mut Paint, app: &mut OverlayApp, windows: &[Value], x: f32, y
                 false,
                 true,
                 index >= 2,
+                *bold,
             );
         }
         if quota::can_represent(&raw) {
@@ -4280,6 +4380,7 @@ fn paint_days(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32,
             false,
             false,
             true,
+            true,
         );
         p.text(
             r(x + (10.0 + mw) * s, ry, w * 0.38, h),
@@ -4290,6 +4391,7 @@ fn paint_days(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32,
             false,
             true,
             false,
+            *hot,
         );
         p.text(
             r(x, ry, w - 58.0 * s, h),
@@ -4300,6 +4402,7 @@ fn paint_days(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32,
             false,
             false,
             true,
+            false,
         );
         p.text(
             r(x, ry, w - 6.0 * s, h),
@@ -4309,6 +4412,7 @@ fn paint_days(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32,
             true,
             false,
             false,
+            true,
             true,
         );
     }
@@ -4340,6 +4444,7 @@ fn paint_board(p: &mut Paint, app: &mut OverlayApp, x: f32, y: f32, w: f32) -> f
             false,
             true,
             false,
+            false,
         );
         p.text(
             r(x, ry, w - 6.0 * s, h),
@@ -4349,6 +4454,7 @@ fn paint_board(p: &mut Paint, app: &mut OverlayApp, x: f32, y: f32, w: f32) -> f
             true,
             false,
             false,
+            true,
             true,
         );
     }
@@ -4484,6 +4590,7 @@ fn paint_section(p: &Paint<'_>, x: f32, y: f32, w: f32, title: &str) -> f32 {
         false,
         false,
         false,
+        true,
     );
     y + SETTING_HEAD_H * s
 }
@@ -4515,6 +4622,7 @@ fn paint_setting_chips(p: &mut Paint<'_>, x: f32, y: f32, w: f32, items: &[(&str
             true,
             false,
             false,
+            true,
         );
         p.hit((*target).to_string(), rect);
     }
@@ -4532,6 +4640,7 @@ fn paint_toggle(p: &mut Paint<'_>, x: f32, y: f32, w: f32, target: &str, title: 
         false,
         false,
         true,
+        false,
         false,
     );
     paint_switch(p, x, y, w, h, on);
@@ -4552,6 +4661,7 @@ fn paint_action(p: &mut Paint<'_>, x: f32, y: f32, w: f32, target: &str, title: 
         false,
         true,
         false,
+        false,
     );
     p.text(
         r(x, y, w - 12.0 * s, h),
@@ -4559,6 +4669,7 @@ fn paint_action(p: &mut Paint<'_>, x: f32, y: f32, w: f32, target: &str, title: 
         p.theme.text_tertiary,
         16.0,
         true,
+        false,
         false,
         false,
         false,
@@ -4579,6 +4690,7 @@ fn paint_select(p: &mut Paint<'_>, x: f32, y: f32, w: f32, target: &str, title: 
         false,
         true,
         false,
+        false,
     );
     if on {
         p.text(
@@ -4590,6 +4702,7 @@ fn paint_select(p: &mut Paint<'_>, x: f32, y: f32, w: f32, target: &str, title: 
             false,
             false,
             false,
+            true,
         );
     }
     p.hit(target.to_string(), r(x, y, w, h));
@@ -4627,6 +4740,7 @@ fn paint_extra_group(p: &mut Paint<'_>, x: f32, y: f32, w: f32, rows: &[(String,
                 false,
                 true,
                 false,
+                false,
             );
             yy += SETTING_ROW_H * s;
         } else if target.starts_with("room:") {
@@ -4643,29 +4757,49 @@ fn paint_glass_panel(p: &Paint<'_>, panel: Rect, opaque: bool) {
     let dark = settings_dark(&p.theme);
     let rad = CornerRadius::same((16.0 * s).clamp(8.0, 22.0) as u8);
     if !opaque {
+        let shadow = hex(if dark { "#000000" } else { "#24344A" }, 255);
         for i in (1..=8).rev() {
             let grow = i as f32 * 1.15 * s;
-            let shade = r(
-                panel.min.x + grow * 0.05,
-                panel.min.y + grow * 0.25,
-                panel.width(),
-                panel.height() + grow * 0.35,
+            // 파이썬 shade.adjust(-0.25g, 0.1g, 0.25g, 0.65g)
+            let shade = Rect::from_min_max(
+                Pos2::new(panel.min.x - grow * 0.25, panel.min.y + grow * 0.1),
+                Pos2::new(panel.max.x + grow * 0.25, panel.max.y + grow * 0.65),
             );
             p.ui.painter().rect_filled(
                 shade,
                 CornerRadius::same((16.0 * s + grow * 0.15) as u8),
-                fade(hex("#000000", 255), 8 + i * 4),
+                fade(shadow, 8 + i * 4),
             );
         }
     }
     let glass_a = if opaque { 255 } else { p.theme.surface_alpha };
     p.ui.painter().rect_filled(panel, rad, fade(p.theme.surface_glass, glass_a));
+    paint_wash(p, panel, rad.nw as f32, 88.0 * s, fade(p.theme.tint, if dark { 20 } else { 14 }));
     p.ui.painter().rect_stroke(
         panel,
         rad,
         Stroke::new(s.max(1.0), fade(p.theme.tint, if dark { 36 } else { 28 })),
         egui::StrokeKind::Inside,
     );
+}
+
+/// 파이썬 `_paint_glass` 의 위쪽 틴트: 위에서 `depth` 까지 `top` → 투명. 둥근 모서리 안쪽만 칠한다.
+fn paint_wash(p: &Paint<'_>, panel: Rect, rad: f32, depth: f32, top: Color32) {
+    let mut mesh = egui::Mesh::default();
+    let rows = (rad.ceil() as usize).max(1);
+    let ys = (0..=rows).map(|k| k as f32 * rad / rows as f32).chain(std::iter::once(depth));
+    for (k, dy) in ys.enumerate() {
+        let inset = if dy < rad { rad - (rad * rad - (rad - dy).powi(2)).sqrt() } else { 0.0 };
+        let c = top.gamma_multiply(1.0 - (dy / depth).clamp(0.0, 1.0));
+        mesh.colored_vertex(Pos2::new(panel.min.x + inset, panel.min.y + dy), c);
+        mesh.colored_vertex(Pos2::new(panel.max.x - inset, panel.min.y + dy), c);
+        if k > 0 {
+            let i = k as u32 * 2;
+            mesh.add_triangle(i - 2, i - 1, i);
+            mesh.add_triangle(i - 1, i + 1, i);
+        }
+    }
+    p.ui.painter().add(egui::Shape::mesh(mesh));
 }
 
 fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
@@ -4766,6 +4900,7 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
                     11.0,
                     false,
                     true,
+                    false,
                     false,
                     false,
                 );
@@ -4930,5 +5065,14 @@ mod tests {
     #[test]
     fn pretendard_is_bundled() {
         assert!(include_bytes!("../fonts/Pretendard-Regular.otf").len() > 100_000);
+        assert!(include_bytes!("../fonts/Pretendard-SemiBold.otf").len() > 100_000);
+    }
+
+    #[test]
+    fn translucent_colors_blend_like_qt() {
+        // 흰색 알파 10 은 Qt 처럼 10 이어야 한다. 선형 공간에서 곱하면 56 이 돼 칸이 회색으로 뜬다.
+        assert_eq!(fade(Color32::WHITE, 10), Color32::from_rgba_premultiplied(10, 10, 10, 10));
+        assert_eq!(hex("#34C759", 255), Color32::from_rgb(0x34, 0xC7, 0x59));
+        assert_eq!(fade(Color32::WHITE, 0), Color32::TRANSPARENT);
     }
 }

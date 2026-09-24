@@ -38,33 +38,6 @@ const DETAIL_H: f32 = 44.0;
 const MINI_W: f32 = 0.62;
 const MINI_H: f32 = 30.0;
 const MINI_RATE_W: f32 = 60.0;
-const LOOT_POP_SEC: f64 = 1.15;
-const HORSE_FRAMES: [[[[f32; 2]; 3]; 4]; 4] = [
-    [
-        [[1.8, 1.0], [2.0, 2.2], [1.6, 3.4]],
-        [[1.2, 1.0], [0.8, 2.1], [0.6, 3.3]],
-        [[-1.4, 1.0], [-1.8, 2.2], [-1.5, 3.4]],
-        [[-2.0, 1.0], [-1.6, 2.1], [-1.2, 3.3]],
-    ],
-    [
-        [[1.8, 1.0], [2.8, 1.6], [3.6, 2.6]],
-        [[1.2, 1.0], [2.2, 2.0], [2.8, 3.2]],
-        [[-1.4, 1.0], [-2.4, 1.8], [-3.0, 2.8]],
-        [[-2.0, 1.0], [-2.6, 2.2], [-2.2, 3.4]],
-    ],
-    [
-        [[1.8, 1.0], [3.0, 1.4], [4.0, 2.2]],
-        [[1.2, 1.0], [2.4, 1.8], [3.2, 2.8]],
-        [[-1.4, 1.0], [-2.6, 1.6], [-3.4, 2.4]],
-        [[-2.0, 1.0], [-3.0, 2.0], [-3.6, 3.0]],
-    ],
-    [
-        [[1.8, 1.0], [1.4, 2.2], [1.0, 3.4]],
-        [[1.2, 1.0], [0.6, 2.0], [0.2, 3.2]],
-        [[-1.4, 1.0], [-0.6, 1.8], [0.2, 2.6]],
-        [[-2.0, 1.0], [-1.2, 2.2], [-0.4, 3.4]],
-    ],
-];
 const MODE_BTN: f32 = 28.0;
 const HINT_SEC: f64 = 20.0;
 const PALETTE_W: f32 = 420.0;
@@ -464,23 +437,9 @@ fn rate_text(v: f64) -> String {
 fn s_skin_name(value: &str) -> &'static str {
     match value {
         "dial" => "dial",
-        "horse" => "horse",
-        "loot" => "loot",
+        "loot" | "horse" => "loot",
         _ => "bar",
     }
-}
-
-fn loot_gain_labels(prev_cost: f64, prev_out: i64, cost: f64, out: i64) -> Vec<String> {
-    let mut labels = Vec::new();
-    let delta_out = out - prev_out;
-    let delta_cost = cost - prev_cost;
-    if delta_out >= 1 {
-        labels.push(format!("+{}", compact_num(delta_out as f64)));
-    }
-    if delta_cost >= 0.01 {
-        labels.push(format!("+${delta_cost:.2}"));
-    }
-    labels
 }
 
 fn mini_rate_caption(value: f64) -> String {
@@ -1028,10 +987,8 @@ struct OverlayApp {
     quota_reps: Map<String, Value>,
     mini: bool,
     s_skin: String,
-    loot_seen: bool,
-    loot_cost: f64,
-    loot_out: i64,
-    loot_pops: Vec<(String, f64, f32)>,
+    face_phase: f64,
+    money_stage: i32,
     hint_seen: bool,
     hint_until: f64,
     focus: Option<(String, String)>,
@@ -1163,53 +1120,18 @@ impl OverlayApp {
         }
     }
 
+    /// 픽셀 얼굴은 미니 전용이다(v0.7.2). S 는 늘 기본 계기판.
     fn widget_skin(&self) -> Option<&'static str> {
-        if self.palette_open || self.s_skin == "bar" {
+        if self.palette_open || !self.mini || self.s_skin == "bar" {
             return None;
         }
-        if self.mini || self.mode() == 'S' {
-            Some(s_skin_name(&self.s_skin))
-        } else {
-            None
-        }
+        Some(s_skin_name(&self.s_skin))
     }
 
     fn skin_size(&self) -> Option<(f32, f32)> {
-        let (w, h) = match self.widget_skin()? {
-            "dial" => (140.0, 158.0),
-            "horse" => (208.0, 86.0),
-            "loot" => (128.0, 164.0),
-            _ => return None,
-        };
-        let k = if self.mini { 0.88 } else { 1.0 };
-        Some((w * k * self.scale, h * k * self.scale))
-    }
-
-    fn feed_loot(&mut self, snap: &MeterSnapshot) {
-        let tot = scoped(snap, self.scope_today);
-        let cost = tot.4;
-        let out = tot.1;
-        let now = crate::watch::now_secs();
-        if self.loot_seen {
-            for (i, label) in loot_gain_labels(self.loot_cost, self.loot_out, cost, out)
-                .into_iter()
-                .enumerate()
-            {
-                let jitter = ((i * 17 + (now * 10.0) as usize) % 21) as f32 - 10.0;
-                self.loot_pops.push((label, now, jitter));
-            }
-            if self.loot_pops.len() > 8 {
-                let n = self.loot_pops.len() - 8;
-                self.loot_pops.drain(..n);
-            }
-        }
-        self.loot_seen = true;
-        self.loot_cost = cost;
-        self.loot_out = out;
-        self.loot_pops.retain(|(_, t0, _)| now - *t0 < LOOT_POP_SEC);
-        if self.reduce_motion {
-            self.loot_pops.clear();
-        }
+        self.widget_skin()?;
+        let (w, h) = crate::pixel_faces::MINI_SIZE;
+        Some((w * self.scale, h * self.scale))
     }
 
     fn window_size(&self, row_count: i32, marks: usize, palette_n: usize) -> (f32, f32) {
@@ -1490,10 +1412,8 @@ impl OverlayApp {
             quota_reps: reps,
             mini: p.get("mini").and_then(Value::as_bool).unwrap_or(false),
             s_skin: s_skin_name(p.get("s_skin").and_then(Value::as_str).unwrap_or("bar")).into(),
-            loot_seen: false,
-            loot_cost: 0.0,
-            loot_out: 0,
-            loot_pops: Vec::new(),
+            face_phase: 0.0,
+            money_stage: 0,
             hint_seen,
             hint_until: if hint_seen {
                 0.0
@@ -1803,7 +1723,10 @@ impl eframe::App for OverlayApp {
         let racers = league_racers();
         let target = gauge_target(snap.rate, snap.full_scale);
         self.advance(dt, target, &racers);
-        self.feed_loot(&snap);
+        if !self.reduce_motion && self.widget_skin().is_some() && snap.rate > 0.01 {
+            self.face_phase = (self.face_phase + dt.min(0.05) * (0.7 + target * 2.0)) % 120.0;
+        }
+        self.money_stage = crate::pixel_faces::money_stage(snap.rate, self.money_stage);
         if self.hint_until > 0.0 && crate::watch::now_secs() > self.hint_until {
             self.end_hint();
         }
@@ -1834,12 +1757,20 @@ impl eframe::App for OverlayApp {
             theme.surface_alpha
         };
         let mut hits = Vec::new();
+        let skin = self.widget_skin().is_some();
+        let fill = if skin {
+            Color32::TRANSPARENT
+        } else {
+            fade(theme.surface_glass, alpha)
+        };
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(fade(theme.surface_glass, alpha)))
+            .frame(egui::Frame::NONE.fill(fill))
             .show(ctx, |ui| {
                 ui.set_min_size(Vec2::new(ww, hh));
                 let full = ui.max_rect();
-                self.fill_hairline(ui, &theme, full);
+                if !skin {
+                    self.fill_hairline(ui, &theme, full);
+                }
                 let lang = self.lang.clone();
                 let mut p = Paint {
                     ui,
@@ -1848,8 +1779,8 @@ impl eframe::App for OverlayApp {
                     scale: self.scale,
                     lang: &lang,
                 };
-                if self.widget_skin().is_some() {
-                    paint_s_skin(&mut p, self, &snap);
+                if skin {
+                    paint_s_skin(&mut p, self, &snap, alpha);
                 } else if self.mini {
                     paint_mini(&mut p, self, &snap);
                 } else {
@@ -2110,14 +2041,10 @@ impl OverlayApp {
             }
         }
         if ctx.input(|i| i.pointer.any_click() && i.pointer.button_double_clicked(egui::PointerButton::Primary))
-            && (self.mini || self.widget_skin().is_some())
+            && self.mini
         {
-            if self.mini {
-                self.mini = false;
-                self.save_prefs();
-            } else {
-                self.set_mode('M');
-            }
+            self.mini = false;
+            self.save_prefs();
             return;
         }
         if let Some(pos) = ctx.pointer_interact_pos() {
@@ -2138,6 +2065,9 @@ impl OverlayApp {
                     self.scale = (self.scale * 1.08_f32.powf(delta / 120.0)).clamp(1.0, 2.0);
                     self.save_prefs();
                 }
+            }
+            if ctx.input(|i| i.pointer.secondary_clicked()) {
+                self.activate("menu", snap, windows);
             }
             if ctx.input(|i| i.pointer.primary_pressed()) {
                 self.end_hint();
@@ -2221,11 +2151,10 @@ impl OverlayApp {
         }
         if let Some(name) = target.strip_prefix("skin:") {
             self.s_skin = s_skin_name(name).into();
-            if self.s_skin != "bar" && !self.mini && self.mode() != 'S' {
-                self.set_mode('S');
-            } else {
-                self.save_prefs();
-            }
+            self.mini = self.s_skin != "bar";
+            self.face_phase = 0.0;
+            self.money_stage = 0;
+            self.save_prefs();
             return;
         }
         if target == "command:transparency" {
@@ -2594,272 +2523,101 @@ fn paint_mini(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot) {
     }
 }
 
-fn paint_s_skin(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot) {
+/// v0.7.2 픽셀 미니: 창 전체가 카드이고 그림과 tok/s 만 있다. 설정은 우클릭, 나가기는 두 번 클릭.
+fn paint_s_skin(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, alpha: u8) {
     let s = p.s();
     let full = p.ui.max_rect();
-    let x = full.min.x + 6.0 * s;
-    let y = full.min.y + 4.0 * s;
-    let w = full.width() - 12.0 * s;
-    let h = full.height() - 8.0 * s;
-    match app.widget_skin() {
-        Some("dial") => paint_skin_dial(p, app, snap, x, y, w, h),
-        Some("horse") => paint_skin_horse(p, app, snap, x, y, w, h),
-        _ => paint_skin_loot(p, app, snap, x, y, w, h),
-    }
-    let bw = 22.0 * s;
-    let bh = 20.0 * s;
-    let mx = x + w - bw;
-    p.text(
-        r(mx, y, bw, bh),
-        "⋯",
-        p.theme.text_tertiary,
-        10.0,
-        true,
-        false,
-        false,
-        false,
-        true,
-    );
-    p.hit("menu", r(mx, y, bw, bh));
-}
-
-fn paint_skin_dial(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f32, y: f32, w: f32, h: f32) {
-    let s = p.s();
-    let tot = scoped(snap, app.scope_today);
-    let money = money_caption(approx(&snap.status), tot.4);
-    let foot = 22.0 * s;
-    let cx = x + w / 2.0;
-    let cy = y + 16.0 * s + (h - 20.0 * s - foot) / 2.0;
-    let radius = (w.min(h - 20.0 * s - foot) / 2.0 - 3.0 * s).max(8.0);
-    p.ui.painter().circle_filled(Pos2::new(cx, cy), radius, p.theme.background_primary);
-    p.ui.painter().circle_stroke(
-        Pos2::new(cx, cy),
-        radius,
-        Stroke::new(1.2 * s, fade(p.theme.separator, 200)),
-    );
-    let inner = radius - 7.0 * s;
-    let ticks = 12;
-    for i in 0..=ticks {
-        let t = i as f32 / ticks as f32;
-        let ang = (225.0 - 270.0 * t).to_radians();
-        let outer = radius - 2.2 * s;
-        let inn = radius - if i % 3 == 0 { 7.5 * s } else { 5.0 * s };
-        let color = fade(
-            seg_color(&p.theme, t),
-            if t as f64 <= app.gauge + 0.02 { 220 } else { 50 },
+    let skin = app.widget_skin().unwrap_or("dial");
+    if skin == "dial" {
+        p.fill(full, hex("#080808", alpha));
+        p.ui.painter().rect_stroke(
+            full,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, hex("#505050", 255)),
+            egui::StrokeKind::Inside,
         );
-        p.ui.painter().line_segment(
-            [
-                Pos2::new(cx + ang.cos() * inn, cy - ang.sin() * inn),
-                Pos2::new(cx + ang.cos() * outer, cy - ang.sin() * outer),
-            ],
-            Stroke::new(if i % 3 == 0 { 1.6 * s } else { 1.1 * s }, color),
-        );
-    }
-    let n = 24;
-    let mut arc = Vec::with_capacity(n + 1);
-    let sweep = 270.0 * app.gauge as f32;
-    for i in 0..=n {
-        let t = i as f32 / n as f32;
-        let ang = (225.0 - sweep * t).to_radians();
-        arc.push(Pos2::new(cx + ang.cos() * inner, cy - ang.sin() * inner));
-    }
-    if arc.len() > 1 {
-        p.ui.painter().add(egui::Shape::line(
-            arc,
-            Stroke::new(2.4 * s, fade(seg_color(&p.theme, app.gauge as f32), 200)),
-        ));
-    }
-    let ang = (225.0 - 270.0 * app.gauge as f32).to_radians();
-    let glow = if snap.rate > 0.0 {
-        (90.0 + 110.0 * app.pulse) as u8
     } else {
-        160
-    };
-    p.ui.painter().line_segment(
-        [
-            Pos2::new(cx - ang.cos() * 8.0 * s, cy + ang.sin() * 8.0 * s),
-            Pos2::new(cx + ang.cos() * (inner - 2.0 * s), cy - ang.sin() * (inner - 2.0 * s)),
-        ],
-        Stroke::new(2.0 * s, fade(p.theme.text_primary, glow)),
-    );
-    p.ui.painter().circle_filled(Pos2::new(cx, cy), 3.2 * s, fade(p.theme.tint, 230));
-    p.text(
-        r(x, cy + 8.0 * s, w, 16.0 * s),
-        &mini_rate_caption(snap.rate),
-        if snap.rate > 0.0 {
-            p.theme.text_primary
-        } else {
-            p.theme.text_tertiary
-        },
-        9.5,
-        false,
-        true,
-        false,
-        true,
-        true,
-    );
-    p.text(
-        r(x, y + h - foot, w, foot),
-        &money,
-        p.theme.text_secondary,
-        8.0,
-        false,
-        true,
-        false,
-        true,
-        true,
-    );
-}
-
-fn paint_skin_horse(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f32, y: f32, w: f32, h: f32) {
-    let s = p.s();
-    let tot = scoped(snap, app.scope_today);
-    let money = money_caption(false, tot.4);
-    p.ui.painter().rect_filled(
-        r(x, y, w, h),
-        CornerRadius::same((8.0 * s) as u8),
-        hex("#0A120C", 255),
-    );
-    p.fill(r(x, y, w, 5.0 * s), hex("#F5A623", 255));
-    p.fill(r(x, y + 5.0 * s, w, 2.0 * s), hex("#1A1A1A", 255));
-    let running = snap.rate > 0.2 && !app.reduce_motion;
-    let speed = 3.0 + 10.0 * app.gauge;
-    let now = crate::watch::now_secs();
-    let frame = if running {
-        ((now * speed) as i64).rem_euclid(4) as usize
-    } else {
-        0
-    };
-    let hop = if running {
-        -(now * speed * 1.6).sin().abs() as f32 * 1.6 * s
-    } else {
-        0.0
-    };
-    paint_horse(
+        paint_display_well(p, full, alpha, snap.rate, app.pulse);
+    }
+    paint_pixel_face(
         p,
-        x + 28.0 * s,
-        y + h * 0.58 + hop,
-        11.0 * s,
-        frame,
-        fade(hex("#E8EAF2", 255), if running { 230 } else { 120 }),
+        r(full.min.x + 12.0 * s, full.min.y + 12.0 * s, 56.0 * s, full.height() - 24.0 * s),
+        skin,
+        app.gauge,
+        app.face_phase,
+        snap.rate > 0.01 && !app.reduce_motion,
+        app.money_stage,
     );
-    let fare_x = x + w * 0.38;
-    let fare_w = w * 0.58;
-    let led = hex("#5CFF7A", 255);
-    p.text(r(fare_x, y + 10.0 * s, fare_w, 12.0 * s), "요금 · 추정", fade(led, 180), 7.0, false, false, false, true, true);
-    p.text(r(fare_x, y + 22.0 * s, fare_w - 6.0 * s, 28.0 * s), &money, led, 18.0, false, false, false, true, true);
-    p.text(
-        r(fare_x, y + h - 20.0 * s, fare_w - 6.0 * s, 14.0 * s),
-        &mini_rate_caption(snap.rate),
-        fade(led, if snap.rate > 0.0 { 200 } else { 90 }),
-        8.0,
-        false,
-        false,
-        false,
-        true,
-        true,
-    );
-}
-
-fn paint_horse(p: &Paint, cx: f32, cy: f32, u: f32, frame: usize, color: Color32) {
-    let painter = p.ui.painter();
-    let stroke = Stroke::new((0.38 * u).max(1.2), color);
-    painter.rect_filled(
-        r(cx - 3.2 * u, cy - 1.1 * u, 6.2 * u, 2.4 * u),
-        CornerRadius::same((1.1 * u) as u8),
-        color,
-    );
-    painter.rect_filled(
-        r(cx + 2.4 * u, cy - 2.8 * u, 2.6 * u, 1.8 * u),
-        CornerRadius::same((0.7 * u) as u8),
-        color,
-    );
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            Pos2::new(cx + 3.6 * u, cy - 2.6 * u),
-            Pos2::new(cx + 4.0 * u, cy - 3.6 * u),
-            Pos2::new(cx + 4.4 * u, cy - 2.5 * u),
-        ],
-        color,
-        Stroke::NONE,
-    ));
-    painter.add(egui::Shape::line(
-        vec![
-            Pos2::new(cx - 3.0 * u, cy - 0.2 * u),
-            Pos2::new(cx - 4.8 * u, cy - 1.4 * u),
-            Pos2::new(cx - 4.2 * u, cy + 0.8 * u),
-        ],
-        stroke,
-    ));
-    for leg in HORSE_FRAMES[frame % 4] {
-        painter.add(egui::Shape::line(
-            vec![
-                Pos2::new(cx + leg[0][0] * u, cy + leg[0][1] * u),
-                Pos2::new(cx + leg[1][0] * u, cy + leg[1][1] * u),
-                Pos2::new(cx + leg[2][0] * u, cy + leg[2][1] * u),
-            ],
-            stroke,
-        ));
-    }
-}
-
-fn paint_skin_loot(p: &mut Paint, app: &OverlayApp, snap: &MeterSnapshot, x: f32, y: f32, w: f32, h: f32) {
-    let s = p.s();
-    let tot = scoped(snap, app.scope_today);
-    let money = money_caption(approx(&snap.status), tot.4);
-    let bounce = if snap.rate > 0.2 && !app.reduce_motion {
-        -(crate::watch::now_secs() * 9.0).sin().abs() as f32 * 3.2 * s
+    let value = if snap.rate < 999.5 {
+        format!("{:.1}", snap.rate.max(0.0))
     } else {
-        0.0
+        mini_rate_caption(snap.rate).trim_end_matches("/s").to_string()
     };
-    let cx = x + w / 2.0;
-    let cy = y + h * 0.58 + bounce;
-    let cr = w.min(h) * 0.22;
-    let gold = hex("#F0C43A", 255);
-    p.ui.painter().circle_filled(Pos2::new(cx, cy), cr, gold);
-    p.ui.painter().circle_stroke(Pos2::new(cx, cy), cr, Stroke::new(2.2 * s, hex("#C4921A", 255)));
-    p.ui.painter().circle_stroke(
-        Pos2::new(cx - cr * 0.15, cy - cr * 0.2),
-        cr * 0.35,
-        Stroke::new(1.4 * s, fade(hex("#FFF4B8", 255), 200)),
-    );
-    p.text(r(cx - cr, cy - cr * 0.55, cr * 2.0, cr * 1.1), "$", hex("#6B4A00", 255), 16.0, false, true, false, false, true);
-    let origin_y = cy - cr - 4.0 * s;
-    let now = crate::watch::now_secs();
-    if !app.reduce_motion {
-        for (text, t0, jitter) in &app.loot_pops {
-            let age = ((now - t0) / LOOT_POP_SEC).clamp(0.0, 1.0) as f32;
-            let py = origin_y - age * 38.0 * s;
-            let px = cx + *jitter * s - 28.0 * s;
-            let gold_pop = text.starts_with("+$");
-            p.text(
-                r(px, py, 56.0 * s, 14.0 * s),
-                text,
-                fade(
-                    if gold_pop { gold } else { p.theme.text_primary },
-                    (255.0 * (1.0 - age)) as u8,
-                ),
-                if gold_pop { 10.5 } else { 11.5 },
-                false,
-                true,
-                false,
-                true,
-                true,
-            );
-        }
-    }
+    let muted = hex(if skin == "dial" { "#8C8C8C" } else { "#7B8497" }, 255);
+    let x = full.min.x + 80.0 * s;
     p.text(
-        r(x, y + h - 22.0 * s, w, 18.0 * s),
-        &money,
-        p.theme.text_secondary,
-        8.5,
+        r(x, full.min.y + 13.0 * s, 76.0 * s, 26.0 * s),
+        &value,
+        if snap.rate > 0.0 { hex("#F0F0F0", 255) } else { muted },
+        19.0,
         false,
-        true,
         false,
-        true,
+        false,
+        false,
         true,
     );
+    p.text(r(x, full.min.y + 39.0 * s, 76.0 * s, 11.0 * s), "tok/s", muted, 8.0, false, false, false, true, true);
+}
+
+/// v0.7.2 `_draw_well`: 위가 더 어두운 계기판 창. 테두리와 왼쪽 바는 유입에 맞춰 숨쉰다.
+fn paint_display_well(p: &Paint, rect: Rect, alpha: u8, rate: f64, pulse: f64) {
+    let (top, bottom) = (hex("#040508", alpha), hex("#0C0F16", alpha));
+    let mut mesh = egui::Mesh::default();
+    for (pos, c) in [
+        (rect.left_top(), top),
+        (rect.right_top(), top),
+        (rect.left_bottom(), bottom),
+        (rect.right_bottom(), bottom),
+    ] {
+        mesh.colored_vertex(pos, c);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    p.ui.painter().add(egui::Shape::mesh(mesh));
+    p.fill(r(rect.min.x, rect.max.y - 1.0, rect.width(), 1.0), fade(Color32::WHITE, 16));
+    let tint = hex("#2BD9E5", if rate > 0.0 { (90.0 + 110.0 * pulse) as u8 } else { 48 });
+    p.ui.painter()
+        .rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, tint), egui::StrokeKind::Inside);
+    p.fill(r(rect.min.x, rect.min.y, 2.0 * p.s(), rect.height()), tint);
+}
+
+/// v0.7.2 `draw_face`: 칸 경계를 기기 픽셀에서 반올림해 배율이 달라도 칸이 고르다.
+/// 안티에일리어싱 없는 메시로 그려야 칸 사이가 번지지 않는다.
+fn paint_pixel_face(p: &Paint, rect: Rect, skin: &str, gauge: f64, phase: f64, active: bool, stage: i32) {
+    let pixels = crate::pixel_faces::cells(skin, gauge, phase, active, stage);
+    let dpr = p.ui.ctx().pixels_per_point() as f64;
+    let (gw, gh) = crate::pixel_faces::GRID;
+    let unit = (rect.width() as f64 / gw as f64).min(rect.height() as f64 / gh as f64) * dpr;
+    if pixels.is_empty() || unit <= 0.0 {
+        return;
+    }
+    let left = pixels.keys().map(|c| c.0).min().unwrap_or(0);
+    let top = pixels.keys().map(|c| c.1).min().unwrap_or(0);
+    let width = (pixels.keys().map(|c| c.0).max().unwrap_or(left) - left + 1) as f64;
+    let height = (pixels.keys().map(|c| c.1).max().unwrap_or(top) - top + 1) as f64;
+    let ox = (rect.center().x as f64 * dpr - width * unit / 2.0).round_ties_even();
+    let oy = (rect.center().y as f64 * dpr - height * unit / 2.0).round_ties_even();
+    let at = |o: f64, n: i32| ((o + (n as f64 * unit).round_ties_even()) / dpr) as f32;
+    let mut mesh = egui::Mesh::default();
+    for ((cx, cy), key) in pixels {
+        let Some(color) = crate::pixel_faces::palette_hex(skin, key) else {
+            continue;
+        };
+        let min = Pos2::new(at(ox, cx - left), at(oy, cy - top));
+        let max = Pos2::new(at(ox, cx - left + 1), at(oy, cy - top + 1));
+        mesh.add_colored_rect(Rect::from_min_max(min, max), hex(color, 255));
+    }
+    p.ui.painter().add(egui::Shape::mesh(mesh));
 }
 
 fn scoped(snap: &MeterSnapshot, today: bool) -> (i64, i64, i64, f64, f64) {
@@ -4858,10 +4616,9 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
                 yy += SETTINGS_GROUP_GAP * s;
                 yy = paint_section(&p, x, yy, iw, "최소화");
                 yy = paint_setting_chips(&mut p, x, yy, iw, &[
-                    ("skin:bar", "막대", app.s_skin == "bar"),
-                    ("skin:dial", "원형", app.s_skin == "dial"),
-                    ("skin:horse", "택시", app.s_skin == "horse"),
-                    ("skin:loot", "코인", app.s_skin == "loot"),
+                    ("skin:bar", "기본 미터", app.s_skin == "bar"),
+                    ("skin:dial", "픽셀 다이얼", app.s_skin == "dial"),
+                    ("skin:loot", "픽셀 코인", app.s_skin == "loot"),
                 ]);
                 yy += SETTINGS_GROUP_GAP * s;
                 yy = paint_toggles(&mut p, x, yy, iw, &[
@@ -5022,15 +4779,7 @@ mod tests {
     }
 
     #[test]
-    fn loot_gain_labels_format_token_and_money() {
-        assert!(loot_gain_labels(1.0, 100, 1.0, 100).is_empty());
-        assert_eq!(loot_gain_labels(1.0, 100, 1.0, 128), vec!["+28"]);
-        assert_eq!(loot_gain_labels(1.0, 100, 1.12, 100), vec!["+$0.12"]);
-        assert_eq!(loot_gain_labels(1.0, 100, 1.12, 128), vec!["+28", "+$0.12"]);
-    }
-
-    #[test]
-    fn widget_skin_shrinks_s_window() {
+    fn pixel_face_is_the_mini_look_only() {
         let mut app = OverlayApp::from_prefs(Arc::new(Mutex::new(MeterSnapshot::default())), false);
         app.expanded = false;
         app.rows_on = false;
@@ -5038,12 +4787,15 @@ mod tests {
         app.palette_open = false;
         app.scale = 1.0;
         app.s_skin = "bar".into();
-        let (bw, _) = app.window_size(0, 0, 0);
+        let s_bar = app.window_size(0, 0, 0);
         app.s_skin = "dial".into();
-        let (dw, dh) = app.window_size(0, 0, 0);
-        assert!(dw < bw);
-        assert!(dh > 100.0);
+        assert_eq!(app.window_size(0, 0, 0), s_bar, "S 는 스킨과 무관하게 기본 계기판");
+        assert_eq!(app.widget_skin(), None);
+        app.mini = true;
+        assert_eq!(app.window_size(0, 0, 0), crate::pixel_faces::MINI_SIZE);
         assert_eq!(app.widget_skin(), Some("dial"));
+        app.s_skin = s_skin_name("horse").into();
+        assert_eq!(app.widget_skin(), Some("loot"), "택시를 고른 사람은 픽셀 코인으로");
     }
 
     #[test]

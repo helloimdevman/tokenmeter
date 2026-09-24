@@ -724,7 +724,7 @@ fn route_key(delta: &TokenDelta) -> String {
     format!(
         "{}\u{1f}{}\u{1f}{}\u{1f}{}",
         Label::Client.clean(client),
-        Label::Route.clean(&crate::board::endpoint_label(&delta.endpoint)),
+        Label::Route.clean(&crate::board::public_label(&delta.endpoint)),
         plan,
         crate::pricing::public_model(&delta.model)
     )
@@ -1307,5 +1307,30 @@ mod tests {
         let line = fs::read_to_string(data_dir().join("hours.jsonl")).unwrap();
         assert!(line.contains("\"r\""), "{line}");
         assert_eq!(meter.state["hour"]["r"].as_object().unwrap().len(), 1, "새 시간은 새 경로 장부");
+    }
+
+    #[test]
+    fn league_route_ignores_the_legacy_public_endpoints_list() {
+        let (_g, tmp) = crate::test_home("route-public");
+        let dir = tmp.join("config/tokenmeter");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("services.yaml"), "settings:\n  leaderboard:\n    public_endpoints: [\"llm.mycorp.com\"]\n").unwrap();
+        let url = "https://llm.mycorp.com/v1";
+        assert_eq!(crate::board::endpoint_label(url), "llm.mycorp.com", "레거시 리더보드는 그대로");
+        let mut meter = Meter::new();
+        meter.ingest(TokenDelta {
+            service: "claude-code".into(),
+            session: "s1".into(),
+            endpoint: url.into(),
+            plan: "api".into(),
+            model: "claude-opus-5-5".into(),
+            output_tokens: 10,
+            ..TokenDelta::default()
+        });
+        let r = &meter.state["hour"]["r"];
+        assert!(r.get("claude-code\u{1f}self-hosted\u{1f}api\u{1f}claude-opus-5").is_some(), "{r}");
+        let upload = crate::sync::build(&json!({"hour": meter.state["hour"].clone()}), true, "", crate::watch::now_secs() as i64).0;
+        let text = serde_json::to_string(&upload).unwrap();
+        assert!(!text.contains("mycorp") && text.contains("self-hosted"), "{text}");
     }
 }

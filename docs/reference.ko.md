@@ -285,7 +285,7 @@ mycorp.openai.azure.com      →    azure-openai  (테넌트명 제거)
 ```yaml
 settings:
   leaderboard:
-    public_endpoints: ["llm.mycorp.com"]   # 이때부터 이름 그대로 올라간다
+    public_endpoints: ["llm.mycorp.com"]   # 레거시 리더보드에만 이름 그대로 올라간다(리그 통계는 self-hosted)
 ```
 
 ---

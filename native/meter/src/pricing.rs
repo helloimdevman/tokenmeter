@@ -26,39 +26,46 @@ fn key(name: &str) -> String {
     name.trim().to_lowercase().replace(['_', ' '], "-")
 }
 
-fn built_in(model: &str) -> Price {
+/// 첫 번째로 맞는 행이 이긴다. (계열 이름, (input, cache_read, cache_write, output, window))
+fn family_row(model: &str) -> Option<(&'static str, (f64, f64, f64, f64, i64))> {
     let n = key(model);
-    let row = if n.contains("fable-5.1") || n.contains("fable-5-1") {
-        (10.0, 0.25, 12.5, 50.0, 1_000_000)
+    Some(if n.contains("fable-5.1") || n.contains("fable-5-1") {
+        ("claude-fable-5.1", (10.0, 0.25, 12.5, 50.0, 1_000_000))
     } else if n.contains("claude-fable-5") || n.contains("fable") {
-        (10.0, 1.0, 12.5, 50.0, 1_000_000)
+        ("claude-fable-5", (10.0, 1.0, 12.5, 50.0, 1_000_000))
     } else if n.contains("claude-opus-5") {
-        (5.0, 0.5, 6.25, 25.0, 1_000_000)
+        ("claude-opus-5", (5.0, 0.5, 6.25, 25.0, 1_000_000))
     } else if n.contains("claude-opus-4.8") || n.contains("opus") {
-        (5.0, 0.5, 6.25, 25.0, 200_000)
+        ("claude-opus-4.8", (5.0, 0.5, 6.25, 25.0, 200_000))
     } else if n.contains("claude-sonnet-5") {
-        (2.0, 0.2, 2.5, 10.0, 1_000_000)
+        ("claude-sonnet-5", (2.0, 0.2, 2.5, 10.0, 1_000_000))
     } else if n.contains("claude-sonnet-4.6") || n.contains("sonnet") {
-        (3.0, 0.3, 3.75, 15.0, 200_000)
+        ("claude-sonnet-4.6", (3.0, 0.3, 3.75, 15.0, 200_000))
     } else if n.contains("claude-haiku-4.5") || n.contains("haiku") {
-        (1.0, 0.1, 1.25, 5.0, 200_000)
+        ("claude-haiku-4.5", (1.0, 0.1, 1.25, 5.0, 200_000))
     } else if n.contains("gpt-5.6-luna") || n.contains("luna") {
-        (0.2, 0.02, 0.2, 1.2, 400_000)
+        ("gpt-5.6-luna", (0.2, 0.02, 0.2, 1.2, 400_000))
     } else if n.contains("gpt-5.6-terra") || n.contains("terra") {
-        (2.0, 0.2, 2.0, 12.0, 400_000)
+        ("gpt-5.6-terra", (2.0, 0.2, 2.0, 12.0, 400_000))
     } else if n.contains("gpt-5.6-sol") || n.contains("gpt-5.6") || n.contains("sol") {
-        (5.0, 0.5, 5.0, 30.0, 400_000)
+        ("gpt-5.6-sol", (5.0, 0.5, 5.0, 30.0, 400_000))
     } else if n.contains("gpt-5.4") {
-        (2.5, 0.25, 2.5, 15.0, 400_000)
+        ("gpt-5.4", (2.5, 0.25, 2.5, 15.0, 400_000))
     } else if n.contains("deepseek") && n.contains("flash") {
-        (0.14, 0.014, 0.14, 0.28, 128_000)
+        ("deepseek-flash", (0.14, 0.014, 0.14, 0.28, 128_000))
     } else if n.contains("deepseek") {
-        (0.435, 0.0435, 0.435, 0.87, 128_000)
+        ("deepseek", (0.435, 0.0435, 0.435, 0.87, 128_000))
     } else if n.contains("grok-4.6-build") {
-        (2.0, 0.5, 2.0, 6.0, 500_000)
+        ("grok-4.6-build", (2.0, 0.5, 2.0, 6.0, 500_000))
     } else if n.contains("grok") {
-        (2.0, 0.5, 2.0, 6.0, 256_000)
+        ("grok", (2.0, 0.5, 2.0, 6.0, 256_000))
     } else {
+        return None;
+    })
+}
+
+fn built_in(model: &str) -> Price {
+    let Some((_, row)) = family_row(model) else {
         return DEFAULT;
     };
     Price {
@@ -68,6 +75,14 @@ fn built_in(model: &str) -> Price {
         output: row.3,
         window: row.4,
     }
+}
+
+/// 서버에 올려도 되는 모델 이름: 기본 가격표의 계열 이름, 아니면 "other".
+/// 사용자가 덮어쓴 가격은 세지 않는다 — 사내 배포 이름은 기기를 떠나지 않는다.
+/// ponytail: 계열 단위라 세부 버전은 합쳐진다. 프로바이더 사전(별도 스펙)이 생기면 표준 모델 ID로 바꾼다.
+pub fn public_model(raw: &str) -> &'static str {
+    let last = raw.rsplit('/').next().unwrap_or(raw);
+    family_row(last).map(|(family, _)| family).unwrap_or("other")
 }
 
 fn config_dir() -> PathBuf {
@@ -290,5 +305,23 @@ mod tests {
         assert!(unset_price("nemotron-3-ultra"));
         assert!(!unset_price("nemotron-3-ultra"));
         assert!(close(cost_usd("nemotron-3-ultra", 1_000_000, 0, 0, 0), 3.0));
+    }
+
+    #[test]
+    fn public_model_reports_built_in_families_only() {
+        let (_g, _tmp) = crate::test_home("public-model");
+        assert_eq!(public_model("claude-opus-5-5"), "claude-opus-5");
+        assert_eq!(
+            public_model("arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/us.anthropic.claude-sonnet-5-v1:0"),
+            "claude-sonnet-5"
+        );
+        assert_eq!(public_model("openrouter/anthropic/claude-haiku-4.5"), "claude-haiku-4.5");
+        assert_eq!(public_model("gpt-5.6-sol"), "gpt-5.6-sol");
+        assert_eq!(public_model("acme-internal-llm"), "other");
+        let dir = std::path::PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tokenmeter");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("prices.json"), r#"{"acme-internal-llm": {"input": 1, "output": 2}}"#).unwrap();
+        assert!(known("acme-internal-llm"), "사용자 가격이 있으면 로컬에서는 아는 모델");
+        assert_eq!(public_model("acme-internal-llm"), "other", "그래도 이름은 밖으로 안 나간다");
     }
 }

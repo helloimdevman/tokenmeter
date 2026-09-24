@@ -101,7 +101,7 @@ npx skills add helloimdevman/tokenmeter -g -a claude-code
 - 사용자 설정: `${XDG_CONFIG_HOME:-~/.config}/tokenmeter`.
 - 한도(`tokenmeter quota`)는 이미 저장된 Claude/Codex/Grok 자격 증명으로 잔여 창만 읽습니다. 세션 로그는 보내지 않습니다.
 - 금액은 **API 환산 추정**입니다. 청구서가 아닙니다.
-- 익명 사용 통계는 동의할 때만 보냅니다. 설치할 때 한 번 묻고, `tokenmeter share on|off`로 바꿉니다. 도구·경로 라벨·모델 계열별 시간당 토큰 수를 TokenMeter 서버로 보내며, 프롬프트·코드·경로·프로젝트명·세션 ID·사설 호스트 이름·사용자 모델 이름은 보내지 않습니다. `tokenmeter share preview`는 다음에 보낼 내용을 보여 주고, `tokenmeter account delete`는 보낸 데이터를 지웁니다. 자세한 내용: [docs/protocol](docs/protocol/README.md)
+- 익명 사용 통계는 동의할 때만 보냅니다. 설치할 때 한 번 묻고, `tokenmeter share on|off`로 바꿉니다. 공유를 켠 때부터(껐다 켜면 그때부터 다시) 도구·경로 라벨·모델 계열별 시간당 토큰 수를 TokenMeter 서버로 보내며, 프롬프트·코드·경로·프로젝트명·세션 ID·사설 호스트 이름·사용자 모델 이름은 보내지 않습니다. `tokenmeter share preview`는 다음에 보낼 내용을 보여 주고, `tokenmeter account delete`는 보낸 데이터를 지웁니다. 자세한 내용: [docs/protocol](docs/protocol/README.md)
 - 레거시 `leaderboard.endpoint`는 직접 켜기 전까지 꺼져 있습니다.
 
 ## Token League

@@ -101,7 +101,7 @@ It provides `/tm`, `/tm-meter`, `/tm-measure`, and `/tm-doctor`.
 - User overrides: `${XDG_CONFIG_HOME:-~/.config}/tokenmeter`.
 - Quota (`tokenmeter quota`) reuses already-stored Claude/Codex/Grok credentials to read remaining plan windows. Session logs are not sent.
 - Dollar amounts are **API-list estimates**, not invoices.
-- Anonymous usage sharing is opt-in: the installer asks once, and `tokenmeter share on|off` changes it. It sends hourly token counts per tool, route label and model family to the TokenMeter server — never prompts, code, paths, project names, session ids, private hostnames or custom model names. `tokenmeter share preview` shows the next upload and `tokenmeter account delete` removes what was sent. Details: [docs/protocol](docs/protocol/README.md).
+- Anonymous usage sharing is opt-in: the installer asks once, and `tokenmeter share on|off` changes it. It sends hourly token counts per tool, route label and model family to the TokenMeter server, only for hours from the moment you turn it on (off and on again starts over) — never prompts, code, paths, project names, session ids, private hostnames or custom model names. `tokenmeter share preview` shows the next upload and `tokenmeter account delete` removes what was sent. Details: [docs/protocol](docs/protocol/README.md).
 - A leftover self-hosted `leaderboard.endpoint` stays off until you set it.
 
 ## Token League

@@ -4,7 +4,7 @@ use crate::cli::{load_toggle, save_toggle};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 
-const PROMPT: &str = "\n  익명 사용 통계를 보낼까요? 도구·모델·경로별 시간당 토큰 수와 추정 비용만 보냅니다.\n  프롬프트·코드·파일 경로·프로젝트명은 보내지 않습니다. 미리 보기: tokenmeter share preview\n  보내기 [Y/n] ";
+const PROMPT: &str = "\n  익명 사용 통계를 보낼까요? 켠 때부터 도구·경로 라벨·요금제·모델 계열별 시간당 토큰 수,\n  요청 수, 추정 비용, 시간 합과 플랫폼·버전을 보냅니다.\n  프롬프트·코드·파일 경로·프로젝트명은 보내지 않습니다. 미리 보기: tokenmeter share preview\n  보내기 [Y/n] ";
 const OFF_HINT: &str = "익명 사용 통계는 꺼져 있습니다 · 켜기: tokenmeter share on";
 
 pub fn answer() -> Option<bool> {
@@ -17,8 +17,18 @@ pub fn on() -> bool {
 
 pub fn set(on: bool) {
     let mut toggle = load_toggle();
+    // 꺼져 있다가 켤 때만 시각을 적는다. 그 전에 끝난 칸은 보내지 않는다(sync::build).
+    // 정수 초로 둔다 — serde_json 기본 파서는 소수 끝자리를 정확히 되돌리지 못한다.
+    if on && toggle.get("share") != Some(&json!(true)) {
+        toggle["share_since"] = json!(crate::watch::now_secs().floor());
+    }
     toggle["share"] = json!(on);
     save_toggle(&toggle);
+}
+
+/// 공유를 마지막으로 켠 유닉스 초. 없으면 0.
+pub fn since() -> f64 {
+    load_toggle().get("share_since").and_then(Value::as_f64).unwrap_or(0.0)
 }
 
 pub fn parse_answer(line: &str) -> Option<bool> {
@@ -69,6 +79,9 @@ pub fn caption() -> String {
     if s.upgrade_for == crate::VERSION {
         return "켜짐 · 서버가 새 버전을 요구합니다 — tokenmeter update now".into();
     }
+    if s.fails > 0 {
+        return "켜짐 · 전송 재시도 중 — tokenmeter share preview".into();
+    }
     if s.last_ok > 0.0 {
         let c = crate::history::civil_of(s.last_ok);
         return format!("켜짐 · 마지막 전송 {:02}/{:02} {:02}:{:02}", c.month, c.day, c.hour, c.minute);
@@ -99,5 +112,32 @@ mod tests {
         for (line, want) in [("\n", Some(true)), ("Y", Some(true)), ("예", Some(true)), ("n", Some(false)), ("아니요", Some(false)), ("maybe", None)] {
             assert_eq!(parse_answer(line), want, "{line:?}");
         }
+    }
+
+    #[test]
+    fn since_is_written_only_when_sharing_turns_on() {
+        let (_g, _tmp) = crate::test_home("share-since");
+        assert_eq!(since(), 0.0);
+        std::fs::create_dir_all(data_dir()).unwrap();
+        std::fs::write(data_dir().join("toggle.json"), r#"{"share": true, "share_since": 5}"#).unwrap();
+        set(true);
+        assert_eq!(since(), 5.0, "이미 켜져 있으면 그대로");
+        set(false);
+        assert_eq!(since(), 5.0);
+        set(true);
+        assert!(since() > 5.0, "껐다 켜면 그 시각부터 다시");
+    }
+
+    #[test]
+    fn caption_shows_retries_and_prompt_names_every_field() {
+        let (_g, _tmp) = crate::test_home("share-caption");
+        std::fs::create_dir_all(data_dir()).unwrap();
+        std::fs::write(data_dir().join("toggle.json"), r#"{"share": true}"#).unwrap();
+        std::fs::write(data_dir().join("league-sync.json"), r#"{"last_ok": 100, "fails": 2}"#).unwrap();
+        assert!(caption().contains("재시도"), "{}", caption());
+        for field in ["요금제", "요청 수", "추정 비용", "시간 합", "플랫폼·버전", "켠 때부터"] {
+            assert!(PROMPT.contains(field), "{field}");
+        }
+        assert!(!PROMPT.contains("만 보냅니다"));
     }
 }

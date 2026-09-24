@@ -19,7 +19,7 @@ jobs:
             tag: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -34,7 +34,7 @@ jobs:
           cp native/target/release/tokenmeter "dist/tokenmeter-${{ matrix.tag }}"
           cp native/target/release/tokenmeter-hook "dist/tokenmeter-hook-${{ matrix.tag }}"
           (cd dist && shasum -a 256 tokenmeter-${{ matrix.tag }} tokenmeter-hook-${{ matrix.tag }} > SHA256SUMS)
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-${{ matrix.tag }}
           path: dist/
@@ -42,7 +42,7 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: shellcheck install.sh skills/tokenmeter/tm

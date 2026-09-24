@@ -13,6 +13,7 @@ pub mod overlay;
 pub mod pixel_faces;
 pub mod pricing;
 pub mod quota;
+pub mod share;
 pub mod watch;
 
 pub const VERSION: &str = "0.0.2";

@@ -10,6 +10,7 @@ use crate::live_rate::LiveRate;
 use crate::overlay::snapshot_from;
 use crate::pricing;
 use crate::quota;
+use crate::share;
 use crate::watch::{
     expand_home, load_all_specs, now_secs, ServiceReader, ServiceSpec,
 };
@@ -210,7 +211,7 @@ fn kill_daemon() -> bool {
         .unwrap_or(false)
 }
 
-fn load_toggle() -> Value {
+pub(crate) fn load_toggle() -> Value {
     let v: Value = fs::read_to_string(data_dir().join("toggle.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -222,7 +223,7 @@ fn load_toggle() -> Value {
     }
 }
 
-fn save_toggle(data: &Value) {
+pub(crate) fn save_toggle(data: &Value) {
     let _ = fs::create_dir_all(data_dir());
     let _ = fs::write(data_dir().join("toggle.json"), data.to_string());
 }
@@ -349,6 +350,9 @@ fn cmd_install(args: &Args) -> i32 {
             println!("  데몬을 띄웠습니다.");
         }
         activation();
+        for line in share::ask_once() {
+            println!("  {line}");
+        }
     }
     0
 }
@@ -517,6 +521,7 @@ fn cmd_doctor(args: &Args) -> i32 {
                 "native_meter": true,
                 "native_hook": install::hook_bin().is_file(),
                 "league": league::caption(),
+                "share": share::on(),
                 "services": specs.iter().map(doctor_service_json).collect::<Vec<_>>(),
             })
         );
@@ -531,6 +536,7 @@ fn cmd_doctor(args: &Args) -> i32 {
     }
     println!();
     println!("  리그    : {}", league::caption());
+    println!("  공유    : {}", share::caption());
     0
 }
 
@@ -850,6 +856,7 @@ fn cmd_status(args: &Args) -> i32 {
         state.get("live_count").and_then(Value::as_u64).unwrap_or(0)
     );
     println!("  리그    : {}", league::caption());
+    println!("  공유    : {}", share::caption());
     let unknown: Vec<String> = state
         .get("models")
         .and_then(Value::as_object)
@@ -1255,11 +1262,34 @@ fn cmd_league(args: &Args) -> i32 {
     }
 }
 
+fn cmd_share(args: &Args) -> i32 {
+    match args.rest.first().map(String::as_str) {
+        None | Some("status") => {
+            println!("  공유    : {}", share::caption());
+            0
+        }
+        Some("on") => {
+            share::set(true);
+            println!("  익명 사용 통계를 켰습니다. 보낼 내용: tokenmeter share preview");
+            0
+        }
+        Some("off") => {
+            share::set(false);
+            println!("  익명 사용 통계를 껐습니다. 이미 보낸 데이터까지 지우려면: tokenmeter account delete");
+            0
+        }
+        _ => {
+            println!("사용법: tokenmeter share [on|off|status|preview]");
+            1
+        }
+    }
+}
+
 fn print_help() {
     println!("usage: tokenmeter [-h] <명령>");
     println!("TokenMeter {VERSION} — 에이전트 토큰 자동 측정 + 미터/랭킹 오버레이");
     println!(
-        "명령: install uninstall on off meter update services doctor quota status team receipt price daemon start stop watch overlay reset adapter league"
+        "명령: install uninstall on off meter update services doctor quota status team receipt price daemon start stop watch overlay reset adapter league share account"
     );
 }
 
@@ -1298,6 +1328,7 @@ pub fn run(argv: &[String]) -> i32 {
         "reset" => cmd_reset(&args),
         "adapter" => cmd_adapter(&args),
         "league" => cmd_league(&args),
+        "share" => cmd_share(&args),
         "daemon" => crate::daemon::run(on(&args, "no-window") || on(&args, "no-overlay")),
         _ => {
             eprintln!("알 수 없는 명령: {}", args.cmd);

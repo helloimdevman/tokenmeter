@@ -25,6 +25,7 @@ fn command(root: &Path, bin: &Path, args: &[&str]) -> Command {
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_STATE_HOME", root.join("xdg-state"))
         .env("TOKENMETER_NO_DAEMON", "1")
+        .env("TOKENMETER_NO_PROMPT", "1")
         .current_dir(root)
         .stdin(Stdio::null());
     cmd

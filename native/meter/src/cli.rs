@@ -18,6 +18,7 @@ use crate::VERSION;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -1289,6 +1290,40 @@ fn cmd_share(args: &Args) -> i32 {
     }
 }
 
+fn cmd_account(args: &Args) -> i32 {
+    if args.rest.first().map(String::as_str) != Some("delete") {
+        println!("사용법: tokenmeter account delete [--yes]");
+        return 1;
+    }
+    let Some(token) = crate::server::device_token() else {
+        println!("  서버에 보낸 데이터가 없습니다.");
+        return 0;
+    };
+    if !on(args, "yes") {
+        print!("  서버에 있는 이 기기의 사용 데이터를 모두 지웁니다. 계속할까요? [y/N] ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes" | "예") {
+            println!("  취소했습니다.");
+            return 1;
+        }
+    }
+    match crate::server::delete_account(&token) {
+        Ok(()) | Err(crate::server::ApiError::Status(401, _)) => {
+            crate::server::forget_device();
+            crate::sync::forget();
+            crate::share::set(false);
+            println!("  서버의 사용 데이터를 지우고 공유를 껐습니다.");
+            0
+        }
+        Err(e) => {
+            println!("  지우지 못했습니다({e:?}). 잠시 뒤 다시 시도하세요.");
+            1
+        }
+    }
+}
+
 fn print_help() {
     println!("usage: tokenmeter [-h] <명령>");
     println!("TokenMeter {VERSION} — 에이전트 토큰 자동 측정 + 미터/랭킹 오버레이");
@@ -1333,6 +1368,7 @@ pub fn run(argv: &[String]) -> i32 {
         "adapter" => cmd_adapter(&args),
         "league" => cmd_league(&args),
         "share" => cmd_share(&args),
+        "account" => cmd_account(&args),
         "daemon" => crate::daemon::run(on(&args, "no-window") || on(&args, "no-overlay")),
         _ => {
             eprintln!("알 수 없는 명령: {}", args.cmd);
@@ -1432,5 +1468,18 @@ mod tests {
         fields.sort();
         assert_eq!(fields, ["attention", "attention_at", "ctx", "ctx_window", "last_seen", "model", "project", "service", "started_at"]);
         assert_eq!((sessions[0]["ctx"].clone(), sessions[0]["ctx_window"].clone()), (json!(20), json!(100)));
+    }
+
+    #[test]
+    fn account_delete_removes_server_data_and_the_local_device() {
+        let (_g, _tmp) = crate::test_home("account-delete");
+        let (url, seen) = crate::server::fake::serve(vec![(204, "")]);
+        crate::server::fake::use_server(&url);
+        fs::create_dir_all(data_dir()).unwrap();
+        fs::write(data_dir().join("device.json"), r#"{"device_id":"d1","token":"tmd_x"}"#).unwrap();
+        crate::share::set(true);
+        assert_eq!(run(&["account".into(), "delete".into(), "--yes".into()]), 0);
+        assert!(seen.recv().unwrap().starts_with("DELETE /v1/account"));
+        assert!(!data_dir().join("device.json").exists() && !crate::share::on());
     }
 }

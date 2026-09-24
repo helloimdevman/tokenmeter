@@ -15,6 +15,7 @@ pub mod pricing;
 pub mod quota;
 pub mod server;
 pub mod share;
+pub mod sync;
 pub mod watch;
 
 pub const VERSION: &str = "0.0.2";

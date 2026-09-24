@@ -62,11 +62,18 @@ pub fn ask_once() -> Vec<String> {
 }
 
 pub fn caption() -> String {
-    if on() {
-        "켜짐 · 보낼 내용: tokenmeter share preview".into()
-    } else {
-        "꺼짐 — tokenmeter share on".into()
+    if !on() {
+        return "꺼짐 — tokenmeter share on".into();
     }
+    let s = crate::sync::load();
+    if s.upgrade_for == crate::VERSION {
+        return "켜짐 · 서버가 새 버전을 요구합니다 — tokenmeter update now".into();
+    }
+    if s.last_ok > 0.0 {
+        let c = crate::history::civil_of(s.last_ok);
+        return format!("켜짐 · 마지막 전송 {:02}/{:02} {:02}:{:02}", c.month, c.day, c.hour, c.minute);
+    }
+    "켜짐 · 아직 보내지 않음".into()
 }
 
 #[cfg(test)]

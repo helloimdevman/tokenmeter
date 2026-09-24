@@ -1278,6 +1278,10 @@ fn cmd_share(args: &Args) -> i32 {
             println!("  익명 사용 통계를 껐습니다. 이미 보낸 데이터까지 지우려면: tokenmeter account delete");
             0
         }
+        Some("preview") => {
+            println!("{}", crate::sync::preview(&crate::engine::Meter::load().state));
+            0
+        }
         _ => {
             println!("사용법: tokenmeter share [on|off|status|preview]");
             1

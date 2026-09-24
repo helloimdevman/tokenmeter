@@ -147,6 +147,7 @@ pub fn run(no_window: bool) -> i32 {
             if room_open {
                 crate::league::tick(&status, rate.rate);
             }
+            crate::sync::tick(&status);
             if crate::board::online() && last_board.elapsed().as_secs_f64() >= crate::board::sync_seconds()
             {
                 crate::board::sync(&status, false);
@@ -154,6 +155,7 @@ pub fn run(no_window: bool) -> i32 {
             }
             thread::sleep(tick);
         }
+        crate::sync::flush(&meter.state);
         let _ = fs::remove_file(pid_file());
     });
 

@@ -35,7 +35,7 @@ pub fn room_open() -> bool {
 }
 pub fn tick(_status: &Value, _tps: f64) {}
 
-fn soon() -> i32 {
+pub fn soon() -> i32 {
     println!("{SOON}");
     0
 }

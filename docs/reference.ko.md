@@ -305,8 +305,8 @@ settings:
 | `price unset <모델>` | 지정한 단가를 지웁니다 |
 | `status [--scope today\|total] [--sync]` | 누적·오늘·세션 토큰, **벤더/요금제/모델/클라이언트/프로젝트별 토큰·호출·세션·비용**, 리그 한 줄, 라이브 세션. `--sync` 는 레거시 자체 호스팅 랭킹 |
 | `status --json` | 내부 경로·세션 ID·라우팅 URL을 제외한 공개 상태 스냅샷 한 개를 출력 |
-| `daemon [--no-overlay]` | 네이티브 워처 + 리그 + 오버레이. 훅이 자동으로 띄웁니다 |
-| `league login\|open\|join\|leave\|close` | Token League. 오버레이는 OAuth 를 열지 않는다 |
+| `daemon [--no-overlay]` | 네이티브 워처 + 오버레이 + 익명 사용 통계 전송(공유를 켰을 때만). 훅이 자동으로 띄웁니다 |
+| `league …` | Token League 방은 다음 릴리스에서 열린다. 지금은 안내만 출력하고 네트워크를 쓰지 않는다 |
 | `share on\|off\|status\|preview` | 익명 사용 통계. 설치 때 한 번 묻는다. `preview`는 다음 업로드 JSON |
 | `account delete [--yes]` | 이 기기가 서버에 보낸 데이터 삭제, 공유 끔 |
 | `start` / `stop` | 훅이 없는 환경에서 라이브 세션을 수동 등록/해제 |

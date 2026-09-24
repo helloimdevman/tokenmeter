@@ -32,8 +32,11 @@ pub fn parse_answer(line: &str) -> Option<bool> {
 /// `/dev/tty`로 한 번만 묻는다(`curl | sh`에서는 표준 입력이 스크립트다).
 /// 터미널이 없으면(CI 등) 답을 적지 않고 꺼진 채로 둔다.
 pub fn ask_once() -> Vec<String> {
-    if answer().is_some() || cfg!(test) || std::env::var("TOKENMETER_NO_PROMPT").is_ok() {
+    if answer().is_some() {
         return Vec::new();
+    }
+    if cfg!(test) || std::env::var("TOKENMETER_NO_PROMPT").is_ok() {
+        return vec![OFF_HINT.into()];
     }
     let Ok(tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") else {
         return vec![OFF_HINT.into()];
@@ -76,6 +79,8 @@ mod tests {
         let (_g, _tmp) = crate::test_home("share");
         assert_eq!(answer(), None);
         assert!(!on() && caption().starts_with("꺼짐"));
+        assert_eq!(ask_once(), [OFF_HINT], "묻지 못하면 켜는 명령만 알린다");
+        assert_eq!(answer(), None, "묻지 못했으면 답을 적지 않는다");
         std::fs::create_dir_all(data_dir()).unwrap();
         std::fs::write(data_dir().join("toggle.json"), r#"{"auto_update": true}"#).unwrap();
         set(true);

@@ -1814,8 +1814,8 @@ impl eframe::App for OverlayApp {
             hover,
             &self.mini_opacity,
         );
-        // 전환 중에는 egui 가 스스로 다시 그려 화면 주사율로 바뀐다.
-        let k = if self.reduce_motion {
+        // 전환 중에는 egui 가 스스로 다시 그려 화면 주사율로 바뀐다. S/M/L 은 애니메이션 없이 늘 1.0.
+        let k = if self.reduce_motion || !self.mini {
             k_target
         } else {
             ctx.animate_value_with_time(egui::Id::new("tokenmeter-mini-alpha"), k_target, 0.15)

@@ -1043,6 +1043,10 @@ struct OverlayApp {
     mini_hover: bool,
     all_spaces: bool,
     settings_frames: u32,
+    menubar: String,
+    menubar_value: String,
+    #[cfg(target_os = "macos")]
+    status: Option<crate::macos::StatusItem>,
     scale: f32,
     rows_on: bool,
     on_top: bool,
@@ -1362,6 +1366,8 @@ impl OverlayApp {
             "mini_opacity": self.mini_opacity,
             "mini_hover": self.mini_hover,
             "all_spaces": self.all_spaces,
+            "menubar": self.menubar,
+            "menubar_value": self.menubar_value,
         });
         let _ = std::fs::write(prefs_path(), v.to_string());
     }
@@ -1463,6 +1469,10 @@ impl OverlayApp {
             mini_hover: p.get("mini_hover").and_then(Value::as_bool).unwrap_or(true),
             all_spaces: p.get("all_spaces").and_then(Value::as_bool).unwrap_or(true),
             settings_frames: 0,
+            menubar: if p.get("menubar").and_then(Value::as_str) == Some("folded") { "folded".into() } else { "always".into() },
+            menubar_value: if p.get("menubar_value").and_then(Value::as_str) == Some("cost") { "cost".into() } else { "rate".into() },
+            #[cfg(target_os = "macos")]
+            status: None,
             scale: p
                 .get("scale")
                 .and_then(Value::as_f64)
@@ -1796,6 +1806,8 @@ impl eframe::App for OverlayApp {
         }
         // 숨긴 동안 설정 뷰포트는 그려지지 않아 egui가 지운다. 다시 열면 새 창이라 첫 프레임을 다시 숨긴다.
         if self.hidden || !self.settings_open { self.settings_frames = 0; }
+        #[cfg(target_os = "macos")]
+        self.tick_status(ctx);
         if self.hidden {
             for cmd in self
                 .viewport
@@ -1920,6 +1932,72 @@ impl eframe::App for OverlayApp {
 }
 
 impl OverlayApp {
+    /// 메뉴 명령을 처리하고 메뉴바 막대·숫자·메뉴를 맞춘다. 창을 숨겨 둬도 80ms마다 돈다.
+    #[cfg(target_os = "macos")]
+    fn tick_status(&mut self, ctx: &egui::Context) {
+        use crate::macos::{MenuState, StatusCmd};
+        use crate::menubar::{caption, lit, padded, tooltip, Readout};
+        if let Some(cmd) = crate::macos::take_cmd() {
+            match cmd {
+                StatusCmd::Toggle if self.hidden => {
+                    self.hidden = false;
+                    ctx.request_repaint();
+                }
+                StatusCmd::Toggle => self.fold(),
+                StatusCmd::Settings => {
+                    self.hidden = false;
+                    self.settings_open = true;
+                    ctx.request_repaint();
+                }
+                StatusCmd::ValueRate | StatusCmd::ValueCost => {
+                    self.menubar_value = if cmd == StatusCmd::ValueCost { "cost" } else { "rate" }.into();
+                    self.save_prefs();
+                }
+                StatusCmd::BarAlways | StatusCmd::BarFolded => {
+                    self.menubar = if cmd == StatusCmd::BarFolded { "folded" } else { "always" }.into();
+                    self.save_prefs();
+                }
+                StatusCmd::AllSpaces => {
+                    self.all_spaces = !self.all_spaces;
+                    crate::macos::set_all_spaces(self.all_spaces);
+                    self.save_prefs();
+                }
+                StatusCmd::Quit => {
+                    self.save_prefs();
+                    crate::daemon::request_stop();
+                }
+            }
+        }
+        let (rate, full, today) = self
+            .shared
+            .lock()
+            .map(|g| (g.rate, g.full_scale, g.status.pointer("/today/totals/cost_usd").and_then(Value::as_f64).unwrap_or(0.0)))
+            .unwrap_or((0.0, DEFAULT_FULL_SCALE, 0.0));
+        let readout = if self.menubar_value == "cost" { Readout::Cost } else { Readout::Rate };
+        let menu = MenuState {
+            open: !self.hidden,
+            cost: readout == Readout::Cost,
+            folded_only: self.menubar == "folded",
+            all_spaces: self.all_spaces,
+            lang: self.lang.clone(),
+        };
+        let Some(status) = self.status.as_mut() else { return };
+        let dark = status.dark();
+        status.set_bar(lit(gauge_target(rate, full)), dark);
+        status.set_text(&padded(readout, &caption(readout, rate, today)), &tooltip(&self.lang, rate, today));
+        status.set_visible(!menu.folded_only || self.hidden);
+        status.set_menu(&menu);
+    }
+
+    /// 창을 메뉴바로 접는다(기존 닫기와 같은 상태).
+    #[cfg(target_os = "macos")]
+    fn fold(&mut self) {
+        self.hidden = true;
+        self.settings_open = false;
+        self.palette_open = false;
+        self.save_prefs();
+    }
+
     fn tick_shots(&mut self, _ctx: &egui::Context) {
         let Some(dir) = self.shot_dir.clone() else {
             return;
@@ -4854,9 +4932,13 @@ pub fn run_overlay_hidden(shared: SharedMeter, hidden: bool) -> eframe::Result<(
             visuals.panel_fill = Color32::TRANSPARENT;
             visuals.window_fill = Color32::TRANSPARENT;
             cc.egui_ctx.set_visuals(visuals);
-            let app = OverlayApp::from_prefs(shared, hidden);
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+            let mut app = OverlayApp::from_prefs(shared, hidden);
             #[cfg(target_os = "macos")]
-            crate::macos::set_all_spaces(app.all_spaces);
+            {
+                crate::macos::set_all_spaces(app.all_spaces);
+                app.status = crate::macos::StatusItem::create();
+            }
             Ok(Box::new(app))
         }),
     )
@@ -5015,6 +5097,7 @@ mod tests {
         let app = OverlayApp::from_prefs(shared(), false);
         assert_eq!((app.mini_opacity.as_str(), app.mini_hover), ("mid", true));
         assert!(app.all_spaces);
+        assert_eq!((app.menubar.as_str(), app.menubar_value.as_str()), ("always", "rate"));
         std::fs::write(prefs_path(), r#"{"mini_opacity":"strong","mini_hover":false}"#).unwrap();
         let app = OverlayApp::from_prefs(shared(), false);
         assert_eq!((app.mini_opacity.as_str(), app.mini_hover), ("strong", false));
@@ -5025,5 +5108,16 @@ mod tests {
         assert_eq!(OverlayApp::from_prefs(shared(), false).mini_opacity, "mid");
         std::fs::write(prefs_path(), r#"{"all_spaces":false}"#).unwrap();
         assert!(!OverlayApp::from_prefs(shared(), false).all_spaces);
+        std::fs::write(prefs_path(), r#"{"menubar":"folded","menubar_value":"cost"}"#).unwrap();
+        let mut app = OverlayApp::from_prefs(shared(), false);
+        assert_eq!((app.menubar.as_str(), app.menubar_value.as_str()), ("folded", "cost"));
+        // 메뉴에서만 바뀌는 세 키가 save_prefs 에서 빠지면 실패한다.
+        app.all_spaces = false;
+        app.save_prefs();
+        let back = load_prefs();
+        assert_eq!(
+            (back["all_spaces"].as_bool(), back["menubar"].as_str(), back["menubar_value"].as_str()),
+            (Some(false), Some("folded"), Some("cost"))
+        );
     }
 }

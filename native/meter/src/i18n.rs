@@ -60,6 +60,12 @@ pub fn tr(lang: &str, text: &str) -> String {
         "오버레이 숨기기 · 측정 계속" => "Hide overlay · keep measuring".into(),
         "TokenMeter 종료 · 측정 중지" => "Quit TokenMeter · stop measuring".into(),
         "TokenMeter 열기" => "Open TokenMeter".into(),
+        "TokenMeter 접기" => "Fold TokenMeter".into(),
+        "숫자: 속도" => "Number: Speed".into(),
+        "숫자: 오늘 비용" => "Number: Today's cost".into(),
+        "메뉴바 미터: 항상 표시" => "Menu bar meter: Always".into(),
+        "메뉴바 미터: 창을 접었을 때만" => "Menu bar meter: When folded".into(),
+        "전체화면·모든 데스크톱에 표시" => "Show over full screen and all desktops".into(),
         "오늘/누적 · S/M/L · 설정" => "Today/Total · S/M/L · Settings".into(),
         "오늘/누적 · " => "Today/Total · ".into(),
         "S/M/L · ⋯ 메뉴" => "S/M/L · ⋯ menu".into(),
@@ -238,6 +244,7 @@ mod tests {
     fn english_swaps_settings_title() {
         assert_eq!(tr("ko", "설정"), "설정");
         assert_eq!(tr("en", "설정"), "Settings");
+        assert_eq!(tr("en", "TokenMeter 접기"), "Fold TokenMeter");
         assert_eq!(normalize("EN"), "en");
     }
 }

@@ -38,8 +38,8 @@ the same check on each hour before sending and drops the hours that fail.
 | sharing on | device token, platform and version, and per local hour: tool, route label, plan, model family, token counts, request count, estimated cost, timing sums |
 | never | prompts, code, file paths, project names, session ids, private endpoint hostnames, custom service or model names |
 
-- Only hours from the moment you turn sharing on are sent. Turning it off and on again starts over
-  from that moment; hours recorded while it was off are never sent.
+- Hours that ended before you turned sharing on are never sent; the hour you turn it on in is sent
+  whole. Turning it off and on again starts over from that hour.
 - Route labels are public API hosts (`api.anthropic.com`), `bedrock`, `vertex`, `azure-openai`,
   `self-hosted` for every other address, or `unknown`.
 - Model names are built-in price families (`claude-opus-5`); anything else is `other`.

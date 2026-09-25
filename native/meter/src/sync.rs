@@ -148,9 +148,8 @@ fn add(hours: &mut Vec<HourCells>, size: &mut usize, hour: HourCells, share: boo
 
 /// 다음 업로드: `synced_through` 뒤의 지난 칸(오래된 것부터, 최대 MAX_HOURS)과,
 /// 자리가 남으면 `state.hour`의 지금 칸. 새 커서와 아직 남은 칸이 있는지도 돌려준다.
-/// 공유를 켜기 전에 끝난 칸은 보내지 않고 커서만 지나간다. 지금 칸은 켠 시간의 칸이라 보낸다.
-pub fn build(state_now: &Value, share: bool, synced_through: &str, now: i64) -> (UsageUpload, String, bool) {
-    let since = crate::share::since();
+/// `since`(공유를 켠 유닉스 초) 전에 끝난 칸은 보내지 않고 커서만 지나간다. 지금 칸은 켠 시간의 칸이라 보낸다.
+pub fn build(state_now: &Value, share: bool, synced_through: &str, since: f64, now: i64) -> (UsageUpload, String, bool) {
     let mut hours = Vec::new();
     let mut size = 0;
     let mut cursor = synced_through.to_string();
@@ -271,7 +270,7 @@ pub fn run_once(state_now: &Value, timeout: Duration) -> Result<usize, ApiError>
     let mut cursor = s.synced_through.clone();
     let result = server::ensure_device().and_then(|token| -> Result<Option<(usize, bool)>, ApiError> {
         // M1은 공유가 켜져 있을 때만 보내므로 share=false 본문은 만들지 않는다(M2 로그인 때 합계 셀).
-        let (upload, next, more) = build(state_now, true, &s.synced_through, now as i64);
+        let (upload, next, more) = build(state_now, true, &s.synced_through, crate::share::since(), now as i64);
         cursor = next;
         // config·기기 발급에 최대 30초가 걸린다. 그사이 공유를 껐으면 보내지 않는다.
         if !wanted() {
@@ -335,9 +334,11 @@ pub fn flush(state_now: &Value) {
     RUNNING.store(false, Ordering::SeqCst);
 }
 
-/// 공유를 켰을 때 다음 업로드에 들어갈 JSON.
+/// 다음 업로드에 들어갈 JSON. 공유가 꺼져 있으면 지금 켰을 때 보낼 것(켠 시각 = 지금)을 보여 준다.
 pub fn preview(state_now: &Value) -> String {
-    let (upload, _, _) = build(state_now, true, &load().synced_through, crate::watch::now_secs() as i64);
+    let now = crate::watch::now_secs();
+    let since = if crate::share::on() { crate::share::since() } else { now };
+    let (upload, _, _) = build(state_now, true, &load().synced_through, since, now as i64);
     serde_json::to_string_pretty(&upload).unwrap_or_default()
 }
 
@@ -369,18 +370,18 @@ mod tests {
         fs::write(data_dir().join("hours.jsonl"), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
         let state_now = json!({"hour": {"h": h4, "p": {}, "r": book("claude-opus-5", 5)}});
 
-        let (up, cursor, more) = build(&state_now, true, &h1, now as i64);
+        let (up, cursor, more) = build(&state_now, true, &h1, 0.0, now as i64);
         assert_eq!(up.hours.iter().map(|h| h.cells[0].output_tokens).collect::<Vec<_>>(), [30, 5]);
         assert_eq!((cursor.as_str(), more), (h3.as_str(), false));
         assert_eq!(validate(&up, now as i64), Ok(()));
         assert!(!serde_json::to_string(&up).unwrap().contains("\"x\""), "프로젝트 칸은 나가지 않는다");
 
-        let (again, cursor2, _) = build(&state_now, true, &cursor, now as i64);
+        let (again, cursor2, _) = build(&state_now, true, &cursor, 0.0, now as i64);
         assert_eq!(again.hours.len(), 1, "지금 칸만 다시 간다");
         assert_eq!(cursor2, cursor);
 
         let stale = json!({"hour": {"h": hour_key(now - 40.0 * 86_400.0), "r": book("claude-opus-5", 5)}});
-        assert!(build(&stale, true, &cursor, now as i64).0.hours.is_empty(), "40일 전 지금 칸은 보내지 않는다");
+        assert!(build(&stale, true, &cursor, 0.0, now as i64).0.hours.is_empty(), "40일 전 지금 칸은 보내지 않는다");
     }
 
     #[test]
@@ -390,7 +391,7 @@ mod tests {
         let mut both = book("claude-opus-5", 10);
         both.as_object_mut().unwrap().extend(book("gpt-5.6-sol", 20).as_object().unwrap().clone());
         let state_now = json!({"hour": {"h": hour_key(now), "r": both}});
-        let (up, _, _) = build(&state_now, false, "", now as i64);
+        let (up, _, _) = build(&state_now, false, "", 0.0, now as i64);
         let c = &up.hours[0].cells;
         assert_eq!((c.len(), c[0].model.as_str(), c[0].output_tokens, c[0].gap_ms), (1, ALL, 30, 1800));
         assert_eq!(validate(&up, now as i64), Ok(()));
@@ -465,13 +466,30 @@ mod tests {
         ]);
         let state_now = json!({"hour": {"h": hour_key(now), "r": book("claude-opus-5", 4)}});
         share_on_since(now - 4.0 * 3600.0);
-        let (up, cursor, _) = build(&state_now, true, "", now as i64);
+        let (up, cursor, _) = build(&state_now, true, "", crate::share::since(), now as i64);
         assert_eq!((sent(&up), cursor.as_str()), (vec![2, 3, 4], new.as_str()), "켜기 전에 끝난 칸은 빠진다");
         share_on_since(now - 2.0 * 3600.0);
-        assert_eq!(sent(&build(&state_now, true, "", now as i64).0), [3, 4], "껐다 켜면 그 사이 칸도 안 간다");
+        assert_eq!(sent(&build(&state_now, true, "", crate::share::since(), now as i64).0), [3, 4], "껐다 켜면 그 사이 칸도 안 간다");
         share_on_since(now);
-        let (up, cursor, _) = build(&state_now, true, "", now as i64);
+        let (up, cursor, _) = build(&state_now, true, "", crate::share::since(), now as i64);
         assert_eq!((sent(&up), cursor.as_str()), (vec![4], new.as_str()), "지금 칸은 가고, 커서는 건너뛴 칸을 지나간다");
+    }
+
+    #[test]
+    fn preview_while_off_shows_only_what_turning_on_would_send() {
+        let (_g, _tmp) = crate::test_home("sync-preview");
+        let now = crate::watch::now_secs();
+        write_hours(&[
+            json!({"h": hour_key(now - 3.0 * 3600.0), "r": book("claude-opus-5", 1)}),
+            json!({"h": hour_key(now - 3600.0), "r": book("claude-opus-5", 2)}),
+        ]);
+        let state_now = json!({"hour": {"h": hour_key(now), "r": book("claude-opus-5", 3)}});
+        let shown = || sent(&serde_json::from_str(&preview(&state_now)).unwrap());
+        assert_eq!(shown(), [3], "켠 적이 없으면 켜는 순간과 같이 지금 칸만");
+        share_on_since(now - 2.0 * 3600.0);
+        assert_eq!(shown(), [2, 3], "켜져 있으면 켠 뒤에 끝난 칸과 지금 칸");
+        crate::share::set(false);
+        assert_eq!(shown(), [3], "끈 뒤에는 옛 시각이 남아도 꺼진 동안의 칸을 보이지 않는다");
     }
 
     #[test]
@@ -492,7 +510,7 @@ mod tests {
         ]);
         // 서쪽으로 옮기면 지금 칸의 키가 지난 칸과 같을 수 있다.
         let state_now = json!({"hour": {"h": b, "r": book("claude-opus-5", 5)}});
-        let (up, _, more) = build(&state_now, true, "", now as i64);
+        let (up, _, more) = build(&state_now, true, "", 0.0, now as i64);
         assert_eq!(validate(&up, now as i64), Ok(()));
         assert_eq!((sent(&up), more), (vec![3, 5], false), "미래 t·셀 200개 초과는 빠지고 같은 t는 뒤의 것만");
     }
@@ -506,7 +524,7 @@ mod tests {
             wide.extend(book(&format!("m{i}"), 1).as_object().unwrap().clone());
         }
         write_hours(&(1..=40).rev().map(|k| json!({"h": hour_key(now - k as f64 * 3600.0), "r": wide})).collect::<Vec<_>>());
-        let (up, cursor, more) = build(&json!({}), true, "", now as i64);
+        let (up, cursor, more) = build(&json!({}), true, "", 0.0, now as i64);
         let body = serde_json::to_string(&up).unwrap().len();
         assert!(more && body <= 200_000 + 100, "{body} bytes, {} hours", up.hours.len());
         assert_eq!(cursor, hour_key(up.hours.last().unwrap().t as f64), "커서는 담은 마지막 칸까지");

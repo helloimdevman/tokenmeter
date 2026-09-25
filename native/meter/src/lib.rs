@@ -9,6 +9,7 @@ pub mod i18n;
 pub mod install;
 pub mod league;
 pub mod live_rate;
+pub mod menubar;
 pub mod overlay;
 pub mod pixel_faces;
 pub mod pricing;

@@ -71,7 +71,7 @@ const BASIC_PANELS: &[&str] = &["sessions", "projects", "quota", "board"];
 const SESSION_FILTERS: &[&str] = &["live", "archive", "all"];
 
 #[derive(Clone)]
-struct Theme {
+pub(crate) struct Theme {
     background_primary: Color32,
     surface_glass: Color32,
     surface_glass_elevated: Color32,
@@ -99,7 +99,7 @@ fn hex(s: &str, a: u8) -> Color32 {
     )
 }
 
-fn theme_named(name: &str) -> Theme {
+pub(crate) fn theme_named(name: &str) -> Theme {
     if name == "light" {
         Theme {
             background_primary: hex("#E7ECF2", 255),
@@ -137,7 +137,7 @@ fn theme_named(name: &str) -> Theme {
     }
 }
 
-fn fade(c: Color32, a: u8) -> Color32 {
+pub(crate) fn fade(c: Color32, a: u8) -> Color32 {
     rgba(c.r(), c.g(), c.b(), a)
 }
 
@@ -349,7 +349,7 @@ fn comma_rate(rate: f64) -> String {
     format!("{}.{}", comma_int(int), frac)
 }
 
-fn money_caption(approx: bool, amount: f64) -> String {
+pub(crate) fn money_caption(approx: bool, amount: f64) -> String {
     let text = format!("${:.2}", amount);
     let text = if amount.abs() >= 1000.0 {
         let int = amount.trunc() as i64;
@@ -442,7 +442,7 @@ fn s_skin_name(value: &str) -> &'static str {
     }
 }
 
-fn mini_rate_caption(value: f64) -> String {
+pub(crate) fn mini_rate_caption(value: f64) -> String {
     let mut scaled = value.max(0.0);
     let mut unit = "";
     for suffix in ["k", "M", "G", "T", "P"] {
@@ -1596,7 +1596,7 @@ impl Paint<'_> {
     }
 }
 
-fn seg_color(theme: &Theme, position: f32) -> Color32 {
+pub(crate) fn seg_color(theme: &Theme, position: f32) -> Color32 {
     if position < 0.55 {
         theme.success
     } else if position < 0.8 {

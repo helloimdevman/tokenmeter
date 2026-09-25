@@ -160,17 +160,28 @@ pub fn run(no_window: bool) -> i32 {
         let _ = fs::remove_file(pid_file());
     });
 
-    let code = if no_window {
+    if no_window {
         while !STOP.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(200));
         }
-        0
-    } else {
-        crate::overlay::run_window(shared, !runtime.settings.overlay_auto)
-    };
+    } else if let Err(err) = crate::overlay::run_overlay_hidden(shared, !runtime.settings.overlay_auto) {
+        if crate::overlay::OVERLAY_STARTED.load(Ordering::Relaxed) {
+            // 떠 있던 창이 끊겼으면(컴포지터 종료 등) 끝내서 다음 훅이 창 있는 데몬을 다시 띄우게 한다.
+            eprintln!("[TokenMeter] 오버레이 실패: {err}");
+        } else {
+            // 화면이 없으면(헤드리스 리눅스·SSH) 훅이 띄운 데몬도 창 없이 측정을 이어 간다.
+            // 창을 부르면(overlay.show) 끝내서, 화면 있는 다음 훅이 창 있는 데몬을 띄우게 한다.
+            eprintln!("[TokenMeter] 오버레이 실패, 창 없이 측정합니다: {err}");
+            let show = data_dir().join("overlay.show");
+            let _ = fs::remove_file(&show);
+            while !STOP.load(Ordering::Relaxed) && !show.exists() {
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
     STOP.store(true, Ordering::Relaxed);
     let _ = watch.join();
-    code
+    0
 }
 
 fn league_room_open() -> bool {

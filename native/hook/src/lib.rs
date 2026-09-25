@@ -76,12 +76,24 @@ pub fn is_live_daemon_command(cmd: &str) -> bool {
     {
         return false;
     }
-    let has_bin = cmd.contains("/tokenmeter ")
-        || cmd.contains("/tokenmeter\t")
-        || cmd.trim_end().ends_with("/tokenmeter")
-        || cmd.contains("\\tokenmeter ")
-        || cmd.trim_end().ends_with("\\tokenmeter");
-    has_bin && cmd.contains("daemon")
+    let cmd = cmd.trim();
+    // 경로가 있든 없든(PATH 로 띄움) argv[0] 이 `tokenmeter` 인 곳 뒤의 인자.
+    // 폴더 이름이 "tokenmeter 2" 처럼 겹칠 수 있어 후보를 모두 본다.
+    let mut rests = ["/tokenmeter", "\\tokenmeter"]
+        .iter()
+        .flat_map(|b| cmd.match_indices(b).map(move |(i, _)| &cmd[i + b.len()..]))
+        .chain(cmd.strip_prefix("tokenmeter"))
+        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace));
+    // meter cli.rs parse 와 같게: 인자 없음·플래그로 시작·daemon·watch 는 daemon::run 을 돈다.
+    rests.any(|r| {
+        let mut args = r.split_whitespace();
+        match args.next() {
+            None | Some("daemon") => true,
+            // `watch --jsonl` 은 스냅샷만 흘리고 데몬을 돌지 않는다.
+            Some("watch") => !args.any(|a| a == "--jsonl"),
+            Some(arg) => arg.starts_with('-') && !matches!(arg, "-h" | "--help" | "-V" | "--version"),
+        }
+    })
 }
 
 pub fn meter_bin() -> Option<PathBuf> {
@@ -720,6 +732,27 @@ mod tests {
         assert!(is_live_daemon_command(
             "/Users/x/tokenmeter/bin/tokenmeter daemon --no-window"
         ));
+        assert!(is_live_daemon_command("tokenmeter daemon --no-window"), "PATH 로 띄운 데몬");
+        // 인자 없음·플래그로 시작·watch 도 daemon::run 을 돈다 (meter cli.rs parse, cmd_watch).
+        for cmd in [
+            "tokenmeter",
+            "/x/tokenmeter\n",
+            "tokenmeter --no-window",
+            "/x/tokenmeter watch",
+            "/x/tokenmeter 2/bin/tokenmeter daemon",
+        ] {
+            assert!(is_live_daemon_command(cmd), "{cmd}");
+        }
+        for cmd in [
+            "tokenmeter status",
+            "/x/tokenmeter --help",
+            "/x/tokenmeter -V",
+            "/x/tokenmeters daemon",
+            "/x/tokenmeter 2/bin/tokenmeter status",
+            "tokenmeter watch --jsonl",
+        ] {
+            assert!(!is_live_daemon_command(cmd), "{cmd}");
+        }
         assert!(!is_live_daemon_command(
             "/opt/homebrew/Cellar/python@3.14/Resources/Python.app/Contents/MacOS/Python -m tokenmeter.cli daemon"
         ));

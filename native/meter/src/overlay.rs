@@ -71,7 +71,7 @@ const BASIC_PANELS: &[&str] = &["sessions", "projects", "quota", "board"];
 const SESSION_FILTERS: &[&str] = &["live", "archive", "all"];
 
 #[derive(Clone)]
-struct Theme {
+pub(crate) struct Theme {
     background_primary: Color32,
     surface_glass: Color32,
     surface_glass_elevated: Color32,
@@ -99,7 +99,7 @@ fn hex(s: &str, a: u8) -> Color32 {
     )
 }
 
-fn theme_named(name: &str) -> Theme {
+pub(crate) fn theme_named(name: &str) -> Theme {
     if name == "light" {
         Theme {
             background_primary: hex("#E7ECF2", 255),
@@ -137,7 +137,7 @@ fn theme_named(name: &str) -> Theme {
     }
 }
 
-fn fade(c: Color32, a: u8) -> Color32 {
+pub(crate) fn fade(c: Color32, a: u8) -> Color32 {
     rgba(c.r(), c.g(), c.b(), a)
 }
 
@@ -277,6 +277,70 @@ fn install_cjk_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// 미니의 불투명도. 투명도 줄이기·설정/팔레트·커서가 먼저고, 그 밖엔 고른 농도.
+fn mini_alpha(mini: bool, reduce_transparency: bool, panels_open: bool, hover: bool, level: &str) -> f32 {
+    if !mini || reduce_transparency || panels_open || hover {
+        return 1.0;
+    }
+    match level {
+        "light" => 0.85,
+        "strong" => 0.55,
+        _ => 0.70,
+    }
+}
+
+/// eframe 기본 지움 색(`epi.rs:215-219`, 덮어쓰면 기본 구현을 부를 수 없어 같은 식을 옮김).
+/// 미니와 숨긴 창은 투명하게 지운다: 기본값(알파 180)이 깔리면 미니가 70% 아래로 흐려지지 않고,
+/// 숨긴 채 시작하는 첫 프레임에 어두운 사각이 비친다.
+fn clear_rgba(mini_look: bool, hidden: bool) -> [f32; 4] {
+    if mini_look || hidden {
+        [0.0; 4]
+    } else {
+        Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
+    }
+}
+
+/// 커서가 메인 창 위에 있는지. macOS 는 전역 커서로 본다(winit 은 이동 이벤트를 키 창에만 보내
+/// 비활성 앱에서는 egui hover 가 오지 않는다).
+fn cursor_over(ctx: &egui::Context) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        ctx.input(|i| i.viewport().outer_rect).map(crate::macos::cursor_over).unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ctx.input(|i| i.pointer.hover_pos().is_some())
+    }
+}
+
+/// 저장한 창 윗부분 띠(창 너비 × 24pt)가 화면 하나와 겹치면 그 자리, 아니면 기본 (40, 80).
+fn restore_pos(saved: [f32; 2], screens: &[Rect], width: f32) -> Pos2 {
+    let at = Pos2::new(saved[0], saved[1]);
+    let strip = Rect::from_min_size(at, Vec2::new(width, 24.0));
+    if screens.iter().any(|s| s.intersects(strip)) {
+        at
+    } else {
+        Pos2::new(40.0, 80.0)
+    }
+}
+
+/// 창을 둘 수 있는 화면(egui 좌표). macOS 는 모든 모니터, 그 밖은 지금 모니터 하나.
+/// 모니터 정보가 없으면 저장 위치를 그대로 쓴다.
+fn screens(ctx: &egui::Context) -> Vec<Rect> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = ctx;
+        crate::macos::screens()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match ctx.input(|i| i.viewport().monitor_size) {
+            Some(size) => vec![Rect::from_min_size(Pos2::ZERO, size)],
+            None => vec![Rect::EVERYTHING],
+        }
+    }
+}
+
 pub fn gauge_target(rate: f64, full_scale: f64) -> f64 {
     let scale = full_scale.max(1.0);
     ((rate / scale).clamp(0.0, 1.0)).sqrt()
@@ -349,7 +413,7 @@ fn comma_rate(rate: f64) -> String {
     format!("{}.{}", comma_int(int), frac)
 }
 
-fn money_caption(approx: bool, amount: f64) -> String {
+pub(crate) fn money_caption(approx: bool, amount: f64) -> String {
     let text = format!("${:.2}", amount);
     let text = if amount.abs() >= 1000.0 {
         let int = amount.trunc() as i64;
@@ -442,7 +506,7 @@ fn s_skin_name(value: &str) -> &'static str {
     }
 }
 
-fn mini_rate_caption(value: f64) -> String {
+pub(crate) fn mini_rate_caption(value: f64) -> String {
     let mut scaled = value.max(0.0);
     let mut unit = "";
     for suffix in ["k", "M", "G", "T", "P"] {
@@ -975,6 +1039,14 @@ struct OverlayApp {
     theme_mode: String,
     reduce_transparency: bool,
     reduce_motion: bool,
+    mini_opacity: String,
+    mini_hover: bool,
+    all_spaces: bool,
+    settings_frames: u32,
+    menubar: String,
+    menubar_value: String,
+    #[cfg(target_os = "macos")]
+    status: Option<crate::macos::StatusItem>,
     scale: f32,
     rows_on: bool,
     on_top: bool,
@@ -1291,6 +1363,11 @@ impl OverlayApp {
             "lang": self.lang,
             "reduce_transparency": self.reduce_transparency,
             "reduce_motion": self.reduce_motion,
+            "mini_opacity": self.mini_opacity,
+            "mini_hover": self.mini_hover,
+            "all_spaces": self.all_spaces,
+            "menubar": self.menubar,
+            "menubar_value": self.menubar_value,
         });
         let _ = std::fs::write(prefs_path(), v.to_string());
     }
@@ -1383,6 +1460,19 @@ impl OverlayApp {
                 .get("reduce_motion")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            mini_opacity: p
+                .get("mini_opacity")
+                .and_then(Value::as_str)
+                .filter(|s| matches!(*s, "light" | "mid" | "strong"))
+                .unwrap_or("mid")
+                .into(),
+            mini_hover: p.get("mini_hover").and_then(Value::as_bool).unwrap_or(true),
+            all_spaces: p.get("all_spaces").and_then(Value::as_bool).unwrap_or(true),
+            settings_frames: 0,
+            menubar: if p.get("menubar").and_then(Value::as_str) == Some("folded") { "folded".into() } else { "always".into() },
+            menubar_value: if p.get("menubar_value").and_then(Value::as_str) == Some("cost") { "cost".into() } else { "rate".into() },
+            #[cfg(target_os = "macos")]
+            status: None,
             scale: p
                 .get("scale")
                 .and_then(Value::as_f64)
@@ -1433,7 +1523,8 @@ impl OverlayApp {
             peak: 0.0,
             pulse: 0.0,
             league_marks: HashMap::new(),
-            viewport: ViewportState::new(hidden),
+            // 첫 프레임에 Visible(false)를 내야 숨는다: eframe은 첫 프레임 뒤 창을 강제로 보이게 하고(epi_integration.rs:306-311) 그 다음에 앱의 창 명령을 적용한다(glow_integration.rs:707 → :732).
+            viewport: ViewportState::new(false),
             pos,
             placed: false,
             feedback: String::new(),
@@ -1596,7 +1687,7 @@ impl Paint<'_> {
     }
 }
 
-fn seg_color(theme: &Theme, position: f32) -> Color32 {
+pub(crate) fn seg_color(theme: &Theme, position: f32) -> Color32 {
     if position < 0.55 {
         theme.success
     } else if position < 0.8 {
@@ -1685,6 +1776,15 @@ fn hit_test(hits: &[(String, Rect)], pos: Pos2) -> Option<String> {
 }
 
 impl eframe::App for OverlayApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // 숨김은 창을 실제로 숨길 수 있는 macOS 에서만 투명하게 지운다. Wayland 는 Visible(false) 가
+        // 아무것도 하지 않아(winit wayland/window/mod.rs:253) 투명하게 지우면 보이지 않는 창이 클릭을 먹는다.
+        clear_rgba(
+            self.mini && !self.palette_open && !self.hidden,
+            self.hidden && cfg!(target_os = "macos"),
+        )
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if crate::daemon::stopping() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -1695,6 +1795,7 @@ impl eframe::App for OverlayApp {
         if show.exists() {
             let _ = std::fs::remove_file(&show);
             self.hidden = false;
+            ctx.request_repaint();
         }
         if ctx.input(|i| i.viewport().close_requested()) {
             self.hidden = true;
@@ -1703,6 +1804,10 @@ impl eframe::App for OverlayApp {
             self.save_prefs();
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
         }
+        // 숨긴 동안 설정 뷰포트는 그려지지 않아 egui가 지운다. 다시 열면 새 창이라 첫 프레임을 다시 숨긴다.
+        if self.hidden || !self.settings_open { self.settings_frames = 0; }
+        #[cfg(target_os = "macos")]
+        self.tick_status(ctx);
         if self.hidden {
             for cmd in self
                 .viewport
@@ -1758,14 +1863,29 @@ impl eframe::App for OverlayApp {
         };
         let mut hits = Vec::new();
         let skin = self.widget_skin().is_some();
+        let hover = self.mini_hover && cursor_over(ctx);
+        let k_target = mini_alpha(
+            self.mini,
+            self.reduce_transparency,
+            self.settings_open || self.palette_open,
+            hover,
+            &self.mini_opacity,
+        );
+        // 전환 중에는 egui 가 스스로 다시 그려 화면 주사율로 바뀐다. S/M/L 은 애니메이션 없이 늘 1.0.
+        let k = if self.reduce_motion || !self.mini {
+            k_target
+        } else {
+            ctx.animate_value_with_time(egui::Id::new("tokenmeter-mini-alpha"), k_target, 0.15)
+        };
         let fill = if skin {
             Color32::TRANSPARENT
         } else {
             fade(theme.surface_glass, alpha)
         };
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(fill))
+            .frame(egui::Frame::NONE.fill(fill.gamma_multiply(k)))
             .show(ctx, |ui| {
+                ui.multiply_opacity(k);
                 ui.set_min_size(Vec2::new(ww, hh));
                 let full = ui.max_rect();
                 if !skin {
@@ -1792,14 +1912,9 @@ impl eframe::App for OverlayApp {
             paint_settings_viewport(ctx, self);
         }
         if !self.placed {
-            let screen = ctx.input(|i| i.screen_rect());
-            let inside = screen.contains(Pos2::new(self.pos[0], self.pos[1]));
-            let x0 = if inside { self.pos[0] } else { screen.min.x + 40.0 };
-            let y0 = if inside { self.pos[1] } else { screen.min.y + 80.0 };
-            let x = x0.clamp(screen.min.x, (screen.max.x - ww).max(screen.min.x));
-            let y = y0.clamp(screen.min.y, (screen.max.y - hh).max(screen.min.y));
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(x, y)));
-            self.pos = [x, y];
+            let at = restore_pos(self.pos, &screens(ctx), ww);
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+            self.pos = [at.x, at.y];
             self.placed = true;
             self.save_prefs();
         }
@@ -1817,6 +1932,73 @@ impl eframe::App for OverlayApp {
 }
 
 impl OverlayApp {
+    /// 메뉴 명령을 처리하고 메뉴바 막대·숫자·메뉴를 맞춘다. 창을 숨겨 둬도 80ms마다 돈다.
+    #[cfg(target_os = "macos")]
+    fn tick_status(&mut self, ctx: &egui::Context) {
+        use crate::macos::{MenuState, StatusCmd};
+        use crate::menubar::{caption, lit, padded, tooltip, Readout};
+        if let Some(cmd) = crate::macos::take_cmd() {
+            match cmd {
+                StatusCmd::Toggle if self.hidden => {
+                    self.hidden = false;
+                    ctx.request_repaint();
+                }
+                StatusCmd::Toggle => self.fold(),
+                StatusCmd::Settings => {
+                    self.hidden = false;
+                    self.settings_open = true;
+                    self.palette_open = false;
+                    ctx.request_repaint();
+                }
+                StatusCmd::ValueRate | StatusCmd::ValueCost => {
+                    self.menubar_value = if cmd == StatusCmd::ValueCost { "cost" } else { "rate" }.into();
+                    self.save_prefs();
+                }
+                StatusCmd::BarAlways | StatusCmd::BarFolded => {
+                    self.menubar = if cmd == StatusCmd::BarFolded { "folded" } else { "always" }.into();
+                    self.save_prefs();
+                }
+                StatusCmd::AllSpaces => {
+                    self.all_spaces = !self.all_spaces;
+                    crate::macos::set_all_spaces(self.all_spaces);
+                    self.save_prefs();
+                }
+                StatusCmd::Quit => {
+                    self.save_prefs();
+                    crate::daemon::request_stop();
+                }
+            }
+        }
+        let (rate, full, today) = self
+            .shared
+            .lock()
+            .map(|g| (g.rate, g.full_scale, g.status.pointer("/today/totals/cost_usd").and_then(Value::as_f64).unwrap_or(0.0)))
+            .unwrap_or((0.0, DEFAULT_FULL_SCALE, 0.0));
+        let readout = if self.menubar_value == "cost" { Readout::Cost } else { Readout::Rate };
+        let menu = MenuState {
+            open: !self.hidden,
+            cost: readout == Readout::Cost,
+            folded_only: self.menubar == "folded",
+            all_spaces: self.all_spaces,
+            lang: self.lang.clone(),
+        };
+        let Some(status) = self.status.as_mut() else { return };
+        let dark = status.dark();
+        status.set_bar(lit(gauge_target(rate, full)), dark);
+        status.set_text(&padded(readout, &caption(readout, rate, today)), &tooltip(&self.lang, rate, today));
+        status.set_visible(!menu.folded_only || self.hidden);
+        status.set_menu(&menu);
+    }
+
+    /// 창을 메뉴바로 접는다(기존 닫기와 같은 상태).
+    #[cfg(target_os = "macos")]
+    fn fold(&mut self) {
+        self.hidden = true;
+        self.settings_open = false;
+        self.palette_open = false;
+        self.save_prefs();
+    }
+
     fn tick_shots(&mut self, _ctx: &egui::Context) {
         let Some(dir) = self.shot_dir.clone() else {
             return;
@@ -2154,6 +2336,16 @@ impl OverlayApp {
             self.mini = self.s_skin != "bar";
             self.face_phase = 0.0;
             self.money_stage = 0;
+            self.save_prefs();
+            return;
+        }
+        if let Some(level) = target.strip_prefix("mini_opacity:") {
+            self.mini_opacity = level.into();
+            self.save_prefs();
+            return;
+        }
+        if target == "command:mini_hover" {
+            self.mini_hover = !self.mini_hover;
             self.save_prefs();
             return;
         }
@@ -4254,7 +4446,8 @@ fn settings_body_h(app: &OverlayApp) -> f32 {
     let mut h = SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_SEC_GAP
         + SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_GROUP_GAP
         + SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_GROUP_GAP
-        + SETTING_ROW_H * 4.0 + SETTINGS_SEC_GAP
+        + SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_GROUP_GAP
+        + SETTING_ROW_H * 5.0 + SETTINGS_SEC_GAP
         + SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_SEC_GAP
         + SETTING_HEAD_H + SETTING_ROW_H * 4.0;
     let extra = settings_extra_rows(app);
@@ -4568,12 +4761,15 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
     let h = (SETTINGS_CHROME * 2.0 + SETTINGS_PAD * 2.0 + settings_body_h(app) + FOOT_H) * s;
     let id = egui::ViewportId::from_hash_of("tokenmeter-settings");
     let title = crate::i18n::tr(&app.lang, "TokenMeter 설정");
+    // macOS: 새 설정 창은 첫 프레임만 숨겨 두고 모든 Space 속성을 붙인 뒤 보인다.
+    let first = cfg!(target_os = "macos") && app.settings_frames == 0;
     let builder = egui::ViewportBuilder::default()
         .with_title(title)
         .with_decorations(false)
         .with_always_on_top()
         .with_transparent(true)
-        .with_inner_size([w, h]);
+        .with_inner_size([w, h])
+        .with_visible(!first);
     let mut clicked = String::new();
     ctx.show_viewport_immediate(id, builder, |ctx, _| {
         if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(Key::Escape)) {
@@ -4621,11 +4817,19 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
                     ("skin:loot", "픽셀 코인", app.s_skin == "loot"),
                 ]);
                 yy += SETTINGS_GROUP_GAP * s;
+                yy = paint_section(&p, x, yy, iw, "미니 투명도");
+                yy = paint_setting_chips(&mut p, x, yy, iw, &[
+                    ("mini_opacity:light", "약하게", app.mini_opacity == "light"),
+                    ("mini_opacity:mid", "보통", app.mini_opacity == "mid"),
+                    ("mini_opacity:strong", "강하게", app.mini_opacity == "strong"),
+                ]);
+                yy += SETTINGS_GROUP_GAP * s;
                 yy = paint_toggles(&mut p, x, yy, iw, &[
                     ("command:transparency", "투명도 줄이기", app.reduce_transparency),
                     ("command:motion", "모션 줄이기", app.reduce_motion),
                     ("command:top", "항상 위", app.on_top),
                     ("command:mini", "미니 모드", app.mini),
+                    ("command:mini_hover", "마우스 올리면 선명하게", app.mini_hover),
                 ]);
                 yy += SETTINGS_SEC_GAP * s;
                 yy = paint_section(&p, x, yy, iw, "크기");
@@ -4670,6 +4874,13 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
             }
         }
     });
+    #[cfg(target_os = "macos")]
+    if first {
+        crate::macos::set_all_spaces(app.all_spaces);
+        // 숨긴 첫 프레임 다음 프레임에서 바로 보이게.
+        ctx.request_repaint();
+    }
+    app.settings_frames = app.settings_frames.saturating_add(1);
     if clicked == "dismiss" {
         app.settings_open = false;
     } else if !clicked.is_empty() {
@@ -4697,6 +4908,9 @@ pub fn run_overlay(shared: SharedMeter) -> eframe::Result<()> {
     run_overlay_hidden(shared, false)
 }
 
+/// 창이 한 번이라도 떴는지. 데몬은 뜨기 전의 실패(화면 없음)만 창 없이 버틴다.
+pub static OVERLAY_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn run_overlay_hidden(shared: SharedMeter, hidden: bool) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -4707,18 +4921,28 @@ pub fn run_overlay_hidden(shared: SharedMeter, hidden: bool) -> eframe::Result<(
             .with_transparent(true)
             .with_visible(!hidden)
             .with_title("TokenMeter"),
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(crate::macos::accessory_event_loop)),
         ..Default::default()
     };
     eframe::run_native(
         "TokenMeter",
         options,
         Box::new(|cc| {
+            OVERLAY_STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
             install_cjk_fonts(&cc.egui_ctx);
             let mut visuals = cc.egui_ctx.style().visuals.clone();
             visuals.panel_fill = Color32::TRANSPARENT;
             visuals.window_fill = Color32::TRANSPARENT;
             cc.egui_ctx.set_visuals(visuals);
-            Ok(Box::new(OverlayApp::from_prefs(shared, hidden)))
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+            let mut app = OverlayApp::from_prefs(shared, hidden);
+            #[cfg(target_os = "macos")]
+            {
+                crate::macos::set_all_spaces(app.all_spaces);
+                app.status = crate::macos::StatusItem::create();
+            }
+            Ok(Box::new(app))
         }),
     )
 }
@@ -4745,6 +4969,26 @@ mod tests {
             [egui::ViewportCommand::InnerSize(size)] if *size == Vec2::new(340.0, 560.0)
         ));
         assert!(state.commands(true, 340.0, 560.0, true).is_empty());
+    }
+
+    #[test]
+    fn hidden_start_hides_the_first_frame() {
+        let (_g, _tmp) = crate::test_home("hidden-start");
+        let mut app = OverlayApp::from_prefs(Arc::new(Mutex::new(MeterSnapshot::default())), true);
+        let (w, h, top) = (app.viewport.width, app.viewport.height, app.on_top);
+        let cmds = app.viewport.commands(true, w, h, top);
+        assert!(cmds.iter().any(|c| matches!(c, ViewportCommand::Visible(false))), "{cmds:?}");
+    }
+
+    #[test]
+    fn saved_position_survives_other_monitors() {
+        let main = Rect::from_min_size(Pos2::ZERO, Vec2::new(1728.0, 1080.0));
+        let right = Rect::from_min_size(Pos2::new(1728.0, 0.0), Vec2::new(2560.0, 1415.0));
+        assert_eq!(restore_pos([2000.0, 300.0], &[main, right], 340.0), Pos2::new(2000.0, 300.0));
+        assert_eq!(restore_pos([2000.0, 300.0], &[main], 340.0), Pos2::new(40.0, 80.0), "뺀 모니터");
+        assert_eq!(restore_pos([900.0, 700.0], &[main], 340.0), Pos2::new(900.0, 700.0), "화면 아래쪽");
+        assert_eq!(restore_pos([1600.0, 20.0], &[main], 340.0), Pos2::new(1600.0, 20.0), "S 폭이어도 x=0으로 붙지 않는다");
+        assert_eq!(restore_pos([5.0, 5.0], &[Rect::EVERYTHING], 340.0), Pos2::new(5.0, 5.0), "모니터 정보 없음");
     }
 
     #[test]
@@ -4826,5 +5070,57 @@ mod tests {
         assert_eq!(fade(Color32::WHITE, 10), Color32::from_rgba_premultiplied(10, 10, 10, 10));
         assert_eq!(hex("#34C759", 255), Color32::from_rgb(0x34, 0xC7, 0x59));
         assert_eq!(fade(Color32::WHITE, 0), Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn mini_alpha_fades_only_the_idle_mini() {
+        assert_eq!(mini_alpha(false, false, false, false, "strong"), 1.0, "S/M/L");
+        assert_eq!(mini_alpha(true, false, false, false, "light"), 0.85);
+        assert_eq!(mini_alpha(true, false, false, false, "mid"), 0.70);
+        assert_eq!(mini_alpha(true, false, false, false, "strong"), 0.55);
+        assert_eq!(mini_alpha(true, false, false, false, "weird"), 0.70);
+        assert_eq!(mini_alpha(true, true, false, false, "strong"), 1.0, "투명도 줄이기가 먼저");
+        assert_eq!(mini_alpha(true, false, true, false, "strong"), 1.0, "설정·팔레트");
+        assert_eq!(mini_alpha(true, false, false, true, "strong"), 1.0, "커서");
+    }
+
+    #[test]
+    fn clear_color_is_eframe_default_unless_mini_or_hidden() {
+        let default = Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32();
+        assert_eq!(clear_rgba(false, false), default);
+        assert_eq!(clear_rgba(true, false), [0.0; 4]);
+        assert_eq!(clear_rgba(false, true), [0.0; 4]);
+    }
+
+    #[test]
+    fn visual_prefs_round_trip_with_defaults() {
+        let (_g, _tmp) = crate::test_home("visual-prefs");
+        std::fs::create_dir_all(data_dir()).unwrap();
+        let shared = || Arc::new(Mutex::new(MeterSnapshot::default()));
+        let app = OverlayApp::from_prefs(shared(), false);
+        assert_eq!((app.mini_opacity.as_str(), app.mini_hover), ("mid", true));
+        assert!(app.all_spaces);
+        assert_eq!((app.menubar.as_str(), app.menubar_value.as_str()), ("always", "rate"));
+        std::fs::write(prefs_path(), r#"{"mini_opacity":"strong","mini_hover":false}"#).unwrap();
+        let app = OverlayApp::from_prefs(shared(), false);
+        assert_eq!((app.mini_opacity.as_str(), app.mini_hover), ("strong", false));
+        app.save_prefs();
+        let back = load_prefs();
+        assert_eq!((back["mini_opacity"].as_str(), back["mini_hover"].as_bool()), (Some("strong"), Some(false)));
+        std::fs::write(prefs_path(), r#"{"mini_opacity":"weird"}"#).unwrap();
+        assert_eq!(OverlayApp::from_prefs(shared(), false).mini_opacity, "mid");
+        std::fs::write(prefs_path(), r#"{"all_spaces":false}"#).unwrap();
+        assert!(!OverlayApp::from_prefs(shared(), false).all_spaces);
+        std::fs::write(prefs_path(), r#"{"menubar":"folded","menubar_value":"cost"}"#).unwrap();
+        let mut app = OverlayApp::from_prefs(shared(), false);
+        assert_eq!((app.menubar.as_str(), app.menubar_value.as_str()), ("folded", "cost"));
+        // 메뉴에서만 바뀌는 세 키가 save_prefs 에서 빠지면 실패한다.
+        app.all_spaces = false;
+        app.save_prefs();
+        let back = load_prefs();
+        assert_eq!(
+            (back["all_spaces"].as_bool(), back["menubar"].as_str(), back["menubar_value"].as_str()),
+            (Some(false), Some("folded"), Some("cost"))
+        );
     }
 }

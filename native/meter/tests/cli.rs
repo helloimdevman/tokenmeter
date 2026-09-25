@@ -128,6 +128,32 @@ fn doctor_json_omits_home_paths_session_ids_and_prompts() {
     for private in [home.as_str(), session, "DO-NOT-LEAK", "prompt", "-Users-alice"] {
         assert!(!raw.contains(private), "{private} 가 doctor --json 에 샜다: {raw}");
     }
+    let claude = payload["services"].as_array().unwrap().iter().find(|s| s["name"] == "claude-code").unwrap();
+    assert_eq!(
+        (claude["deltas"].clone(), claude["tokens"].clone(), claude["ok"].clone()),
+        (json!(1), json!(10), json!(true)),
+        "doctor 는 최근 로그를 실제로 읽는다: {claude}"
+    );
+}
+
+/// 화면이 없는 리눅스(서버·SSH)에서 자동으로 뜬 데몬은 오버레이 없이 측정을 이어 간다.
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_keeps_measuring_without_a_display() {
+    let root = sandbox("headless");
+    let mut child = command(&root, Path::new(BIN), &["daemon"]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let alive = child.try_wait().unwrap().is_none();
+    // 창을 부르면 물러나서, 화면 있는 다음 훅이 창 있는 데몬을 띄우게 한다.
+    write(&root.join("state/overlay.show"), "");
+    let gone = (0..50).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        child.try_wait().unwrap().is_some()
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(alive, "화면이 없다고 데몬이 끝났다");
+    assert!(gone, "창을 불러도 창 없는 데몬이 비키지 않았다");
 }
 
 /// 실제 바이너리를 임시 bin/ 에 복사하고 가짜 훅을 옆에 둔다 — install 이 GitHub 에서 훅을 받지 않게.

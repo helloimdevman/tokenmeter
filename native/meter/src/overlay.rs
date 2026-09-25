@@ -300,9 +300,17 @@ fn clear_rgba(mini_look: bool, hidden: bool) -> [f32; 4] {
     }
 }
 
-/// 커서가 메인 창 위에 있는지. (macOS 는 Task 4 에서 전역 커서로 바꾼다.)
+/// 커서가 메인 창 위에 있는지. macOS 는 전역 커서로 본다(winit 은 이동 이벤트를 키 창에만 보내
+/// 비활성 앱에서는 egui hover 가 오지 않는다).
 fn cursor_over(ctx: &egui::Context) -> bool {
-    ctx.input(|i| i.pointer.hover_pos().is_some())
+    #[cfg(target_os = "macos")]
+    {
+        ctx.input(|i| i.viewport().outer_rect).map(crate::macos::cursor_over).unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ctx.input(|i| i.pointer.hover_pos().is_some())
+    }
 }
 
 /// 저장한 창 윗부분 띠(창 너비 × 24pt)가 화면 하나와 겹치면 그 자리, 아니면 기본 (40, 80).
@@ -316,11 +324,20 @@ fn restore_pos(saved: [f32; 2], screens: &[Rect], width: f32) -> Pos2 {
     }
 }
 
-/// 창을 둘 수 있는 화면(egui 좌표). 모니터 정보가 없으면 저장 위치를 그대로 쓴다.
+/// 창을 둘 수 있는 화면(egui 좌표). macOS 는 모든 모니터, 그 밖은 지금 모니터 하나.
+/// 모니터 정보가 없으면 저장 위치를 그대로 쓴다.
 fn screens(ctx: &egui::Context) -> Vec<Rect> {
-    match ctx.input(|i| i.viewport().monitor_size) {
-        Some(size) => vec![Rect::from_min_size(Pos2::ZERO, size)],
-        None => vec![Rect::EVERYTHING],
+    #[cfg(target_os = "macos")]
+    {
+        let _ = ctx;
+        crate::macos::screens()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match ctx.input(|i| i.viewport().monitor_size) {
+            Some(size) => vec![Rect::from_min_size(Pos2::ZERO, size)],
+            None => vec![Rect::EVERYTHING],
+        }
     }
 }
 
@@ -1024,6 +1041,8 @@ struct OverlayApp {
     reduce_motion: bool,
     mini_opacity: String,
     mini_hover: bool,
+    all_spaces: bool,
+    settings_frames: u32,
     scale: f32,
     rows_on: bool,
     on_top: bool,
@@ -1342,6 +1361,7 @@ impl OverlayApp {
             "reduce_motion": self.reduce_motion,
             "mini_opacity": self.mini_opacity,
             "mini_hover": self.mini_hover,
+            "all_spaces": self.all_spaces,
         });
         let _ = std::fs::write(prefs_path(), v.to_string());
     }
@@ -1441,6 +1461,8 @@ impl OverlayApp {
                 .unwrap_or("mid")
                 .into(),
             mini_hover: p.get("mini_hover").and_then(Value::as_bool).unwrap_or(true),
+            all_spaces: p.get("all_spaces").and_then(Value::as_bool).unwrap_or(true),
+            settings_frames: 0,
             scale: p
                 .get("scale")
                 .and_then(Value::as_f64)
@@ -1772,6 +1794,8 @@ impl eframe::App for OverlayApp {
             self.save_prefs();
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
         }
+        // 숨긴 동안 설정 뷰포트는 그려지지 않아 egui가 지운다. 다시 열면 새 창이라 첫 프레임을 다시 숨긴다.
+        if self.hidden || !self.settings_open { self.settings_frames = 0; }
         if self.hidden {
             for cmd in self
                 .viewport
@@ -4658,12 +4682,15 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
     let h = (SETTINGS_CHROME * 2.0 + SETTINGS_PAD * 2.0 + settings_body_h(app) + FOOT_H) * s;
     let id = egui::ViewportId::from_hash_of("tokenmeter-settings");
     let title = crate::i18n::tr(&app.lang, "TokenMeter 설정");
+    // macOS: 새 설정 창은 첫 프레임만 숨겨 두고 모든 Space 속성을 붙인 뒤 보인다.
+    let first = cfg!(target_os = "macos") && app.settings_frames == 0;
     let builder = egui::ViewportBuilder::default()
         .with_title(title)
         .with_decorations(false)
         .with_always_on_top()
         .with_transparent(true)
-        .with_inner_size([w, h]);
+        .with_inner_size([w, h])
+        .with_visible(!first);
     let mut clicked = String::new();
     ctx.show_viewport_immediate(id, builder, |ctx, _| {
         if ctx.input(|i| i.viewport().close_requested() || i.key_pressed(Key::Escape)) {
@@ -4768,6 +4795,11 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
             }
         }
     });
+    #[cfg(target_os = "macos")]
+    if first {
+        crate::macos::set_all_spaces(app.all_spaces);
+    }
+    app.settings_frames = app.settings_frames.saturating_add(1);
     if clicked == "dismiss" {
         app.settings_open = false;
     } else if !clicked.is_empty() {
@@ -4808,6 +4840,8 @@ pub fn run_overlay_hidden(shared: SharedMeter, hidden: bool) -> eframe::Result<(
             .with_transparent(true)
             .with_visible(!hidden)
             .with_title("TokenMeter"),
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(crate::macos::accessory_event_loop)),
         ..Default::default()
     };
     eframe::run_native(
@@ -4820,7 +4854,10 @@ pub fn run_overlay_hidden(shared: SharedMeter, hidden: bool) -> eframe::Result<(
             visuals.panel_fill = Color32::TRANSPARENT;
             visuals.window_fill = Color32::TRANSPARENT;
             cc.egui_ctx.set_visuals(visuals);
-            Ok(Box::new(OverlayApp::from_prefs(shared, hidden)))
+            let app = OverlayApp::from_prefs(shared, hidden);
+            #[cfg(target_os = "macos")]
+            crate::macos::set_all_spaces(app.all_spaces);
+            Ok(Box::new(app))
         }),
     )
 }
@@ -4977,6 +5014,7 @@ mod tests {
         let shared = || Arc::new(Mutex::new(MeterSnapshot::default()));
         let app = OverlayApp::from_prefs(shared(), false);
         assert_eq!((app.mini_opacity.as_str(), app.mini_hover), ("mid", true));
+        assert!(app.all_spaces);
         std::fs::write(prefs_path(), r#"{"mini_opacity":"strong","mini_hover":false}"#).unwrap();
         let app = OverlayApp::from_prefs(shared(), false);
         assert_eq!((app.mini_opacity.as_str(), app.mini_hover), ("strong", false));
@@ -4985,5 +5023,7 @@ mod tests {
         assert_eq!((back["mini_opacity"].as_str(), back["mini_hover"].as_bool()), (Some("strong"), Some(false)));
         std::fs::write(prefs_path(), r#"{"mini_opacity":"weird"}"#).unwrap();
         assert_eq!(OverlayApp::from_prefs(shared(), false).mini_opacity, "mid");
+        std::fs::write(prefs_path(), r#"{"all_spaces":false}"#).unwrap();
+        assert!(!OverlayApp::from_prefs(shared(), false).all_spaces);
     }
 }

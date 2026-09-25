@@ -20,3 +20,9 @@ serde_yaml = "0.9"
 tokenmeter-hook = { path = "../hook" }
 tokenmeter-protocol = { path = "../protocol" }
 ureq = { version = "2", features = ["json"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { version = "0.30", default-features = false }
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = ["NSString", "NSGeometry", "NSThread", "NSArray", "NSEnumerator", "NSAttributedString", "NSDictionary"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSRunningApplication", "NSResponder", "NSView", "NSWindow", "NSScreen", "NSEvent", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSButtonCell", "NSCell", "NSControl", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSMenu", "NSMenuItem", "NSAppearance", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSAccessibilityProtocols", "NSColor"] }

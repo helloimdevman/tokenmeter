@@ -13,9 +13,12 @@ pub mod overlay;
 pub mod pixel_faces;
 pub mod pricing;
 pub mod quota;
+pub mod server;
+pub mod share;
+pub mod sync;
 pub mod watch;
 
-pub const VERSION: &str = "0.0.2";
+pub const VERSION: &str = "0.1.0";
 
 #[cfg(test)]
 pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

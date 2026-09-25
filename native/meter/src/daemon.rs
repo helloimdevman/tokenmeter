@@ -38,6 +38,7 @@ pub fn run(no_window: bool) -> i32 {
     }
     let _ = fs::write(pid_file(), format!("{}", std::process::id()));
     let _ = fs::remove_file(lock_file());
+    crate::league::cleanup_legacy();
 
     let mut meter = Meter::load();
     meter.set_session_history(runtime.settings.session_history);
@@ -124,7 +125,7 @@ pub fn run(no_window: bool) -> i32 {
                 .get("live_count")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
-            let room_open = league_room_open();
+            let room_open = crate::league::enabled() && league_room_open();
             if live > 0 || room_open || idle_limit.is_zero() {
                 idle_since = None;
             } else if idle_since.is_none() {
@@ -147,6 +148,7 @@ pub fn run(no_window: bool) -> i32 {
             if room_open {
                 crate::league::tick(&status, rate.rate);
             }
+            crate::sync::tick(&status);
             if crate::board::online() && last_board.elapsed().as_secs_f64() >= crate::board::sync_seconds()
             {
                 crate::board::sync(&status, false);
@@ -154,6 +156,7 @@ pub fn run(no_window: bool) -> i32 {
             }
             thread::sleep(tick);
         }
+        crate::sync::flush(&meter.state);
         let _ = fs::remove_file(pid_file());
     });
 

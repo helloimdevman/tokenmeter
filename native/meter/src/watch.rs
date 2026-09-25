@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokenmeter_hook::{data_dir, live_path};
 
@@ -741,6 +742,15 @@ const DEFAULT_YAML: &str = include_str!("../services.yaml");
 
 pub fn default_specs() -> Vec<ServiceSpec> {
     specs_from_yaml(DEFAULT_YAML)
+}
+
+/// 패키지에 들어 있는 서비스인지. 사용자가 추가한 서비스 이름은 업로드하지 않는다.
+pub fn is_builtin_service(name: &str) -> bool {
+    static NAMES: OnceLock<Vec<String>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| default_specs().into_iter().map(|s| s.name).collect())
+        .iter()
+        .any(|n| n == name)
 }
 
 #[derive(Clone, Debug)]

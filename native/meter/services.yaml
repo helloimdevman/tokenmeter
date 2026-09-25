@@ -72,17 +72,12 @@ settings:
     # api.openai.com, openrouter.ai, bedrock, vertex …)는 native/meter/src/board.rs 에 기본
     # 탑재돼 이름 그대로 올라가고, 그 밖의 주소는 전부 self-hosted 한 칸으로 뭉쳐집니다.
     # 관리자가 검증해 공개해도 된다고 판단한 호스트만 여기에 덧붙이세요.
+    # 레거시 리더보드에만 적용되고, 리그 통계(share)에는 쓰지 않습니다(늘 self-hosted).
     public_endpoints: []  # 예: ["llm.mycorp.com"]
-  # Token League (Firebase RTDB). databaseURL 이 비어 있으면 네트워크를 한 번도
-  # 건드리지 않습니다. 운영 키는 ~/.config/tokenmeter/services.yaml 에 둡니다.
-  # 로그인은 `tokenmeter league login` 만 (오버레이에서는 안 함).
+  # Token League 서버. 비우면 리그·동기화가 네트워크를 한 번도 쓰지 않습니다.
+  # 익명 사용 통계는 `tokenmeter share on` 일 때만 보냅니다.
   league:
-    apiKey: ""
-    authDomain: ""
-    databaseURL: ""
-    clientId: ""
-    clientSecret: ""
-    hostingBaseUrl: ""
+    server: https://api.tokenmeter.online
 
 services:
   claude-code:

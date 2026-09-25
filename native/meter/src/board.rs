@@ -99,6 +99,11 @@ pub(crate) fn endpoint_label(url: &str) -> String {
     classify(url, &setting_list(&["settings", "leaderboard", "public_endpoints"]))
 }
 
+/// 리그 통계용 경로 라벨. 사용자 `public_endpoints`는 레거시 리더보드에만 쓰고 여기서는 무시한다.
+pub(crate) fn public_label(url: &str) -> String {
+    classify(url, &[])
+}
+
 fn classify(url: &str, extra: &[String]) -> String {
     let host = host_of(url);
     if host.is_empty() || host == "unknown" {

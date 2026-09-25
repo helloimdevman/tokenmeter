@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tokenmeter_hook::{data_dir, live_dir, live_path, project_key};
+use tokenmeter_protocol::Label;
 
 const DAYS_KEPT: usize = 60;
 const HOURS_KEPT: usize = 24 * DAYS_KEPT;
@@ -125,7 +126,8 @@ impl Meter {
             }
         }
 
-        self.track_session(&delta, cost, saved, now, &axes);
+        let timed = self.track_session(&delta, cost, saved, now, &axes);
+        self.bucket_route(&delta, cost, timed);
         if let Some(total) = self.state.get_mut("total").and_then(Value::as_object_mut) {
             total.insert("last_seen".into(), json!(now));
         }
@@ -140,9 +142,9 @@ impl Meter {
         saved: f64,
         now: f64,
         axes: &[(&str, String)],
-    ) {
+    ) -> Option<f64> {
         if delta.session.is_empty() {
-            return;
+            return None;
         }
         let key = format!("{}/{}", nonempty(&delta.service, "?"), delta.session);
         let is_new = self
@@ -260,6 +262,7 @@ impl Meter {
             };
             add_int(group_node(&mut self.state, group, name), "sessions", 1);
         }
+        let timed = rate.as_ref().map(|(_, gap)| *gap);
         if let Some((stream, gap)) = rate {
             self.state.as_object_mut().expect("state object").insert(
                 "out_sec".into(),
@@ -280,6 +283,7 @@ impl Meter {
             cell[2] = json!(int(cell.get(2)) + 1);
         }
         self.trim_sessions();
+        timed
     }
 
     fn trim_sessions(&mut self) {
@@ -398,7 +402,7 @@ impl Meter {
         self.state
             .as_object_mut()
             .expect("state object")
-            .insert("hour".into(), json!({"h": hour, "p": {}}));
+            .insert("hour".into(), json!({"h": hour, "p": {}, "r": {}}));
     }
 
     fn bucket_hour(&mut self, delta: &TokenDelta, cost: f64) {
@@ -415,6 +419,35 @@ impl Meter {
         cell[0] = json!(int(cell.first()) + delta.total());
         cell[1] = json!(number(cell.get(1)) + cost);
         cell[2] = json!(int(cell.get(2)) + 1);
+    }
+
+    /// 리그 동기화용 시간 칸: (도구, 경로, 요금제, 모델)마다 한 셀. 라벨은 모두 올려도 되는 값이다.
+    fn bucket_route(&mut self, delta: &TokenDelta, cost: f64, timed: Option<f64>) {
+        let hour = self
+            .state
+            .get_mut("hour")
+            .and_then(Value::as_object_mut)
+            .expect("hour book");
+        let book = hour
+            .entry("r")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .expect("route book");
+        let cell = book
+            .entry(route_key(delta))
+            .or_insert_with(|| json!([0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0]))
+            .as_array_mut()
+            .expect("route cell");
+        let counts = [delta.input_tokens, delta.output_tokens, delta.cache_read, delta.cache_write, 1];
+        for (i, n) in counts.into_iter().enumerate() {
+            cell[i] = json!(int(cell.get(i)) + n);
+        }
+        cell[5] = json!(number(cell.get(5)) + cost);
+        if let Some(secs) = timed {
+            let at = if delta.duration_ms > 0 { 6 } else { 8 };
+            cell[at] = json!(int(cell.get(at)) + delta.output_tokens);
+            cell[at + 1] = json!(int(cell.get(at + 1)) + (secs * 1000.0).round() as i64);
+        }
     }
 
     fn roll_rate(&mut self) {
@@ -607,7 +640,7 @@ fn default_state(clock: &Clock) -> Value {
         "total": {"started_at": now, "last_seen": 0.0, "sessions": 0, "totals": totals()},
         "session": {"started_at": now, "totals": totals()},
         "today": {"date": clock.day, "totals": totals()},
-        "days": {}, "hour": {"h": clock.hour, "p": {}},
+        "days": {}, "hour": {"h": clock.hour, "p": {}, "r": {}},
         "rate": {"h": clock.slot, "m": {}}, "sessions": {},
         "projects": {}, "services": {}, "models": {}, "vendors": {}, "plans": {}, "endpoints": {},
         "updated_at": now,
@@ -673,6 +706,28 @@ fn nonempty(value: &str, fallback: &str) -> String {
     } else {
         value.into()
     }
+}
+
+/// 사용자가 추가한 서비스, 사설 호스트, 사내 모델 이름은 고정된 말로 바뀐다.
+fn route_key(delta: &TokenDelta) -> String {
+    let client = if crate::watch::is_builtin_service(&delta.service) {
+        delta.service.as_str()
+    } else {
+        "other"
+    };
+    // 요금제는 기본 서비스가 내는 값만 그대로 둔다. services.yaml에 사용자가 적은 계약명은 새지 않게 other로.
+    let plan = match delta.plan.as_str() {
+        "" => "unknown",
+        p @ ("subscription" | "api" | "unknown") => p,
+        _ => "other",
+    };
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        Label::Client.clean(client),
+        Label::Route.clean(&crate::board::public_label(&delta.endpoint)),
+        plan,
+        crate::pricing::public_model(&delta.model)
+    )
 }
 
 fn tokens_of(value: &Value) -> i64 {
@@ -1204,5 +1259,78 @@ mod tests {
         assert_eq!(state["total"]["totals"]["cost_usd"], 0.25);
         assert_eq!(state["total"]["started_at"], 111.0, "누적 시작 시각은 born_at 을 잇는다");
         assert_eq!(state["total"]["last_seen"], 222.0);
+    }
+
+    #[test]
+    fn hour_route_cells_hold_safe_labels_and_timing() {
+        let (_g, _tmp) = crate::test_home("route-cells");
+        let mut meter = Meter::new();
+        let base = TokenDelta {
+            service: "claude-code".into(),
+            session: "s1".into(),
+            endpoint: "https://api.anthropic.com".into(),
+            plan: "subscription".into(),
+            model: "claude-opus-5-5".into(),
+            project: "secret-project".into(),
+            cwd: "/Users/me/secret-project".into(),
+            input_tokens: 10,
+            output_tokens: 100,
+            ..TokenDelta::default()
+        };
+        meter.ingest(TokenDelta { duration_ms: 2000, ..base.clone() });
+        meter.ingest(TokenDelta {
+            service: "my-agent".into(),
+            session: "s2".into(),
+            endpoint: "https://llm.corp.internal/v1".into(),
+            model: "corp-gpt".into(),
+            ..base.clone()
+        });
+        meter.ingest(TokenDelta {
+            service: "my-agent".into(),
+            endpoint: "https://llm.corp.internal/v1".into(),
+            model: "corp-gpt".into(),
+            plan: "acme-enterprise".into(),
+            ..base.clone()
+        });
+        let r = &meter.state["hour"]["r"];
+        let a = &r["claude-code\u{1f}api.anthropic.com\u{1f}subscription\u{1f}claude-opus-5"];
+        assert_eq!((a[0].clone(), a[1].clone(), a[4].clone()), (json!(10), json!(100), json!(1)));
+        assert_eq!((a[6].clone(), a[7].clone()), (json!(100), json!(2000)), "API 시간은 api_*로");
+        assert!(r.get("other\u{1f}self-hosted\u{1f}subscription\u{1f}other").is_some(), "{r}");
+        let text = r.to_string();
+        assert!(!text.contains("secret-project") && !text.contains("corp"), "{text}");
+        assert!(r.get("other\u{1f}self-hosted\u{1f}other\u{1f}other").is_some(), "사용자 요금제는 other: {r}");
+        assert!(!text.contains("acme"), "{text}");
+
+        meter.state["hour"]["h"] = json!("2020-01-01T00");
+        meter.ingest(base.clone());
+        let line = fs::read_to_string(data_dir().join("hours.jsonl")).unwrap();
+        assert!(line.contains("\"r\""), "{line}");
+        assert_eq!(meter.state["hour"]["r"].as_object().unwrap().len(), 1, "새 시간은 새 경로 장부");
+    }
+
+    #[test]
+    fn league_route_ignores_the_legacy_public_endpoints_list() {
+        let (_g, tmp) = crate::test_home("route-public");
+        let dir = tmp.join("config/tokenmeter");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("services.yaml"), "settings:\n  leaderboard:\n    public_endpoints: [\"llm.mycorp.com\"]\n").unwrap();
+        let url = "https://llm.mycorp.com/v1";
+        assert_eq!(crate::board::endpoint_label(url), "llm.mycorp.com", "레거시 리더보드는 그대로");
+        let mut meter = Meter::new();
+        meter.ingest(TokenDelta {
+            service: "claude-code".into(),
+            session: "s1".into(),
+            endpoint: url.into(),
+            plan: "api".into(),
+            model: "claude-opus-5-5".into(),
+            output_tokens: 10,
+            ..TokenDelta::default()
+        });
+        let r = &meter.state["hour"]["r"];
+        assert!(r.get("claude-code\u{1f}self-hosted\u{1f}api\u{1f}claude-opus-5").is_some(), "{r}");
+        let upload = crate::sync::build(&json!({"hour": meter.state["hour"].clone()}), true, "", 0.0, crate::watch::now_secs() as i64).0;
+        let text = serde_json::to_string(&upload).unwrap();
+        assert!(!text.contains("mycorp") && text.contains("self-hosted"), "{text}");
     }
 }

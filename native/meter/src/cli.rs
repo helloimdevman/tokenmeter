@@ -10,6 +10,7 @@ use crate::live_rate::LiveRate;
 use crate::overlay::snapshot_from;
 use crate::pricing;
 use crate::quota;
+use crate::share;
 use crate::watch::{
     expand_home, load_all_specs, now_secs, ServiceReader, ServiceSpec,
 };
@@ -17,6 +18,7 @@ use crate::VERSION;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -210,7 +212,7 @@ fn kill_daemon() -> bool {
         .unwrap_or(false)
 }
 
-fn load_toggle() -> Value {
+pub(crate) fn load_toggle() -> Value {
     let v: Value = fs::read_to_string(data_dir().join("toggle.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -222,7 +224,7 @@ fn load_toggle() -> Value {
     }
 }
 
-fn save_toggle(data: &Value) {
+pub(crate) fn save_toggle(data: &Value) {
     let _ = fs::create_dir_all(data_dir());
     let _ = fs::write(data_dir().join("toggle.json"), data.to_string());
 }
@@ -349,12 +351,17 @@ fn cmd_install(args: &Args) -> i32 {
             println!("  데몬을 띄웠습니다.");
         }
         activation();
+        for line in share::ask_once() {
+            println!("  {line}");
+        }
     }
     0
 }
 
 fn cmd_uninstall(args: &Args) -> i32 {
     if on(args, "purge") {
+        // 종료 때의 마지막 전송(flush)이 돌지 않게 공유부터 끈다.
+        share::set(false);
         let _ = kill_daemon();
     }
     for line in install::uninstall(&flags(args, "service")) {
@@ -362,6 +369,13 @@ fn cmd_uninstall(args: &Args) -> i32 {
     }
     if on(args, "purge") {
         println!();
+        // 전부 지우기다. device.json이 지워지면 서버 데이터를 지울 방법이 없으니 먼저 한 번 지워 본다.
+        if let Some(token) = crate::server::device_token() {
+            match crate::server::delete_account(&token) {
+                Ok(()) | Err(crate::server::ApiError::Status(401, _)) => println!("  서버에 보낸 사용 데이터를 지웠습니다."),
+                Err(e) => println!("  서버 데이터를 지우지 못했습니다: {}. 서버 데이터는 남았습니다.", api_reason(&e)),
+            }
+        }
         for line in install::purge_state() {
             println!("  {line}");
         }
@@ -517,6 +531,7 @@ fn cmd_doctor(args: &Args) -> i32 {
                 "native_meter": true,
                 "native_hook": install::hook_bin().is_file(),
                 "league": league::caption(),
+                "share": share::on(),
                 "services": specs.iter().map(doctor_service_json).collect::<Vec<_>>(),
             })
         );
@@ -531,6 +546,7 @@ fn cmd_doctor(args: &Args) -> i32 {
     }
     println!();
     println!("  리그    : {}", league::caption());
+    println!("  공유    : {}", share::caption());
     0
 }
 
@@ -850,6 +866,7 @@ fn cmd_status(args: &Args) -> i32 {
         state.get("live_count").and_then(Value::as_u64).unwrap_or(0)
     );
     println!("  리그    : {}", league::caption());
+    println!("  공유    : {}", share::caption());
     let unknown: Vec<String> = state
         .get("models")
         .and_then(Value::as_object)
@@ -1248,10 +1265,84 @@ fn cmd_league(args: &Args) -> i32 {
         Some("join") => league::join_room(args.rest.get(1).map(String::as_str).unwrap_or("")),
         Some("leave") => league::leave(args.rest.get(1).map(String::as_str)),
         Some("close") => league::close_room(args.rest.get(1).map(String::as_str)),
+        _ => league::soon(),
+    }
+}
+
+fn cmd_share(args: &Args) -> i32 {
+    match args.rest.first().map(String::as_str) {
+        None | Some("status") => {
+            println!("  공유    : {}", share::caption());
+            0
+        }
+        Some("on") => {
+            share::set(true);
+            println!("  익명 사용 통계를 켰습니다. 보낼 내용: tokenmeter share preview");
+            0
+        }
+        Some("off") => {
+            share::set(false);
+            println!("  익명 사용 통계를 껐습니다. 이미 보낸 데이터까지 지우려면: tokenmeter account delete");
+            0
+        }
+        Some("preview") => {
+            println!("{}", crate::sync::preview(&crate::engine::Meter::load().state));
+            0
+        }
         _ => {
-            println!("알 수 없는 동작");
+            println!("사용법: tokenmeter share [on|off|status|preview]");
             1
         }
+    }
+}
+
+fn cmd_account(args: &Args) -> i32 {
+    if args.rest.first().map(String::as_str) != Some("delete") {
+        println!("사용법: tokenmeter account delete [--yes]");
+        return 1;
+    }
+    // 무엇보다 먼저 공유를 끈다. 서버 호출 중에 데몬이 새 기기를 받거나 다시 보내지 않게.
+    crate::share::set(false);
+    let Some(token) = crate::server::device_token() else {
+        crate::sync::forget();
+        println!("  서버에 보낸 데이터가 없습니다. 공유를 껐습니다.");
+        return 0;
+    };
+    if !on(args, "yes") {
+        print!("  서버에 있는 이 기기의 사용 데이터를 모두 지웁니다. 계속할까요? [y/N] ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes" | "예") {
+            println!("  취소했습니다. 공유는 꺼 두었습니다 · 켜기: tokenmeter share on");
+            return 1;
+        }
+    }
+    match crate::server::delete_account(&token) {
+        Ok(()) | Err(crate::server::ApiError::Status(401, _)) => {
+            crate::server::forget_device();
+            crate::sync::forget();
+            println!("  서버의 사용 데이터를 지우고 공유를 껐습니다.");
+            0
+        }
+        Err(e) => {
+            // 기기 토큰은 남겨 다시 시도할 수 있게 한다. 공유는 꺼진 채다.
+            let next = if e == crate::server::ApiError::Upgrade { " tokenmeter update now 뒤 다시 실행하세요." } else { "" };
+            println!("  지우지 못했습니다: {}. 공유는 껐습니다.{next}", api_reason(&e));
+            1
+        }
+    }
+}
+
+/// 서버 오류를 사람이 읽는 말로.
+fn api_reason(e: &crate::server::ApiError) -> String {
+    use crate::server::ApiError;
+    match e {
+        ApiError::Offline => "서버에 닿지 못했습니다".into(),
+        ApiError::Upgrade => "서버가 새 버전을 요구합니다".into(),
+        ApiError::Off => "서버 주소 설정이 비어 있습니다".into(),
+        ApiError::Status(code, err) if err.is_empty() => format!("서버 오류({code})"),
+        ApiError::Status(code, err) => format!("서버 오류({code} {err})"),
     }
 }
 
@@ -1259,7 +1350,7 @@ fn print_help() {
     println!("usage: tokenmeter [-h] <명령>");
     println!("TokenMeter {VERSION} — 에이전트 토큰 자동 측정 + 미터/랭킹 오버레이");
     println!(
-        "명령: install uninstall on off meter update services doctor quota status team receipt price daemon start stop watch overlay reset adapter league"
+        "명령: install uninstall on off meter update services doctor quota status team receipt price daemon start stop watch overlay reset adapter league share account"
     );
 }
 
@@ -1298,6 +1389,8 @@ pub fn run(argv: &[String]) -> i32 {
         "reset" => cmd_reset(&args),
         "adapter" => cmd_adapter(&args),
         "league" => cmd_league(&args),
+        "share" => cmd_share(&args),
+        "account" => cmd_account(&args),
         "daemon" => crate::daemon::run(on(&args, "no-window") || on(&args, "no-overlay")),
         _ => {
             eprintln!("알 수 없는 명령: {}", args.cmd);
@@ -1397,5 +1490,71 @@ mod tests {
         fields.sort();
         assert_eq!(fields, ["attention", "attention_at", "ctx", "ctx_window", "last_seen", "model", "project", "service", "started_at"]);
         assert_eq!((sessions[0]["ctx"].clone(), sessions[0]["ctx_window"].clone()), (json!(20), json!(100)));
+    }
+
+    #[test]
+    fn account_delete_removes_server_data_and_the_local_device() {
+        let (_g, _tmp) = crate::test_home("account-delete");
+        let (url, seen) = crate::server::fake::serve(vec![(204, "")]);
+        crate::server::fake::use_server(&url);
+        fs::create_dir_all(data_dir()).unwrap();
+        fs::write(data_dir().join("device.json"), r#"{"device_id":"d1","token":"tmd_x"}"#).unwrap();
+        crate::share::set(true);
+        assert_eq!(run(&["account".into(), "delete".into(), "--yes".into()]), 0);
+        let req = seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(req.starts_with("DELETE /v1/account") && req.contains("Bearer tmd_x"), "{req}");
+        assert!(!data_dir().join("device.json").exists() && !crate::share::on());
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn account_delete_without_a_token_still_turns_sharing_off() {
+        let (_g, _tmp) = crate::test_home("account-no-token");
+        let (url, seen) = crate::server::fake::serve(vec![(204, "")]);
+        crate::server::fake::use_server(&url);
+        crate::share::set(true);
+        fs::write(data_dir().join("league-sync.json"), r#"{"synced_through":"2026-09-25T10"}"#).unwrap();
+        assert_eq!(run(&args(&["account", "delete", "--yes"])), 0);
+        assert!(!crate::share::on(), "보낸 게 없어도 공유는 끈다");
+        assert!(!data_dir().join("league-sync.json").exists());
+        assert!(seen.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "서버에 묻지 않는다");
+    }
+
+    #[test]
+    fn account_delete_failure_keeps_the_token_but_sharing_stays_off() {
+        let (_g, _tmp) = crate::test_home("account-fail");
+        let (url, seen) = crate::server::fake::serve(vec![(500, r#"{"error":"internal","message":"db"}"#)]);
+        crate::server::fake::use_server(&url);
+        fs::create_dir_all(data_dir()).unwrap();
+        fs::write(data_dir().join("device.json"), r#"{"device_id":"d1","token":"tmd_x"}"#).unwrap();
+        crate::share::set(true);
+        assert_eq!(run(&args(&["account", "delete", "--yes"])), 1);
+        assert!(seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap().starts_with("DELETE /v1/account"));
+        assert!(data_dir().join("device.json").exists(), "다시 시도할 수 있게 기기 토큰은 남긴다");
+        assert!(!crate::share::on());
+    }
+
+    #[test]
+    fn purge_deletes_server_data_before_wiping_the_device_token() {
+        let (_g, _tmp) = crate::test_home("purge-server");
+        let (url, seen) = crate::server::fake::serve(vec![(204, "")]);
+        crate::server::fake::use_server(&url);
+        fs::create_dir_all(data_dir()).unwrap();
+        fs::write(data_dir().join("device.json"), r#"{"device_id":"d1","token":"tmd_x"}"#).unwrap();
+        crate::share::set(true);
+        assert_eq!(run(&args(&["uninstall", "--purge"])), 0);
+        let req = seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(req.starts_with("DELETE /v1/account") && req.contains("Bearer tmd_x"), "{req}");
+        assert!(!data_dir().exists());
+    }
+
+    #[test]
+    fn unknown_league_commands_print_the_notice() {
+        let (_g, _tmp) = crate::test_home("league-unknown");
+        assert_eq!(run(&args(&["league", "rooms"])), 0);
+        assert_eq!(run(&args(&["league"])), 0);
     }
 }

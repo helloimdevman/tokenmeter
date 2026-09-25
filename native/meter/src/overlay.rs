@@ -1947,6 +1947,7 @@ impl OverlayApp {
                 StatusCmd::Settings => {
                     self.hidden = false;
                     self.settings_open = true;
+                    self.palette_open = false;
                     ctx.request_repaint();
                 }
                 StatusCmd::ValueRate | StatusCmd::ValueCost => {
@@ -4876,6 +4877,8 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
     #[cfg(target_os = "macos")]
     if first {
         crate::macos::set_all_spaces(app.all_spaces);
+        // 숨긴 첫 프레임 다음 프레임에서 바로 보이게.
+        ctx.request_repaint();
     }
     app.settings_frames = app.settings_frames.saturating_add(1);
     if clicked == "dismiss" {

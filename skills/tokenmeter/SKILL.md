@@ -59,7 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/helloimdevman/tokenmeter/main/insta
 |---|---|---|
 | 미터기 꺼줘 | `tokenmeter meter off` | 창만 숨김; 측정 계속 |
 | 토큰 그만 재 | `tokenmeter off` | 측정과 데몬 정지; 훅 유지 |
-| 완전히 제거해 | `tokenmeter uninstall --purge` | 훅+데몬+로컬 상태+리그 토큰. 그 뒤 `tokenmeter`·`tokenmeter-hook` 바이너리를 지웁니다 |
+| 완전히 제거해 | `tokenmeter uninstall --purge` | 훅+데몬+로컬 상태+기기 토큰. 0으로 끝나면 `tokenmeter`·`tokenmeter-hook` 바이너리를 지웁니다. 1로 끝나면(서버 데이터 삭제 실패) 상태 폴더가 남았으니 바이너리를 지우지 말고 출력된 이유와 재시도 안내를 그대로 전합니다 |
 
 사용자가 단순히 “꺼줘”라고 하면 셋 중 무엇인지 확인합니다.
 

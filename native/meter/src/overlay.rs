@@ -4697,6 +4697,9 @@ pub fn run_overlay(shared: SharedMeter) -> eframe::Result<()> {
     run_overlay_hidden(shared, false)
 }
 
+/// 창이 한 번이라도 떴는지. 데몬은 뜨기 전의 실패(화면 없음)만 창 없이 버틴다.
+pub static OVERLAY_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn run_overlay_hidden(shared: SharedMeter, hidden: bool) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -4713,6 +4716,7 @@ pub fn run_overlay_hidden(shared: SharedMeter, hidden: bool) -> eframe::Result<(
         "TokenMeter",
         options,
         Box::new(|cc| {
+            OVERLAY_STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
             install_cjk_fonts(&cc.egui_ctx);
             let mut visuals = cc.egui_ctx.style().visuals.clone();
             visuals.panel_fill = Color32::TRANSPARENT;

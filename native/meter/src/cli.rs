@@ -12,7 +12,7 @@ use crate::pricing;
 use crate::quota;
 use crate::share;
 use crate::watch::{
-    expand_home, load_all_specs, now_secs, ServiceReader, ServiceSpec,
+    expand_home, load_all_specs, now_secs, ServiceReader, ServiceSpec, TokenDelta,
 };
 use crate::VERSION;
 use serde_json::{json, Value};
@@ -373,7 +373,18 @@ fn cmd_uninstall(args: &Args) -> i32 {
         if let Some(token) = crate::server::device_token() {
             match crate::server::delete_account(&token) {
                 Ok(()) | Err(crate::server::ApiError::Status(401, _)) => println!("  서버에 보낸 사용 데이터를 지웠습니다."),
-                Err(e) => println!("  서버 데이터를 지우지 못했습니다: {}. 서버 데이터는 남았습니다.", api_reason(&e)),
+                Err(e) => {
+                    // device.json 이 서버 데이터를 지울 유일한 열쇠라 상태 폴더를 지우지 않는다.
+                    println!("  서버 데이터를 지우지 못했습니다: {}. 서버 데이터는 남았습니다.", api_reason(&e));
+                    println!("  다시 지울 수 있게 상태 폴더를 남겼습니다: {}", data_dir().display());
+                    let retry = match e {
+                        crate::server::ApiError::Off => "settings.league.server 주소를 되돌린 뒤 tokenmeter uninstall --purge",
+                        crate::server::ApiError::Upgrade => "tokenmeter update now 뒤 tokenmeter uninstall --purge",
+                        _ => "tokenmeter uninstall --purge",
+                    };
+                    println!("  다시 시도: {retry}");
+                    return 1;
+                }
             }
         }
         for line in install::purge_state() {
@@ -560,6 +571,18 @@ fn short_path(path: &std::path::Path) -> String {
     text
 }
 
+/// 가장 최근 로그 파일들(최신순)과 그 안의 델타. json 은 파일 하나가 레코드 하나라 40개를 본다.
+/// prime()+poll() 은 데몬 시작용이라 명령이 도는 사이 새로 붙은 줄만 세서 늘 0건이 된다.
+fn doctor_sample(spec: &ServiceSpec) -> (Vec<PathBuf>, Vec<TokenDelta>) {
+    let mut reader = ServiceReader::new(spec.clone());
+    let mut files = reader.files();
+    // 키를 한 번씩만 읽는다: 정렬 중에 mtime 이 바뀌면 sort_by_key 는 패닉할 수 있다.
+    files.sort_by_cached_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)));
+    let n = if spec.format == "json" { 40 } else { 1 };
+    let deltas = files.iter().take(n).flat_map(|p| reader.read_file(p, true)).collect();
+    (files, deltas)
+}
+
 fn doctor_service_json(spec: &ServiceSpec) -> Value {
     let roots: Vec<_> = spec
         .roots
@@ -570,13 +593,10 @@ fn doctor_service_json(spec: &ServiceSpec) -> Value {
     if roots.is_empty() {
         return json!({"name": spec.name, "ok": false, "warning": "no-log-roots"});
     }
-    let mut reader = ServiceReader::new(spec.clone());
-    let files = reader.files();
+    let (files, deltas) = doctor_sample(spec);
     if files.is_empty() {
         return json!({"name": spec.name, "ok": false, "warning": "no-log-files"});
     }
-    reader.prime();
-    let deltas = reader.poll();
     let tokens: i64 = deltas.iter().map(|d| d.total()).sum();
     let models: Vec<String> = {
         let mut m: Vec<String> = deltas.iter().map(|d| d.model.clone()).filter(|s| !s.is_empty()).collect();
@@ -616,15 +636,12 @@ fn doctor_one(spec: &ServiceSpec) {
         );
         return;
     }
-    let mut reader = ServiceReader::new(spec.clone());
-    let files = reader.files();
+    let (files, deltas) = doctor_sample(spec);
     if files.is_empty() {
         println!("   ⚠ patterns 에 맞는 로그 파일이 없습니다");
         return;
     }
     println!("   로그 파일 : {}", files[0].display());
-    reader.prime();
-    let deltas = reader.poll();
     let tokens: i64 = deltas.iter().map(|d| d.total()).sum();
     println!(
         "   추출 델타 : {}건 · {} 토큰",
@@ -1549,6 +1566,20 @@ mod tests {
         let req = seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert!(req.starts_with("DELETE /v1/account") && req.contains("Bearer tmd_x"), "{req}");
         assert!(!data_dir().exists());
+    }
+
+    #[test]
+    fn purge_keeps_the_device_token_when_the_server_delete_fails() {
+        let (_g, _tmp) = crate::test_home("purge-fail");
+        let (url, seen) = crate::server::fake::serve(vec![(500, r#"{"error":"internal","message":"db"}"#)]);
+        crate::server::fake::use_server(&url);
+        fs::create_dir_all(data_dir()).unwrap();
+        fs::write(data_dir().join("device.json"), r#"{"device_id":"d1","token":"tmd_x"}"#).unwrap();
+        crate::share::set(true);
+        assert_eq!(run(&args(&["uninstall", "--purge"])), 1);
+        assert!(seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap().starts_with("DELETE /v1/account"));
+        assert!(data_dir().join("device.json").exists(), "서버 데이터를 지울 유일한 토큰은 남긴다");
+        assert!(!crate::share::on());
     }
 
     #[test]

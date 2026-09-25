@@ -305,6 +305,25 @@ fn cursor_over(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.pointer.hover_pos().is_some())
 }
 
+/// 저장한 창 윗부분 띠(창 너비 × 24pt)가 화면 하나와 겹치면 그 자리, 아니면 기본 (40, 80).
+fn restore_pos(saved: [f32; 2], screens: &[Rect], width: f32) -> Pos2 {
+    let at = Pos2::new(saved[0], saved[1]);
+    let strip = Rect::from_min_size(at, Vec2::new(width, 24.0));
+    if screens.iter().any(|s| s.intersects(strip)) {
+        at
+    } else {
+        Pos2::new(40.0, 80.0)
+    }
+}
+
+/// 창을 둘 수 있는 화면(egui 좌표). 모니터 정보가 없으면 저장 위치를 그대로 쓴다.
+fn screens(ctx: &egui::Context) -> Vec<Rect> {
+    match ctx.input(|i| i.viewport().monitor_size) {
+        Some(size) => vec![Rect::from_min_size(Pos2::ZERO, size)],
+        None => vec![Rect::EVERYTHING],
+    }
+}
+
 pub fn gauge_target(rate: f64, full_scale: f64) -> f64 {
     let scale = full_scale.max(1.0);
     ((rate / scale).clamp(0.0, 1.0)).sqrt()
@@ -1472,7 +1491,8 @@ impl OverlayApp {
             peak: 0.0,
             pulse: 0.0,
             league_marks: HashMap::new(),
-            viewport: ViewportState::new(hidden),
+            // 첫 프레임에 Visible(false)를 내야 숨는다: eframe은 첫 프레임 뒤 창을 강제로 보이게 하고(epi_integration.rs:306-311) 그 다음에 앱의 창 명령을 적용한다(glow_integration.rs:707 → :732).
+            viewport: ViewportState::new(false),
             pos,
             placed: false,
             feedback: String::new(),
@@ -1743,6 +1763,7 @@ impl eframe::App for OverlayApp {
         if show.exists() {
             let _ = std::fs::remove_file(&show);
             self.hidden = false;
+            ctx.request_repaint();
         }
         if ctx.input(|i| i.viewport().close_requested()) {
             self.hidden = true;
@@ -1855,14 +1876,9 @@ impl eframe::App for OverlayApp {
             paint_settings_viewport(ctx, self);
         }
         if !self.placed {
-            let screen = ctx.input(|i| i.screen_rect());
-            let inside = screen.contains(Pos2::new(self.pos[0], self.pos[1]));
-            let x0 = if inside { self.pos[0] } else { screen.min.x + 40.0 };
-            let y0 = if inside { self.pos[1] } else { screen.min.y + 80.0 };
-            let x = x0.clamp(screen.min.x, (screen.max.x - ww).max(screen.min.x));
-            let y = y0.clamp(screen.min.y, (screen.max.y - hh).max(screen.min.y));
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(x, y)));
-            self.pos = [x, y];
+            let at = restore_pos(self.pos, &screens(ctx), ww);
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+            self.pos = [at.x, at.y];
             self.placed = true;
             self.save_prefs();
         }
@@ -4831,6 +4847,26 @@ mod tests {
             [egui::ViewportCommand::InnerSize(size)] if *size == Vec2::new(340.0, 560.0)
         ));
         assert!(state.commands(true, 340.0, 560.0, true).is_empty());
+    }
+
+    #[test]
+    fn hidden_start_hides_the_first_frame() {
+        let (_g, _tmp) = crate::test_home("hidden-start");
+        let mut app = OverlayApp::from_prefs(Arc::new(Mutex::new(MeterSnapshot::default())), true);
+        let (w, h, top) = (app.viewport.width, app.viewport.height, app.on_top);
+        let cmds = app.viewport.commands(true, w, h, top);
+        assert!(cmds.iter().any(|c| matches!(c, ViewportCommand::Visible(false))), "{cmds:?}");
+    }
+
+    #[test]
+    fn saved_position_survives_other_monitors() {
+        let main = Rect::from_min_size(Pos2::ZERO, Vec2::new(1728.0, 1080.0));
+        let right = Rect::from_min_size(Pos2::new(1728.0, 0.0), Vec2::new(2560.0, 1415.0));
+        assert_eq!(restore_pos([2000.0, 300.0], &[main, right], 340.0), Pos2::new(2000.0, 300.0));
+        assert_eq!(restore_pos([2000.0, 300.0], &[main], 340.0), Pos2::new(40.0, 80.0), "뺀 모니터");
+        assert_eq!(restore_pos([900.0, 700.0], &[main], 340.0), Pos2::new(900.0, 700.0), "화면 아래쪽");
+        assert_eq!(restore_pos([1600.0, 20.0], &[main], 340.0), Pos2::new(1600.0, 20.0), "S 폭이어도 x=0으로 붙지 않는다");
+        assert_eq!(restore_pos([5.0, 5.0], &[Rect::EVERYTHING], 340.0), Pos2::new(5.0, 5.0), "모니터 정보 없음");
     }
 
     #[test]

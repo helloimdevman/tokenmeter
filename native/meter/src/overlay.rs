@@ -277,6 +277,34 @@ fn install_cjk_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// 미니의 불투명도. 투명도 줄이기·설정/팔레트·커서가 먼저고, 그 밖엔 고른 농도.
+fn mini_alpha(mini: bool, reduce_transparency: bool, panels_open: bool, hover: bool, level: &str) -> f32 {
+    if !mini || reduce_transparency || panels_open || hover {
+        return 1.0;
+    }
+    match level {
+        "light" => 0.85,
+        "strong" => 0.55,
+        _ => 0.70,
+    }
+}
+
+/// eframe 기본 지움 색(`epi.rs:215-219`, 덮어쓰면 기본 구현을 부를 수 없어 같은 식을 옮김).
+/// 미니와 숨긴 창은 투명하게 지운다: 기본값(알파 180)이 깔리면 미니가 70% 아래로 흐려지지 않고,
+/// 숨긴 채 시작하는 첫 프레임에 어두운 사각이 비친다.
+fn clear_rgba(mini_look: bool, hidden: bool) -> [f32; 4] {
+    if mini_look || hidden {
+        [0.0; 4]
+    } else {
+        Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
+    }
+}
+
+/// 커서가 메인 창 위에 있는지. (macOS 는 Task 4 에서 전역 커서로 바꾼다.)
+fn cursor_over(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.pointer.hover_pos().is_some())
+}
+
 pub fn gauge_target(rate: f64, full_scale: f64) -> f64 {
     let scale = full_scale.max(1.0);
     ((rate / scale).clamp(0.0, 1.0)).sqrt()
@@ -975,6 +1003,8 @@ struct OverlayApp {
     theme_mode: String,
     reduce_transparency: bool,
     reduce_motion: bool,
+    mini_opacity: String,
+    mini_hover: bool,
     scale: f32,
     rows_on: bool,
     on_top: bool,
@@ -1291,6 +1321,8 @@ impl OverlayApp {
             "lang": self.lang,
             "reduce_transparency": self.reduce_transparency,
             "reduce_motion": self.reduce_motion,
+            "mini_opacity": self.mini_opacity,
+            "mini_hover": self.mini_hover,
         });
         let _ = std::fs::write(prefs_path(), v.to_string());
     }
@@ -1383,6 +1415,13 @@ impl OverlayApp {
                 .get("reduce_motion")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            mini_opacity: p
+                .get("mini_opacity")
+                .and_then(Value::as_str)
+                .filter(|s| matches!(*s, "light" | "mid" | "strong"))
+                .unwrap_or("mid")
+                .into(),
+            mini_hover: p.get("mini_hover").and_then(Value::as_bool).unwrap_or(true),
             scale: p
                 .get("scale")
                 .and_then(Value::as_f64)
@@ -1685,6 +1724,15 @@ fn hit_test(hits: &[(String, Rect)], pos: Pos2) -> Option<String> {
 }
 
 impl eframe::App for OverlayApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // 숨김은 창을 실제로 숨길 수 있는 macOS 에서만 투명하게 지운다. Wayland 는 Visible(false) 가
+        // 아무것도 하지 않아(winit wayland/window/mod.rs:253) 투명하게 지우면 보이지 않는 창이 클릭을 먹는다.
+        clear_rgba(
+            self.mini && !self.palette_open && !self.hidden,
+            self.hidden && cfg!(target_os = "macos"),
+        )
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if crate::daemon::stopping() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -1758,14 +1806,29 @@ impl eframe::App for OverlayApp {
         };
         let mut hits = Vec::new();
         let skin = self.widget_skin().is_some();
+        let hover = self.mini_hover && cursor_over(ctx);
+        let k_target = mini_alpha(
+            self.mini,
+            self.reduce_transparency,
+            self.settings_open || self.palette_open,
+            hover,
+            &self.mini_opacity,
+        );
+        // 전환 중에는 egui 가 스스로 다시 그려 화면 주사율로 바뀐다.
+        let k = if self.reduce_motion {
+            k_target
+        } else {
+            ctx.animate_value_with_time(egui::Id::new("tokenmeter-mini-alpha"), k_target, 0.15)
+        };
         let fill = if skin {
             Color32::TRANSPARENT
         } else {
             fade(theme.surface_glass, alpha)
         };
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(fill))
+            .frame(egui::Frame::NONE.fill(fill.gamma_multiply(k)))
             .show(ctx, |ui| {
+                ui.multiply_opacity(k);
                 ui.set_min_size(Vec2::new(ww, hh));
                 let full = ui.max_rect();
                 if !skin {
@@ -2154,6 +2217,16 @@ impl OverlayApp {
             self.mini = self.s_skin != "bar";
             self.face_phase = 0.0;
             self.money_stage = 0;
+            self.save_prefs();
+            return;
+        }
+        if let Some(level) = target.strip_prefix("mini_opacity:") {
+            self.mini_opacity = level.into();
+            self.save_prefs();
+            return;
+        }
+        if target == "command:mini_hover" {
+            self.mini_hover = !self.mini_hover;
             self.save_prefs();
             return;
         }
@@ -4254,7 +4327,8 @@ fn settings_body_h(app: &OverlayApp) -> f32 {
     let mut h = SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_SEC_GAP
         + SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_GROUP_GAP
         + SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_GROUP_GAP
-        + SETTING_ROW_H * 4.0 + SETTINGS_SEC_GAP
+        + SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_GROUP_GAP
+        + SETTING_ROW_H * 5.0 + SETTINGS_SEC_GAP
         + SETTING_HEAD_H + SETTING_CHIP_H + SETTINGS_SEC_GAP
         + SETTING_HEAD_H + SETTING_ROW_H * 4.0;
     let extra = settings_extra_rows(app);
@@ -4621,11 +4695,19 @@ fn paint_settings_viewport(ctx: &egui::Context, app: &mut OverlayApp) {
                     ("skin:loot", "픽셀 코인", app.s_skin == "loot"),
                 ]);
                 yy += SETTINGS_GROUP_GAP * s;
+                yy = paint_section(&p, x, yy, iw, "미니 투명도");
+                yy = paint_setting_chips(&mut p, x, yy, iw, &[
+                    ("mini_opacity:light", "약하게", app.mini_opacity == "light"),
+                    ("mini_opacity:mid", "보통", app.mini_opacity == "mid"),
+                    ("mini_opacity:strong", "강하게", app.mini_opacity == "strong"),
+                ]);
+                yy += SETTINGS_GROUP_GAP * s;
                 yy = paint_toggles(&mut p, x, yy, iw, &[
                     ("command:transparency", "투명도 줄이기", app.reduce_transparency),
                     ("command:motion", "모션 줄이기", app.reduce_motion),
                     ("command:top", "항상 위", app.on_top),
                     ("command:mini", "미니 모드", app.mini),
+                    ("command:mini_hover", "마우스 올리면 선명하게", app.mini_hover),
                 ]);
                 yy += SETTINGS_SEC_GAP * s;
                 yy = paint_section(&p, x, yy, iw, "크기");
@@ -4830,5 +4912,42 @@ mod tests {
         assert_eq!(fade(Color32::WHITE, 10), Color32::from_rgba_premultiplied(10, 10, 10, 10));
         assert_eq!(hex("#34C759", 255), Color32::from_rgb(0x34, 0xC7, 0x59));
         assert_eq!(fade(Color32::WHITE, 0), Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn mini_alpha_fades_only_the_idle_mini() {
+        assert_eq!(mini_alpha(false, false, false, false, "strong"), 1.0, "S/M/L");
+        assert_eq!(mini_alpha(true, false, false, false, "light"), 0.85);
+        assert_eq!(mini_alpha(true, false, false, false, "mid"), 0.70);
+        assert_eq!(mini_alpha(true, false, false, false, "strong"), 0.55);
+        assert_eq!(mini_alpha(true, false, false, false, "weird"), 0.70);
+        assert_eq!(mini_alpha(true, true, false, false, "strong"), 1.0, "투명도 줄이기가 먼저");
+        assert_eq!(mini_alpha(true, false, true, false, "strong"), 1.0, "설정·팔레트");
+        assert_eq!(mini_alpha(true, false, false, true, "strong"), 1.0, "커서");
+    }
+
+    #[test]
+    fn clear_color_is_eframe_default_unless_mini_or_hidden() {
+        let default = Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32();
+        assert_eq!(clear_rgba(false, false), default);
+        assert_eq!(clear_rgba(true, false), [0.0; 4]);
+        assert_eq!(clear_rgba(false, true), [0.0; 4]);
+    }
+
+    #[test]
+    fn visual_prefs_round_trip_with_defaults() {
+        let (_g, _tmp) = crate::test_home("visual-prefs");
+        std::fs::create_dir_all(data_dir()).unwrap();
+        let shared = || Arc::new(Mutex::new(MeterSnapshot::default()));
+        let app = OverlayApp::from_prefs(shared(), false);
+        assert_eq!((app.mini_opacity.as_str(), app.mini_hover), ("mid", true));
+        std::fs::write(prefs_path(), r#"{"mini_opacity":"strong","mini_hover":false}"#).unwrap();
+        let app = OverlayApp::from_prefs(shared(), false);
+        assert_eq!((app.mini_opacity.as_str(), app.mini_hover), ("strong", false));
+        app.save_prefs();
+        let back = load_prefs();
+        assert_eq!((back["mini_opacity"].as_str(), back["mini_hover"].as_bool()), (Some("strong"), Some(false)));
+        std::fs::write(prefs_path(), r#"{"mini_opacity":"weird"}"#).unwrap();
+        assert_eq!(OverlayApp::from_prefs(shared(), false).mini_opacity, "mid");
     }
 }

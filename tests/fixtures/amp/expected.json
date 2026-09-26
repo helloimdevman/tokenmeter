@@ -1,0 +1,70 @@
+{
+  "source": "ccusage rust/adapters/amp/src/parser.rs:376-420 (T-thread-a), :477-497 (T-thread-total) (MIT © ryoppippi); tokscale crates/tokscale-core/src/sessions/amp.rs:366-419 (sub/T-partial) (MIT © Junho Yeo); step-2 synthetic: T-partial rewritten, message 2 output 10→15 and message 3 appended",
+  "steps": [
+    {
+      "calls": 5,
+      "input": 165,
+      "cache_read": 23372,
+      "cache_write": 986,
+      "output": 595,
+      "by_model": {
+        "claude-haiku-4-5-20251001": {
+          "input": 15,
+          "cache_read": 23372,
+          "cache_write": 986,
+          "output": 565
+        },
+        "claude-sonnet-4-0": {
+          "input": 150,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 30
+        }
+      },
+      "sessions": [
+        "T-thread-a",
+        "T-thread-total",
+        "thread-partial"
+      ]
+    },
+    {
+      "calls": 6,
+      "input": 172,
+      "cache_read": 23372,
+      "cache_write": 986,
+      "output": 603,
+      "by_model": {
+        "claude-haiku-4-5-20251001": {
+          "input": 15,
+          "cache_read": 23372,
+          "cache_write": 986,
+          "output": 565
+        },
+        "claude-sonnet-4-0": {
+          "input": 157,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 38
+        }
+      },
+      "sessions": [
+        "T-thread-a",
+        "T-thread-total",
+        "thread-partial"
+      ]
+    }
+  ],
+  "ccusage": {
+    "cmd": "amp",
+    "env": {
+      "AMP_DATA_DIR": "$HOME/.local/share/amp"
+    },
+    "totals": {
+      "input": 115,
+      "cache_read": 23372,
+      "cache_write": 986,
+      "output": 585
+    }
+  },
+  "differs": "ccusage reads only usageLedger.events when a ledger exists, so T-partial counts as its single ledger event (100 in, 20 out) and misses messages 2 and 3 (57 in, 18 out). tokscale reconciles the partial ledger with messages and counts both (its assertion: 50 and 100 input), like us: we read messages[].usage only."
+}

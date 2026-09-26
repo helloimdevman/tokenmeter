@@ -1,0 +1,35 @@
+label: Jcode
+# sessions/session_<x>.json(체크포인트마다 통째로 다시 쓰는 스냅샷) + session_<x>.journal.jsonl(사이 일지)
+roots: ["${JCODE_HOME:-~/.jcode}/sessions"]
+# 일지는 스냅샷에 아직 접히지 않은 메시지를 덧붙이거나, 같은 id의 최종 사용량을 다시 적는다.
+# 두 소스가 키 장부 하나를 같이 쓰므로 같은 메시지는 칸마다 큰 값으로 한 번 센다(tokscale의 일지 우선과 같음).
+# ponytail: 키는 메시지 id뿐이다(일지 줄에는 세션 id가 없고 파일 이름에서 .journal을 뗄 수 없다).
+#   jcode id가 세션 사이에 겹치면 적게 센다. 그러면 $file.stem에서 접미사를 떼는 식이 필요하다.
+mode: delta
+key: id
+timestamp: timestamp
+# input 모양이 섞여 있다(jcode.rs uses_split_cache_accounting). cache_creation_input_tokens가 있으면(0이어도)
+# Anthropic 모양이라 input이 캐시 제외: 첫 식이 input + cache_read를 내고 input_includes가 cache_read를 뺀다
+# (`*`·`-`는 한쪽이 없으면 값이 없다). 없으면 OpenAI 모양(캐시 포함)이라 cache_read가 input 이하일 때만 뺀다.
+input_includes: [cache_read]
+fields:
+  input:
+    - "token_usage.cache_creation_input_tokens * 0 - token_usage.input_tokens - token_usage.cache_read_input_tokens * -1"
+    - token_usage.input_tokens
+  cache_read: token_usage.cache_read_input_tokens
+  cache_write: token_usage.cache_creation_input_tokens
+  # reasoning_output_tokens는 Codex 이름이고 output 안이다(더하지 않는다)
+  output: token_usage.output_tokens
+duration_ms: tool_duration_ms
+context:
+  session: [$.id, $file.stem]
+  # 스냅샷은 세션 수준 값, 일지는 meta가 그 뒤 메시지부터 바꾼다
+  model: [meta.model, model]
+  cwd: [meta.working_dir, working_dir]
+sources:
+  - patterns: ["**/session_*.json"]
+    format: json
+    each: messages
+  - patterns: ["**/session_*.journal.jsonl"]
+    each: append_messages
+default_model: unknown

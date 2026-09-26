@@ -1,0 +1,1 @@
+{"meta":{"provider_key":"openai","model":"journal-model","working_dir":"/work/journal-project"},"append_messages":[{"id":"assistant_journal","role":"assistant","timestamp":"2026-06-16T12:00:02Z","token_usage":{"input_tokens":200,"output_tokens":20,"cache_read_input_tokens":50}}]}

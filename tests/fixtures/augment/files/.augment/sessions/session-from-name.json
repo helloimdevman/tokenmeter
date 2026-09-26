@@ -1,0 +1,24 @@
+{
+ "agentState": {
+  "modelId": "gpt-5-4"
+ },
+ "chatHistory": [
+  {
+   "completed": true,
+   "finishedAt": "2026-07-20T13:33:00.000Z",
+   "sequenceId": "seq-a",
+   "exchange": {
+    "response_nodes": [
+     {
+      "token_usage": {
+       "input_tokens": 10,
+       "output_tokens": 5,
+       "cache_read_input_tokens": 0,
+       "cache_creation_input_tokens": 0
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

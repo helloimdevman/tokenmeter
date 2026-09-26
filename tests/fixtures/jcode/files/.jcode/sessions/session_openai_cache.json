@@ -1,0 +1,17 @@
+{
+ "id": "session_openai_cache",
+ "provider_key": "openai",
+ "model": "gpt-5.6-sol",
+ "messages": [
+  {
+   "id": "a_openai",
+   "role": "assistant",
+   "timestamp": "2026-06-16T12:00:01Z",
+   "token_usage": {
+    "input_tokens": 19347,
+    "output_tokens": 71,
+    "cache_read_input_tokens": 15872
+   }
+  }
+ ]
+}

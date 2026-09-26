@@ -1,0 +1,27 @@
+label: Amp
+# 스레드마다 JSON 하나(threads/**/T-<uuid>.json), 실행 중 통째로 다시 쓴다.
+# AMP_DATA_DIR은 쉼표 목록일 수 있다(ccusage). 없으면 XDG 데이터 디렉터리(macOS도 ~/.local/share).
+roots: ["${AMP_DATA_DIR:-${XDG_DATA_HOME:-~/.local/share}/amp}/threads"]
+patterns: ["**/T-*.json"]
+format: json
+each: messages
+match:
+  role: assistant
+# 메시지마다 한 호출. 다시 쓸 때 같은 메시지가 또 오므로 칸마다 큰 값만 센다.
+# messageId는 스레드 안 순번이라 스레드 id와 묶는다. 없으면(요즘 스키마) 파일 안 위치.
+# ponytail: 옛 usageLedger 스레드도 messages[].usage를 거울처럼 가져서 messages만 읽는다.
+#   메시지 짝이 없는 원장 이벤트는 놓친다.
+mode: delta
+key: ["$.id & messageId", "$file.path & $index"]
+timestamp: [usage.timestamp, timestamp, $.created]
+fields:
+  input: usage.inputTokens                   # 캐시 제외(totalInputTokens = input + 두 캐시)
+  cache_read: usage.cacheReadInputTokens
+  cache_write: usage.cacheCreationInputTokens
+  # totalTokens만 있는 사용량은 출력으로 본다(ccusage)
+  output: [usage.outputTokens, usage.totalTokens]
+context:
+  session: [$.id, $file.stem]
+  model: [usage.model, model]
+# credits는 Amp 크레딧이지 달러가 아니라 읽지 않는다
+default_model: unknown

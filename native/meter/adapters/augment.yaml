@@ -1,0 +1,23 @@
+label: Augment Code
+# 세션마다 JSON 하나(<sessionId>.json), 턴이 끝날 때마다 통째로 다시 쓴다
+roots: ["~/.augment/sessions"]
+patterns: ["*.json"]
+format: json
+each: chatHistory
+# completed: true인 턴만(중단된 턴의 부분 사용량은 세지 않는다, tokscale과 같음)
+match:
+  completed: true
+# 턴 값은 completed가 된 뒤 최종이다. 키는 세션(파일 이름) 범위.
+mode: delta
+key: ["$file.stem & exchange.request_id", "$file.stem & sequenceId", "$file.stem & $index"]
+timestamp: finishedAt
+# 응답 노드들을 더하지 않고 마지막으로 값이 있는 노드 하나를 쓴다. input은 캐시 제외.
+fields:
+  input: "exchange.response_nodes[?token_usage.output_tokens][-1].token_usage.input_tokens"
+  cache_read: "exchange.response_nodes[?token_usage.output_tokens][-1].token_usage.cache_read_input_tokens"
+  cache_write: "exchange.response_nodes[?token_usage.output_tokens][-1].token_usage.cache_creation_input_tokens"
+  output: "exchange.response_nodes[?token_usage.output_tokens][-1].token_usage.output_tokens"
+context:
+  session: [$.sessionId, $file.stem]
+  model: [exchange.model_id, $.agentState.modelId]
+default_model: unknown

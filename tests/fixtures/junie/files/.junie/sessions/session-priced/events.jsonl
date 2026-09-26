@@ -1,0 +1,2 @@
+{"kind":"UserPromptEvent","timestampMs":1781803079339}
+{"kind":"SessionA2uxEvent","event":{"agentEvent":{"kind":"LlmResponseMetadataEvent","agent":{"id":"main"},"modelUsage":[{"model":"junie-test-model","cost":0.123,"inputTokens":1000,"outputTokens":250},{"model":"junie-test-model","inputTokens":10,"cacheInputTokens":2,"cacheCreateTokens":3,"outputTokens":5,"reasoningTokens":1}]}},"timestampMs":1781803080555}

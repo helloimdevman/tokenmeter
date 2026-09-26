@@ -1,0 +1,17 @@
+{
+ "id": "session_journal",
+ "provider_key": "cliproxyapi",
+ "model": "snapshot-model",
+ "working_dir": "/work/project",
+ "messages": [
+  {
+   "id": "assistant_snapshot",
+   "role": "assistant",
+   "timestamp": "2026-06-16T12:00:01Z",
+   "token_usage": {
+    "input_tokens": 100,
+    "output_tokens": 10
+   }
+  }
+ ]
+}

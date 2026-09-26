@@ -1,0 +1,18 @@
+{
+ "id": "session_anthropic_cache",
+ "provider_key": "anthropic-api-key",
+ "model": "claude-sonnet-4-5",
+ "messages": [
+  {
+   "id": "a_anthropic",
+   "role": "assistant",
+   "timestamp": "2026-06-16T12:00:01Z",
+   "token_usage": {
+    "input_tokens": 20000,
+    "output_tokens": 71,
+    "cache_read_input_tokens": 15872,
+    "cache_creation_input_tokens": 0
+   }
+  }
+ ]
+}

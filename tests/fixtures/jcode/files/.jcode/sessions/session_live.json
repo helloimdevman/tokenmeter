@@ -1,0 +1,15 @@
+{
+ "id": "session_live",
+ "model": "snapshot-model",
+ "messages": [
+  {
+   "id": "assistant_live",
+   "role": "assistant",
+   "timestamp": "2026-06-16T12:00:01Z",
+   "token_usage": {
+    "input_tokens": 100,
+    "output_tokens": 10
+   }
+  }
+ ]
+}

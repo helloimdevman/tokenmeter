@@ -1,0 +1,126 @@
+label: Codebuff
+# <채널>/projects/<프로젝트>/chats/<chatId>/chat-messages.json: 최상위 배열, 실행 중 통째로 다시 쓴다.
+# CODEBUFF_DATA_DIR은 채널 루트(쉼표 목록 가능, ccusage). dev·staging 채널은 늘 본다.
+# freebuff도 같은 트리에 쓰지만 사용량이 없어 여기서 아무것도 나오지 않는다.
+roots:
+  - "${CODEBUFF_DATA_DIR:-~/.config/manicode}/projects"
+  - "~/.config/manicode-dev/projects"
+  - "~/.config/manicode-staging/projects"
+patterns: ["**/chat-messages.json"]
+format: json
+each: "$"
+# variant가 있으면 variant, 없으면 role(ccusage·tokscale의 variant.or(role))
+match:
+  $any:
+    - {variant: [ai, agent, assistant]}
+    - {variant: {$exists: false}, role: [ai, agent, assistant]}
+# 메시지 id가 있으면 파일 사이 복사본까지 한 번(ccusage와 같음). 없으면 파일 안 위치.
+mode: delta
+key: [id, "$file.path & $index"]
+timestamp: [timestamp, createdAt, metadata.timestamp]
+# 사용량 자리는 metadata.usage → metadata.codebuff.usage → runState 기록의 마지막 assistant 항목,
+# 자리마다 철자 4–6가지(앞에서부터 처음 값이 있는 것).
+# OpenAI 모양(prompt_tokens)은 input에 캐시 읽기가 들어 있어 뺀다. 두 업스트림은 빼지 않는다.
+# 캐시 쓰기 철자 cachedTokensCreated는 ccusage처럼 쓰기로 본다(tokscale은 읽기).
+# 업스트림은 칸마다 처음 0 아닌 값이고 runState 기록 전체를 칸마다 섞는다. 여기서는 처음 값이 있는 것,
+# 기록은 마지막 항목 하나만(옛 턴의 값이 새 메시지에 새지 않게).
+fields:
+  input:
+    - metadata.usage.inputTokens
+    - metadata.usage.input_tokens
+    - "metadata.usage.promptTokens - metadata.usage.promptTokensDetails.cachedTokens"
+    - metadata.usage.promptTokens
+    - "metadata.usage.prompt_tokens - metadata.usage.prompt_tokens_details.cached_tokens"
+    - metadata.usage.prompt_tokens
+    - metadata.codebuff.usage.inputTokens
+    - metadata.codebuff.usage.input_tokens
+    - "metadata.codebuff.usage.promptTokens - metadata.codebuff.usage.promptTokensDetails.cachedTokens"
+    - metadata.codebuff.usage.promptTokens
+    - "metadata.codebuff.usage.prompt_tokens - metadata.codebuff.usage.prompt_tokens_details.cached_tokens"
+    - metadata.codebuff.usage.prompt_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.inputTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.input_tokens
+    - "metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.promptTokens - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.promptTokensDetails.cachedTokens"
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.promptTokens
+    - "metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.prompt_tokens - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.prompt_tokens_details.cached_tokens"
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.prompt_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.inputTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.input_tokens
+    - "metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.promptTokens - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.promptTokensDetails.cachedTokens"
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.promptTokens
+    - "metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.prompt_tokens - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.prompt_tokens_details.cached_tokens"
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.prompt_tokens
+  cache_read:
+    - metadata.usage.cacheReadInputTokens
+    - metadata.usage.cache_read_input_tokens
+    - metadata.usage.promptTokensDetails.cachedTokens
+    - metadata.usage.prompt_tokens_details.cached_tokens
+    - metadata.codebuff.usage.cacheReadInputTokens
+    - metadata.codebuff.usage.cache_read_input_tokens
+    - metadata.codebuff.usage.promptTokensDetails.cachedTokens
+    - metadata.codebuff.usage.prompt_tokens_details.cached_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.cacheReadInputTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.cache_read_input_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.promptTokensDetails.cachedTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.prompt_tokens_details.cached_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.cacheReadInputTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.cache_read_input_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.promptTokensDetails.cachedTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.prompt_tokens_details.cached_tokens
+  cache_write:
+    - metadata.usage.cacheCreationInputTokens
+    - metadata.usage.cache_creation_input_tokens
+    - metadata.usage.cacheCreationTokens
+    - metadata.usage.cache_creation_tokens
+    - metadata.usage.cachedTokensCreated
+    - metadata.usage.cached_tokens_created
+    - metadata.codebuff.usage.cacheCreationInputTokens
+    - metadata.codebuff.usage.cache_creation_input_tokens
+    - metadata.codebuff.usage.cacheCreationTokens
+    - metadata.codebuff.usage.cache_creation_tokens
+    - metadata.codebuff.usage.cachedTokensCreated
+    - metadata.codebuff.usage.cached_tokens_created
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.cacheCreationInputTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.cache_creation_input_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.cacheCreationTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.cache_creation_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.cachedTokensCreated
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.cached_tokens_created
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.cacheCreationInputTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.cache_creation_input_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.cacheCreationTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.cache_creation_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.cachedTokensCreated
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.cached_tokens_created
+  # totalTokens만 있으면 출력으로 본다(ccusage)
+  output:
+    - metadata.usage.outputTokens
+    - metadata.usage.output_tokens
+    - metadata.usage.completionTokens
+    - metadata.usage.completion_tokens
+    - metadata.codebuff.usage.outputTokens
+    - metadata.codebuff.usage.output_tokens
+    - metadata.codebuff.usage.completionTokens
+    - metadata.codebuff.usage.completion_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.outputTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.output_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.completionTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.completion_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.outputTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.output_tokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.completionTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.completion_tokens
+    - metadata.usage.totalTokens
+    - metadata.codebuff.usage.totalTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.usage][-1].providerOptions.usage.totalTokens
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.usage][-1].providerOptions.codebuff.usage.totalTokens
+context:
+  # 세션은 경로에만 있다: 채널, 프로젝트, chatId
+  session: "$file.dir[-5] & $file.dir[-3] & $file.dir[-1]"
+  model:
+    - metadata.model
+    - metadata.usage.model
+    - metadata.codebuff.usage.model
+    - metadata.runState.sessionState.mainAgentState.messageHistory[?providerOptions.codebuff.model][-1].providerOptions.codebuff.model
+# credits는 Codebuff 크레딧이지 달러가 아니라 읽지 않는다
+default_model: unknown

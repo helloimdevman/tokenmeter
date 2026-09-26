@@ -1,0 +1,34 @@
+{
+ "sessionId": "s1b",
+ "agentState": {
+  "modelId": "grok-4-5"
+ },
+ "chatHistory": [
+  {
+   "completed": true,
+   "finishedAt": "2026-07-20T13:33:00.000Z",
+   "exchange": {
+    "model_id": "grok-4-5",
+    "request_id": "r1",
+    "response_nodes": [
+     {
+      "token_usage": {
+       "input_tokens": 100,
+       "output_tokens": 10,
+       "cache_read_input_tokens": 50,
+       "cache_creation_input_tokens": 0
+      }
+     },
+     {
+      "token_usage": {
+       "input_tokens": 100,
+       "output_tokens": 10,
+       "cache_read_input_tokens": 50,
+       "cache_creation_input_tokens": 0
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

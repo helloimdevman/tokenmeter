@@ -1,0 +1,24 @@
+[
+ {
+  "variant": "user",
+  "content": "hi"
+ },
+ {
+  "variant": "ai",
+  "timestamp": "2025-12-20T12:00:05.000Z",
+  "metadata": {
+   "model": "claude-sonnet-4-20250514",
+   "usage": {
+    "inputTokens": 10,
+    "outputTokens": 5
+   }
+  }
+ },
+ {
+  "variant": "ai",
+  "timestamp": "2025-12-20T12:00:06.000Z",
+  "metadata": {
+   "model": "claude-sonnet-4-20250514"
+  }
+ }
+]

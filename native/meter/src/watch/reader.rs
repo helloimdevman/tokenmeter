@@ -293,6 +293,14 @@ impl ServiceReader {
         }
     }
 
+    /// 다음 폴이 같은 DB 쿼리 간격(2초)을 기다리지 않게 한다. 하네스가 step-2 앞에서 부른다.
+    #[doc(hidden)]
+    pub fn forget_sqlite_gap(&mut self) {
+        for s in &mut self.sources {
+            s.db.values_mut().for_each(|d| d.queried = 0.0);
+        }
+    }
+
     pub fn poll(&mut self) -> Vec<TokenDelta> {
         let mut all = Vec::new();
         for i in 0..self.sources.len() {

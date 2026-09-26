@@ -117,6 +117,7 @@ fn run_in(id: &str, spec_text: Option<&str>, dir: &Path, tmp: &Path) -> Result<V
                     .map_err(|e| format!("{}: {e}", p.display()))?;
             }
         }
+        reader.forget_sqlite_gap();
         deltas.extend(reader.poll());
         steps.push(totals(&deltas));
     }
@@ -470,6 +471,30 @@ fn has_email(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step2_sql_update_is_read_on_the_second_poll() {
+        // run()은 HOME을 바꾼다: 같은 프로세스의 test_home() 테스트와 겹치지 않게 그 잠금도 쥔다.
+        let _home = crate::TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("tokenmeter-step2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("files/d")).unwrap();
+        fs::create_dir_all(dir.join("step-2/d")).unwrap();
+        fs::write(
+            dir.join("files/d/x.db.sql"),
+            "CREATE TABLE t(id TEXT, updated INTEGER, n INTEGER); INSERT INTO t VALUES ('a', 1000, 5);",
+        )
+        .unwrap();
+        fs::write(dir.join("step-2/d/x.db.sql"), "UPDATE t SET n = 9, updated = 2000;").unwrap();
+        let spec = r#"{roots: ["~/d"], patterns: ["x.db"], format: sqlite, key: id, cursor: updated,
+                       query: "SELECT id, updated, n FROM t WHERE updated >= ?1", fields: {output: n}}"#;
+        let got = run("step2-sql", Some(spec), &dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            (got[0]["output"].clone(), got[1]["output"].clone()),
+            (json!(5), json!(9))
+        );
+    }
 
     #[test]
     fn personal_data_finds_paths_keys_emails_and_long_strings() {

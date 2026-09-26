@@ -1,0 +1,17 @@
+{
+  "source": "~/.hermes/state.db: ccusage rust/adapters/hermes/src/loader.rs:138-198 (MIT (c) 2025 ryoppippi) and tokscale crates/tokscale-core/tests/hermes.rs legacy_skips_empty_sessions; ~/.hermes/profiles/work/state.db: tokscale tests/hermes.rs:130-201, :350-520, :656-763, :765-821, the provider split, :979-1059 and cost-only tests (MIT (c) 2025 Junho Yeo). Totals added by hand from those rows.",
+  "steps": [{"calls": 15, "input": 1018800, "cache_read": 200, "cache_write": 40, "output": 14990, "cost_usd": 5.15,
+             "by_model": {
+               "claude-sonnet-4-20250514": {"input": 1200, "cache_read": 50, "cache_write": 20, "output": 300},
+               "claude-sonnet-4": {"input": 2400, "cache_read": 50, "cache_write": 20, "output": 600},
+               "gpt-5.4": {"input": 1200, "output": 240},
+               "glm-5.2": {"input": 11000, "cache_read": 100, "output": 1200},
+               "mimo-v2.5-free": {"input": 3000, "output": 500},
+               "cohere/north-mini-code:free": {"input": 1000, "output": 150},
+               "claude-opus-4-6": {"input": 999000, "output": 12000}},
+             "sessions": ["legacy-valid", "session-1", "session-backfilled", "session-cost", "session-cost-only",
+                          "session-multi", "session-not-backfilled", "session-partial", "session-split"]}],
+  "differs": "Reasoning is inside output in Hermes (agent/usage_pricing.py normalize_usage), so reasoning_tokens is never added; ccusage, tokscale and TokenTracker all add it on top (ccusage total 1580 for session-1, ours 1570). We read session_model_usage like tokscale (auxiliary title/vision/compression calls live only there), and sessions totals only for sessions with no smu row; ccusage and TokenTracker read only sessions, so they miss the smu-only rows. ccusage also reads only <HERMES_HOME>/state.db, not profiles/*/state.db, hence its totals are the main DB alone. Cost per row is actual when > 0, else estimated (tokscale); ccusage takes actual.or(estimated) per session.",
+  "ccusage": {"cmd": "hermes", "env": {"HERMES_HOME": "$HOME/.hermes"},
+              "totals": {"input": 1300, "output": 320, "cache_read": 50, "cache_write": 20}}
+}

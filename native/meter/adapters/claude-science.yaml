@@ -1,0 +1,36 @@
+label: Claude Science
+roots: ["${CLAUDE_SCIENCE_HOME:-~/.claude-science}"]
+# operon.db는 이름을 바꾸기 전의 파일이다. 조직이 여럿이면 orgs/<slug>/ 아래에 하나씩
+patterns: ["operon-cli.db", "operon.db", "orgs/*/operon-cli.db", "orgs/*/operon.db"]
+format: sqlite
+# frame 행은 턴이 이어지는 동안 제자리에서 커진다: frame마다 누적 스트림 하나. 하위 frame은 제 카운터를 가진다.
+mode: cumulative
+key: id
+cursor: updated_at
+# context_data는 읽지 않는다(데모 frame의 옛 카운터가 들어 있다). aux_* 열은 나중 마이그레이션에서 생겼다.
+query:
+  - |
+    SELECT id, parent_frame_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+           aux_input_tokens, aux_output_tokens, aux_cache_read_tokens, aux_cache_write_tokens,
+           created_at, updated_at, completed_at
+    FROM frames WHERE updated_at >= ?1
+  - |
+    SELECT id, parent_frame_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+           created_at, updated_at, completed_at
+    FROM frames WHERE updated_at >= ?1
+timestamp: [completed_at, updated_at, created_at]
+# input_tokens는 두 캐시를 포함한다. aux_*는 배경 보조 호출(압축, 출처, 검사)의 따로 과금되는 사용량이다.
+fields:
+  input: "input_tokens + aux_input_tokens"
+  cache_read: "cache_read_tokens + aux_cache_read_tokens"
+  cache_write: "cache_write_tokens + aux_cache_write_tokens"
+  output: "output_tokens + aux_output_tokens"
+input_includes: [cache_read, cache_write]
+# 누적 행이라 필드 합은 컨텍스트 크기가 아니다
+ctx_tokens: $ctx.none
+subagent: parent_frame_id
+context:
+  session: [parent_frame_id, id]
+  model: model
+default_model: claude-science
+vendor: anthropic

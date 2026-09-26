@@ -1,0 +1,65 @@
+label: Hermes Agent
+# 프로필마다 state.db 하나. 정확히 state.db만 맞춘다(옆의 state.db.pre-update-emergency-*.bak 복사본은 세지 않는다)
+roots: ["${HERMES_HOME:-~/.hermes}"]
+patterns: ["state.db", "profiles/*/state.db"]
+format: sqlite
+# 두 표 모두 행을 제자리에서 키우는 누적치다(행마다 스트림 하나)
+mode: cumulative
+key: k
+timestamp: seen
+fields:
+  input: input_tokens                  # 캐시 제외
+  cache_read: cache_read_tokens
+  cache_write: cache_write_tokens
+  output: output_tokens                # reasoning_tokens는 output 안에 이미 있다
+cost_usd: cost
+# 누적 행이라 필드 합은 컨텍스트 크기가 아니다. 요청마다의 프롬프트 크기는 기록되지 않는다.
+ctx_tokens: $ctx.none
+subagent: parent_session_id
+context:
+  session: [parent_session_id, session_id]
+  cwd: cwd
+  model: model
+  vendor: billing_provider
+  endpoint: billing_base_url
+default_model: default
+sources:
+  # v20+: 경로(모델·프로바이더·URL·모드·task)마다 한 행. 보조 호출(title_generation, vision …)은 이 표에만 있다
+  - cursor: seen
+    query:
+      - |
+        SELECT u.session_id || '|' || u.model || '|' || u.billing_provider || '|' || u.billing_base_url
+                 || '|' || u.billing_mode || '|' || u.task AS k,
+               u.session_id, u.model, u.billing_provider, u.billing_base_url,
+               u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
+               COALESCE(NULLIF(u.actual_cost_usd, 0), u.estimated_cost_usd, 0) AS cost,
+               COALESCE(u.last_seen, s.started_at) AS seen, s.parent_session_id, s.cwd
+        FROM session_model_usage u LEFT JOIN sessions s ON s.id = u.session_id
+        WHERE COALESCE(u.last_seen, s.started_at) >= ?1
+      - |
+        SELECT u.session_id || '|' || u.model || '|' || u.billing_provider || '|' || u.billing_base_url
+                 || '|' || u.billing_mode || '|' || u.task AS k,
+               u.session_id, u.model, u.billing_provider, u.billing_base_url,
+               u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
+               COALESCE(NULLIF(u.actual_cost_usd, 0), u.estimated_cost_usd, 0) AS cost,
+               COALESCE(u.last_seen, s.started_at) AS seen
+        FROM session_model_usage u LEFT JOIN sessions s ON s.id = u.session_id
+        WHERE COALESCE(u.last_seen, s.started_at) >= ?1
+  # smu 행이 하나도 없는 세션(v20 이전 빌드)만 sessions 합계로. 일부만 덮인 세션을 채우지 않는다(tokscale).
+  # started_at은 행이 커져도 그대로라 커서로 못 쓴다: 바뀔 때마다 전체(세션 수만큼, 작다).
+  # ponytail: 데몬이 도는 중에 v20으로 올리면 이전 세션이 smu 씨앗 행(새 키)으로 한 번 더 보인다.
+  # 씨앗 행 시각은 started_at이라 4.4 문턱이 오래된 세션은 거른다. 문제가 되면 씨앗 행을 세션 키로 잇는다.
+  - query:
+      - |
+        SELECT id AS k, id AS session_id, model, billing_provider,
+               input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+               COALESCE(NULLIF(actual_cost_usd, 0), estimated_cost_usd, 0) AS cost, started_at AS seen
+        FROM sessions s
+        WHERE TRIM(COALESCE(model, '')) != ''
+          AND NOT EXISTS (SELECT 1 FROM session_model_usage u WHERE u.session_id = s.id)
+      - |
+        SELECT id AS k, id AS session_id, model, billing_provider,
+               input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+               COALESCE(NULLIF(actual_cost_usd, 0), estimated_cost_usd, 0) AS cost, started_at AS seen
+        FROM sessions
+        WHERE TRIM(COALESCE(model, '')) != ''

@@ -1,0 +1,22 @@
+label: Kiro
+# 에이전트 확장(kiro.kiroagent, Continue.dev 계열)이 요청마다 한 행을 덧붙인다. Linux는 XDG_CONFIG_HOME을 따른다.
+roots:
+  - "~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/dev_data"
+  - "${XDG_CONFIG_HOME:-~/.config}/Kiro/User/globalStorage/kiro.kiroagent/dev_data"
+patterns: ["devdata.sqlite"]
+format: sqlite
+mode: delta
+# 설치마다 id가 1부터라 파일까지 키에 넣는다
+key: "$file.path & id"
+cursor: id
+query: "SELECT id, model, provider, tokens_prompt, tokens_generated, timestamp FROM tokens_generated WHERE id >= ?1"
+timestamp: timestamp
+fields:
+  input: tokens_prompt                  # 프롬프트 전체. 캐시 칸이 없다
+  output: tokens_generated
+context:
+  model: model                          # 대개 라우팅 이름 agent
+  vendor: provider
+default_model: kiro-agent
+# Free·Pro·Pro+·Power 모두 크레딧 구독이다
+plan: subscription

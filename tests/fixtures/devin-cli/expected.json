@@ -1,0 +1,10 @@
+{
+  "source": "TokenTracker test/devin-parser.test.js:360-454 (72958, then 72970), :456-493 (550), :495-543 (235), :545-624 (pending and request-less rows add 0), :626-686 (110 / 8900 / 66), :688-724 (33) (MIT (c) 2026 xiufengsun); tokscale sessions/devin.rs:678-714 (MIT (c) 2025 Junho Yeo). All rows in one sessions.db; totals added by hand.",
+  "steps": [{"calls": 9, "input": 12288, "cache_read": 69137, "cache_write": 0, "output": 1439,
+             "by_model": {
+               "swe-2-high": {"input": 4228, "cache_read": 69137, "cache_write": 0, "output": 533},
+               "compactor": {"input": 8000, "output": 900},
+               "swe-2": {"input": 60, "output": 6}},
+             "sessions": ["s-original", "s1"]}],
+  "differs": "Dedup is by request_id over the whole DB (TokenTracker), so the fork copy in s-fork counts once; tokscale keys on (session, request) and counts it twice. Rows without request_id are skipped (TokenTracker): tokscale counts them per row_id (the glm-5-2-max-1m row, 31134/147/8), but every replayed copy gets a new row_id. Rows without a metrics block are pending and skipped until finalized. A corrected sibling keeps the larger value per field (180/25/30), which is TokenTracker's 235."
+}

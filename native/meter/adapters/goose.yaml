@@ -1,0 +1,44 @@
+label: Goose
+# GOOSE_PATH_ROOT가 없으면 그 루트는 버린다(B4). macOS도 etcetera Xdg 전략이라 ~/.local/share가 기본이다.
+roots:
+  - "${GOOSE_PATH_ROOT}/data/sessions"
+  - "${XDG_DATA_HOME:-~/.local/share}/goose/sessions"
+  - "~/Library/Application Support/goose/sessions"
+  - "~/Library/Application Support/Block/goose/sessions"
+patterns: ["sessions.db"]
+format: sqlite
+# 세션 행의 accumulated_*를 요청마다 더해 쓴다: 세션마다 누적 스트림 하나
+mode: cumulative
+key: id
+cursor: updated
+# 판마다 열이 다르다(v13 비용, v14 캐시, v15 부모). * 로 받고 없는 열은 값이 없다.
+# hidden: total − input − output(옛 빌드가 output에 넣지 않은 Gemini 생각 토큰). 요즘 빌드는 0이다.
+query:
+  - |
+    SELECT *, CAST(strftime('%s', updated_at) AS INTEGER) AS updated,
+           MAX(COALESCE(accumulated_total_tokens, 0) - COALESCE(accumulated_input_tokens, 0)
+               - COALESCE(accumulated_output_tokens, 0), 0) AS hidden
+    FROM sessions WHERE CAST(strftime('%s', updated_at) AS INTEGER) >= ?1
+  - |
+    SELECT *, MAX(COALESCE(accumulated_total_tokens, 0) - COALESCE(accumulated_input_tokens, 0)
+               - COALESCE(accumulated_output_tokens, 0), 0) AS hidden
+    FROM sessions
+match: {model_config_json@json.model_name: {$exists: true}}
+timestamp: [updated_at, created_at]
+fields:
+  input: accumulated_input_tokens
+  cache_read: accumulated_cache_read_tokens
+  cache_write: accumulated_cache_write_tokens
+  output: "accumulated_output_tokens + hidden"
+input_includes: [cache_read, cache_write]
+cost_usd: accumulated_cost
+# 누적이 아닌 열은 마지막 요청의 프롬프트(캐시 포함)다
+ctx_tokens: input_tokens
+ctx_window: model_config_json@json.context_limit
+subagent: parent_session_id
+context:
+  session: [parent_session_id, id]
+  cwd: working_dir
+  model: model_config_json@json.model_name
+  vendor: provider_name
+default_model: default

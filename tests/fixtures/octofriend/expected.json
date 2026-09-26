@@ -1,0 +1,10 @@
+{
+  "source": "synthetic: research agents/octofriend.md sections 2-3 (Octofriend schema and usage paths, synthetic-lab/octofriend@9765799). Totals added by hand: ir 2 input 9216 - 8192 = 1024, ir 3 anthropic total 200 as uncached input with cache_read 500, ir 4 1000 / 10.",
+  "steps": [{"calls": 3, "input": 2224, "cache_read": 8692, "cache_write": 0, "output": 362,
+             "by_model": {
+               "hf:deepseek-ai/DeepSeek-V3-0324": {"input": 1024, "cache_read": 8192, "output": 312},
+               "claude-sonnet-4-6": {"input": 200, "cache_read": 500, "output": 40},
+               "default": {"input": 1000, "cache_read": 0, "output": 10}},
+             "sessions": ["6f1c2d3e-0000-4000-8000-000000000001"], "project": "work/p1"}],
+  "differs": "tokscale's synthetic parser (sessions/synthetic.rs:112-235) queries a messages/token_usage table that Octofriend never had, so it reads nothing from a real sqlite.db. For type=anthropic models Octofriend stores Anthropic's already-uncached input_tokens as input.total, so cache is subtracted only for the other API types. Cache writes are not recorded."
+}

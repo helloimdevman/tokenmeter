@@ -1,3 +1,3 @@
-{"type": "session_meta", "payload": {"cwd": "/Users/dev/projects/tokenmeter", "session_id": "sess-codex-1", "model_provider": "openai"}}
-{"type": "turn_context", "payload": {"cwd": "/Users/dev/projects/tokenmeter", "model": "gpt-5.6-sol"}}
+{"type": "session_meta", "payload": {"cwd": "/work/projects/tokenmeter", "session_id": "sess-codex-1", "model_provider": "openai"}}
+{"type": "turn_context", "payload": {"cwd": "/work/projects/tokenmeter", "model": "gpt-5.6-sol"}}
 {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 50327, "cached_input_tokens": 34304, "cache_write_input_tokens": 0, "output_tokens": 384, "reasoning_output_tokens": 129}, "last_token_usage": {"total_tokens": 0}, "model_context_window": 0}}}

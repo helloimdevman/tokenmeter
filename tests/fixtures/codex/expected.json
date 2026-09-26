@@ -1,0 +1,6 @@
+{
+  "source": "synthetic: 0.1.0 fixture",
+  "steps": [{"calls": 1, "input": 16023, "cache_read": 34304, "cache_write": 0, "output": 384,
+             "by_model": {"gpt-5.6-sol": {"input": 16023, "cache_read": 34304, "cache_write": 0, "output": 384}},
+             "sessions": ["sess-codex-1"], "project": "projects/tokenmeter", "vendor": "openai"}]
+}

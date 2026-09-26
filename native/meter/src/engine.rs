@@ -708,8 +708,9 @@ fn nonempty(value: &str, fallback: &str) -> String {
     }
 }
 
+/// 경로 칸의 라벨(client, route, plan, model).
 /// 사용자가 추가한 서비스, 사설 호스트, 사내 모델 이름은 고정된 말로 바뀐다.
-fn route_key(delta: &TokenDelta) -> String {
+pub fn route_labels(delta: &TokenDelta) -> [String; 4] {
     let client = if crate::watch::is_builtin_service(&delta.service) {
         delta.service.as_str()
     } else {
@@ -721,13 +722,16 @@ fn route_key(delta: &TokenDelta) -> String {
         p @ ("subscription" | "api" | "unknown") => p,
         _ => "other",
     };
-    format!(
-        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+    [
         Label::Client.clean(client),
         Label::Route.clean(&crate::board::public_label(&delta.endpoint)),
-        plan,
-        crate::pricing::public_model(&delta.model)
-    )
+        plan.to_string(),
+        crate::pricing::public_model(&delta.model).to_string(),
+    ]
+}
+
+fn route_key(delta: &TokenDelta) -> String {
+    route_labels(delta).join("\u{1f}")
 }
 
 fn tokens_of(value: &Value) -> i64 {

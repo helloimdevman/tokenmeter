@@ -135,38 +135,6 @@ fn grok_chunk(event: &str, text: &str, thought: bool, total: i64) -> Value {
 }
 
 #[test]
-fn committed_fixtures_regress_every_enabled_service() {
-    let _home = crate::test_home("fixtures");
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures")
-        .canonicalize()
-        .unwrap();
-    let want = [
-        ("claude-code", (2, 60955, 2161, 813), "claude-opus-5", "sess-claude-1", "projects/tokenmeter", "anthropic"),
-        ("codex", (16023, 34304, 0, 384), "gpt-5.6-sol", "sess-codex-1", "projects/tokenmeter", "openai"),
-        ("opencode", (3265, 25344, 0, 88), "nemotron-3-ultra-free", "ses_1", "Users/dev", "opencode"),
-        ("grok", (122167, 1052672, 0, 12855), "grok-4.6-build", "sess-grok-1", "", "xai"),
-        ("cursor", (15, 80, 5, 7), "cursor-grok-4.6", "s1", "work/token-pet", "cursor"),
-    ];
-    let mut enabled: Vec<String> = default_specs().into_iter().map(|s| s.name).collect();
-    enabled.sort();
-    let mut covered: Vec<String> = want.iter().map(|w| w.0.to_string()).collect();
-    covered.sort();
-    assert_eq!(enabled, covered, "켜진 서비스마다 fixture 가 있어야 한다");
-    for (name, vector, model, session, project, vendor) in want {
-        let deltas = ServiceReader::new(spec_at(name, &root.join(name))).poll();
-        assert_eq!(deltas.len(), 1, "{name}");
-        let d = &deltas[0];
-        assert_eq!(vec4(d), vector, "{name}");
-        assert_eq!(
-            (d.service.as_str(), d.model.as_str(), d.session.as_str(), d.project.as_str(), d.vendor.as_str()),
-            (name, model, session, project, vendor),
-            "{name}"
-        );
-    }
-}
-
-#[test]
 fn enabled_services_declare_token_fields() {
     for spec in default_specs() {
         let has = |f: &str| spec.fields.get(f).cloned().flatten().is_some();

@@ -1,0 +1,6 @@
+{
+  "source": "synthetic: 0.1.0 fixture",
+  "steps": [{"calls": 1, "input": 3265, "cache_read": 25344, "cache_write": 0, "output": 88,
+             "by_model": {"nemotron-3-ultra-free": {"input": 3265, "cache_read": 25344, "cache_write": 0, "output": 88}},
+             "sessions": ["ses_1"], "project": "work/dev", "vendor": "opencode"}]
+}

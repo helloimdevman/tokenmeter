@@ -1,0 +1,9 @@
+{
+  "source": "synthetic: TokenTracker (MIT, xiufengsun) test/rollout-parser.test.js:4256-4291 @755fbd9 usage (2,1,3, total 6) -> TM (1,1,0,3), rewritten in the real Every Code envelope type=event (spec 6.1, protocol.rs:1904-1921); line 3 repeats the snapshot (dropped by key); line 4 is TokenTracker's builder envelope type=event_msg, which Every Code does not write and we do not match; session_configured model line added",
+  "differs": [
+    "TokenTracker matches top-level type event_msg (its test builder) and would also count line 4 (9,0,0,9); it has no event dedup for every-code (rollout.js:2508-2521) so a re-read snapshot like line 3 is counted again there"
+  ],
+  "steps": [{"calls": 1, "input": 1, "cache_read": 1, "cache_write": 0, "output": 3,
+             "by_model": {"gpt-5-codex": {"input": 1, "cache_read": 1, "cache_write": 0, "output": 3}},
+             "sessions": ["sess-every-1"]}]
+}

@@ -1,0 +1,37 @@
+label: AStudio
+# Codex 포크. 이 맥에서 실제 로그로 맞춰 보지 못해 꺼 둔다(스펙 6.1)
+enabled: false
+roots: ["~/.acode/sessions"]
+patterns: ["**/rollout-*.jsonl"]
+mode: delta
+timestamp: timestamp
+input_includes: [cache_read, cache_write]
+ctx_tokens: payload.info.last_token_usage.total_tokens
+ctx_window: payload.info.model_context_window
+context:
+  cwd: payload.cwd
+  model: payload.model
+  session: payload.session_id
+  vendor: payload.model_provider
+  effort: payload.effort
+# codex 와 같은 두 소스(스펙 3.2)
+sources:
+  - match: {type: event_msg, payload.type: token_count, payload.info: {$exists: true}}
+    key: payload.info.total_token_usage
+    # 포크·서브에이전트는 부모 기록을 포크 시각(머리 줄)으로 고쳐 써서 한 번에 복사한다.
+    # 부모 파일이 없어도(보관됨, 다른 루트) 머리 줄 뒤 1초 안의 줄은 배우기만 한다
+    # (ccusage parser.rs CODEX_REWRITTEN_BURST_PAUSE_MS와 같은 1초, 스펙 4.5)
+    replay_gate: 1
+    fields:
+      input: payload.info.last_token_usage.input_tokens
+      cache_read: payload.info.last_token_usage.cached_input_tokens
+      cache_write: payload.info.last_token_usage.cache_write_input_tokens
+      output: payload.info.last_token_usage.output_tokens
+  - match: {type: compacted, payload.latest_token_usage_record: {$exists: true}}
+    key: payload.compaction_response_id
+    fields:
+      input: payload.latest_token_usage_record.usage.input_tokens
+      cache_read: payload.latest_token_usage_record.usage.cached_input_tokens
+      cache_write: payload.latest_token_usage_record.usage.cache_write_input_tokens
+      output: payload.latest_token_usage_record.usage.output_tokens
+default_model: gpt-5.6-sol

@@ -1,0 +1,3 @@
+{"timestamp":"2026-05-05T21:50:00.000Z","type":"session_meta","payload":{"id":"parent-session","source":"interactive","model_provider":"azure","agent_nickname":"parent","cwd":"/repo-parent"}}
+{"timestamp":"2026-05-05T21:50:00.100Z","type":"turn_context","payload":{"model":"gpt-5.5","cwd":"/repo-parent"}}
+{"timestamp":"2026-05-05T21:51:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":116000,"cached_input_tokens":114000,"output_tokens":1000,"total_tokens":117000},"last_token_usage":{"input_tokens":73000,"cached_input_tokens":72000,"output_tokens":500,"total_tokens":73500}}}}

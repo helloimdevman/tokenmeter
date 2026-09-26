@@ -1,27 +1,42 @@
 label: Codex
-roots: ["~/.codex/sessions"]
-patterns: ["**/*.jsonl"]
-match:
-  payload.type: token_count
-# total_token_usage 는 세션 누적치. 이벤트가 중복돼도 안전하도록 누적 모드 사용.
-mode: cumulative
-key: null # 파일(=세션) 단위 누적
-input_includes: [cache_read]
-fields:
-  input: payload.info.total_token_usage.input_tokens
-  cache_read: payload.info.total_token_usage.cached_input_tokens
-  cache_write: payload.info.total_token_usage.cache_write_input_tokens
-  # reasoning_output_tokens 는 output_tokens 의 부분집합이라 더하지 않음
-  output: payload.info.total_token_usage.output_tokens
-# 누적 서비스라 fields 합계는 세션 총량이다 — 지금 컨텍스트는 last_token_usage 를 봐야 한다
+# archived_sessions 는 넣지 않는다: 옮겨진 옛 파일을 새 파일로 읽게 된다(스펙 3.2)
+roots: ["${CODEX_HOME:-~/.codex}/sessions"]
+patterns: ["**/rollout-*.jsonl"]
+mode: delta
+timestamp: timestamp
+# input_tokens 는 두 캐시를 포함한다. reasoning_output_tokens 는 output 안이라 더하지 않는다
+input_includes: [cache_read, cache_write]
+# fields 는 호출 하나(last_token_usage)라 지금 컨텍스트도 그 값이다
 ctx_tokens: payload.info.last_token_usage.total_tokens
 ctx_window: payload.info.model_context_window
 context:
   cwd: payload.cwd
-  model: payload.model
+  model: payload.model             # turn_context 줄에서 학습
   session: payload.session_id      # session_meta 줄에서 학습
   vendor: payload.model_provider   # 〃
   effort: payload.effort           # turn_context 줄에서 학습
+sources:
+  # 호출마다 last_token_usage 를 센다. 키는 스트림마다 고유한 누적치 객체 전체라
+  # 같은 스냅샷 반복, 압축 뒤 스냅샷, 포크·서브에이전트가 재생한 부모 줄이 같은 키가 된다(스펙 3.2)
+  - match: {type: event_msg, payload.type: token_count, payload.info: {$exists: true}}
+    key: payload.info.total_token_usage
+    # 포크·서브에이전트는 부모 기록을 포크 시각(머리 줄)으로 고쳐 써서 한 번에 복사한다.
+    # 부모 파일이 없어도(보관됨, 다른 루트) 머리 줄 뒤 1초 안의 줄은 배우기만 한다
+    # (ccusage parser.rs CODEX_REWRITTEN_BURST_PAUSE_MS와 같은 1초, 스펙 4.5)
+    replay_gate: 1
+    fields:
+      input: payload.info.last_token_usage.input_tokens
+      cache_read: payload.info.last_token_usage.cached_input_tokens
+      cache_write: payload.info.last_token_usage.cache_write_input_tokens
+      output: payload.info.last_token_usage.output_tokens
+  # 압축 호출은 어떤 token_count 누적치에도 없다. compacted 줄이 그 사용량을 싣는다
+  - match: {type: compacted, payload.latest_token_usage_record: {$exists: true}}
+    key: payload.compaction_response_id
+    fields:
+      input: payload.latest_token_usage_record.usage.input_tokens
+      cache_read: payload.latest_token_usage_record.usage.cached_input_tokens
+      cache_write: payload.latest_token_usage_record.usage.cache_write_input_tokens
+      output: payload.latest_token_usage_record.usage.output_tokens
 default_model: gpt-5.6-sol
 vendor: openai
 plan_probe:

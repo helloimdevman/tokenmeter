@@ -1,0 +1,21 @@
+label: Every Code
+roots: ["${CODE_HOME:-~/.code}/sessions"]
+patterns: ["**/rollout-*.jsonl"]
+# Codex 옛 봉투: {"type":"event","payload":{"msg":{"type":"token_count","info":…}}} (스펙 6.1)
+match: {type: event, payload.msg.type: token_count, payload.msg.info: {$exists: true}}
+mode: delta
+# codex 와 같은 규칙: 호출마다 last_token_usage, 키는 스트림의 누적치 객체 전체(스펙 3.2)
+key: payload.msg.info.total_token_usage
+timestamp: timestamp
+input_includes: [cache_read, cache_write]
+fields:
+  input: payload.msg.info.last_token_usage.input_tokens
+  cache_read: payload.msg.info.last_token_usage.cached_input_tokens
+  cache_write: payload.msg.info.last_token_usage.cache_write_input_tokens
+  output: payload.msg.info.last_token_usage.output_tokens
+ctx_tokens: payload.msg.info.last_token_usage.total_tokens
+ctx_window: payload.msg.info.model_context_window
+context:
+  model: payload.msg.model             # session_configured 줄에서 학습
+  session: payload.msg.session_id      # 〃
+default_model: gpt-5.6-sol

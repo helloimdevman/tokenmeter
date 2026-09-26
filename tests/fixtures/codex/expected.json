@@ -1,6 +1,24 @@
 {
-  "source": "synthetic: 0.1.0 fixture",
-  "steps": [{"calls": 1, "input": 16023, "cache_read": 34304, "cache_write": 0, "output": 384,
-             "by_model": {"gpt-5.6-sol": {"input": 16023, "cache_read": 34304, "cache_write": 0, "output": 384}},
-             "sessions": ["sess-codex-1"], "project": "projects/tokenmeter", "vendor": "openai"}]
+  "source": {
+    "2026/01/01/rollout-2026-01-01T00-00-00-0001.jsonl": "tokscale (MIT, junhoyeo) crates/tokscale-core/src/sessions/codex.rs:2536-2574 @1d9a939: repeated total then reset to a smaller total. TM (80,20,0,30)+(8,2,0,3)",
+    "2026/01/01/rollout-2026-01-01T01-00-00-0002.jsonl": "tokscale (MIT, junhoyeo) sessions/codex.rs:2803-2822 @1d9a939: resumed file, first total >> last. TM (10,2,0,5)x2",
+    "2026/05/05/*": "tokscale (MIT, junhoyeo) sessions/codex.rs:2951-2981 @1d9a939 child file verbatim; the parent file is synthetic (its one row is the row the child replays). Child's own usage TM (500,1000,0,200), parent (1000,72000,0,500)",
+    "2026/05/06/rollout-2026-05-06T10-00-00-orphan.jsonl": "synthetic: a fork whose parent log is absent (archived or another root), shaped like the 05/05 child and ccusage parser.rs:84-150 @2d8dea8 (the replayed burst is rewritten to the fork instant, the own turn follows after a pause). Own usage TM (500,1500,0,100)",
+    "2026/09/20/rollout-2026-09-20T00-00-00-0003.jsonl": "TokenTracker (MIT, xiufengsun) test/codex-token-usage.test.js:24-38 @755fbd9: interleaved streams last/total [100/100, 200/200, 100/100, 50/250, 30/130] -> deltas [100,200,null,50,30] = 380; timestamps and a session_meta head line (one second before the first row, the replay_gate head) added",
+    "2026/09/20/rollout-2026-09-20T04-00-00-0004.jsonl": "synthetic: TokenTracker test/codex-token-usage-record.test.js:20-100 @755fbd9 R1/RC/R2 values (sum input 243000, cached 201900, write 30, output 3120) in the real compacted payload (compaction_response_id + latest_token_usage_record, research codex.md section 2). The post-compaction snapshot is (500,0,0,40), below R1 per bucket as on this Mac (0 of 119 local snapshots exceeded the prior last)"
+  },
+  "differs": [
+    "interleaved (0003): ours 380 = TokenTracker; ccusage counts the repeated head 100 again (480); TokenMeter 0.1.x counted 350",
+    "compaction (0004): ours and TokenTracker count RC (40000,200000,0,3000); ccusage and tokscale do not",
+    "fork child (05/05): the replayed parent rows are dropped twice over: the parent file holds the same total_token_usage key, and they fall within replay_gate (1 s after the head line). The orphan fork (05/06) has no parent file, so only replay_gate drops its burst (2 x (10000,40000,0,700)); ccusage drops it by its rewritten-burst rule. tokscale skips replays by waiting for the child's own turn_context. The child's copied second session_meta makes its learned vendor/cwd the parent's (azure, /repo-parent until turn_context); tokscale keeps the first session_meta (openai)",
+    "TokenTracker snapshot shape: its test uses SNAPSHOT (24000,0,0,453) after R1 (1000,400,0,50). Under max-keep per key that snapshot would add (23400,0,0,403); real snapshots are smaller than the pre-compaction call, so the fixture uses a smaller one"
+  ],
+  "ccusage": {"cmd": "codex", "env": {"CODEX_HOME": "$HOME/.codex"},
+              "totals": {"input": 3658, "cache_read": 76426, "cache_write": 30, "output": 963},
+              "why": "ours - ccusage = compaction RC (40000,200000,0,3000) that ccusage does not count, minus the repeated interleaved head 100 input that ccusage counts again (0003). The fork replays (05/05, 05/06) are dropped by both"},
+  "steps": [{"calls": 14, "input": 43558, "cache_read": 276426, "cache_write": 30, "output": 3963,
+             "by_model": {"gpt-5.2": {"calls": 4, "input": 108, "cache_read": 26, "cache_write": 0, "output": 43},
+                          "gpt-5.5": {"calls": 6, "input": 43070, "cache_read": 276400, "cache_write": 30, "output": 3920},
+                          "gpt-5.6-sol": {"calls": 4, "input": 380, "cache_read": 0, "cache_write": 0, "output": 0}},
+             "sessions": ["sess-compact"]}]
 }

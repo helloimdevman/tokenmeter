@@ -525,6 +525,11 @@ pub fn is_builtin_service(name: &str) -> bool {
 pub fn load_report() -> LoadReport {
     let (specs, mut report) = load_specs(&load_merged_yaml());
     report.overlaps = overlaps(&specs);
+    for s in &specs {
+        for id in s.shares_roots.iter().filter(|id| !specs.iter().any(|o| &o.name == *id)) {
+            report.warnings.push(format!("{}: shares_roots names no loaded service: {id}", s.name));
+        }
+    }
     let vars = Vars { root: None, ctx: &|_| None };
     report.roots_from_dropped = specs
         .iter()

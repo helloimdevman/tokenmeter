@@ -66,8 +66,6 @@ pub struct ServiceSpec {
     #[serde(default)]
     pub plan_probe: serde_yaml::Value,
     #[serde(default)]
-    pub endpoint: String,
-    #[serde(default)]
     pub endpoint_probe: serde_yaml::Value,
     #[serde(default)]
     pub live_chars: serde_yaml::Value,
@@ -254,7 +252,7 @@ impl Compiled {
 
 /// 사용자 덮어쓰기 블록의 옛 형식을 새 형식으로(스펙 1절): 식 자리의 `a.0.b` → `a[0].b`,
 /// match의 `X: null` → `{$exists: false}`, 프로브 키의 `{vendor}` → `[$ctx.vendor]`,
-/// `input_includes_cache: true|false` → `input_includes: [cache_read]|[]`.
+/// `input_includes_cache: true|false` → `input_includes: [cache_read]|[]`, 서비스 수준 `endpoint` → `endpoint_probe.default`.
 /// 새 형식은 바꾸지 않는다. 기본 어댑터는 이것이 아무것도 바꾸지 않아야 한다(테스트).
 pub(super) fn upgrade_legacy(block: &mut serde_yaml::Value) {
     use serde_yaml::Value as Y;
@@ -326,6 +324,14 @@ pub(super) fn upgrade_legacy(block: &mut serde_yaml::Value) {
             block.insert("input_includes".into(), Y::Sequence(parts));
         }
     }
+    if let Some(old) = block.remove("endpoint") {
+        let probe = block
+            .entry("endpoint_probe".into())
+            .or_insert_with(|| Y::Mapping(Default::default()));
+        if let Some(probe) = probe.as_mapping_mut() {
+            probe.entry("default".into()).or_insert(old);
+        }
+    }
 }
 
 pub(super) fn yaml_scalar(value: &serde_yaml::Value) -> String {
@@ -386,8 +392,6 @@ struct YamlService {
     #[serde(default)]
     plan_probe: serde_yaml::Value,
     #[serde(default)]
-    endpoint: Option<String>,
-    #[serde(default)]
     endpoint_probe: serde_yaml::Value,
     #[serde(default)]
     live_chars: serde_yaml::Value,
@@ -423,8 +427,7 @@ pub const KNOWN_SOURCE_KEYS: &[&str] = &[
 
 /// 서비스 수준에만 두는 키(F11). 소스 항목에 있으면 그 서비스가 빠진다.
 pub const SERVICE_ONLY_KEYS: &[&str] = &[
-    "enabled", "label", "default_model", "vendor", "plan", "plan_probe", "endpoint",
-    "endpoint_probe", "live_chars", "install", "sources", "verified",
+    "enabled", "label", "default_model", "vendor", "plan", "plan_probe", "endpoint_probe", "live_chars", "install", "sources", "verified",
 ];
 
 /// 로딩에서 빠진 서비스(id, 이유)와 모르는 키 경고. 데몬 로그와 `doctor`가 보인다.
@@ -815,7 +818,6 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             vendor: raw.vendor.unwrap_or_default(),
             plan: raw.plan.unwrap_or_default(),
             plan_probe: raw.plan_probe,
-            endpoint: raw.endpoint.unwrap_or_default(),
             endpoint_probe: raw.endpoint_probe,
             live_chars: raw.live_chars,
             duration_ms: raw.duration_ms,

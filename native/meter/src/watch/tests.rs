@@ -558,7 +558,7 @@ fn context_tokens_follow_each_service_spec() {
 
 /// 로더처럼 파싱한 프로브 키로 부른다.
 fn plan_of(spec: &ServiceSpec) -> String {
-    resolve_plan(spec, Compiled::new(spec).unwrap().plan_key.as_ref())
+    resolve_plan(spec, Compiled::new(spec).unwrap().plan_key.as_ref(), "")
 }
 
 fn endpoint_of(spec: &ServiceSpec, env: Option<&HashMap<String, String>>, vendor: &str, plan: &str) -> String {
@@ -620,6 +620,122 @@ fn plan_and_endpoint_probes_follow_env_files_and_live_routing() {
     let mut reader = ServiceReader::new(claude);
     assert_eq!(reader.endpoint_for("s-bedrock", "anthropic"), "bedrock", "훅이 찍은 세션 환경을 읽는다");
     assert_eq!(reader.endpoint_for("s-없음", "anthropic"), "https://api.anthropic.com");
+}
+
+fn envs(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+fn probe_spec(endpoint_probe: &str) -> ServiceSpec {
+    ServiceSpec { endpoint_probe: serde_yaml::from_str(endpoint_probe).unwrap(), ..Default::default() }
+}
+
+#[test]
+fn plan_local_is_fixed() {
+    let (_g, tmp) = crate::test_home("plan-local");
+    std::env::set_var("TP_LOCAL_KEY", "1");
+    let mut reader = inline(
+        &tmp,
+        "plan: local, plan_probe: {env: [TP_LOCAL_KEY], if_set: api, else: subscription}, fields: {output: n}, context: {vendor: v}",
+    );
+    append(&tmp.join("a.jsonl"), &lines(&[json!({"n": 5, "v": "anthropic"})]));
+    append(&tmp.join("b.jsonl"), &lines(&[json!({"n": 3, "v": "openai"})]));
+    let plans: Vec<String> = reader.poll().into_iter().map(|d| d.plan).collect();
+    std::env::remove_var("TP_LOCAL_KEY");
+    assert_eq!(plans, ["local", "local"], "고정 요금제는 프로브보다 먼저, 벤더와 상관없이");
+}
+
+#[test]
+fn plan_probe_is_resolved_per_vendor() {
+    let (_g, tmp) = crate::test_home("plan-vendor");
+    let auth = tmp.join("auth.json");
+    fs::write(&auth, r#"{"anthropic": {"type": "oauth", "access": "비밀"}, "openai": {"type": "api", "key": "sk-x"}}"#).unwrap();
+    let data = tmp.join("d");
+    let mut reader = inline(
+        &data,
+        &format!(
+            r#"plan_probe: {{path: {auth:?}, key: "[$ctx.vendor].type", map: {{oauth: subscription, api: api}}, default: unknown}},
+               fields: {{output: n}}, context: {{vendor: v}}"#
+        ),
+    );
+    for (file, vendor) in [("a", "anthropic"), ("b", "openai"), ("c", "google")] {
+        append(&data.join(format!("{file}.jsonl")), &lines(&[json!({"n": 1, "v": vendor})]));
+    }
+    let mut got: Vec<(String, String)> = reader.poll().into_iter().map(|d| (d.vendor, d.plan)).collect();
+    got.sort();
+    let want = [("anthropic", "subscription"), ("google", "unknown"), ("openai", "api")];
+    assert_eq!(got, want.map(|(v, p)| (v.to_string(), p.to_string())), "OpenCode auth.json은 벤더마다 다르다");
+}
+
+#[test]
+fn record_endpoint_wins_and_is_normalized() {
+    let (_g, tmp) = crate::test_home("record-endpoint");
+    std::env::set_var("TP_REC_FLAG", "1");
+    let mut reader = inline(
+        &tmp,
+        "endpoint_probe: {flags: {TP_REC_FLAG: flagged}}, fields: {output: n}, context: {endpoint: ep}",
+    );
+    append(&tmp.join("a.jsonl"), &lines(&[json!({"n": 1, "ep": "https://u:p@GW.x/v1/?k=1#f"})]));
+    append(&tmp.join("b.jsonl"), &lines(&[json!({"n": 2})]));
+    let mut got: Vec<(i64, String)> = reader.poll().into_iter().map(|d| (d.output_tokens, d.endpoint)).collect();
+    std::env::remove_var("TP_REC_FLAG");
+    got.sort();
+    assert_eq!(got, [(1, "https://gw.x/v1".to_string()), (2, "flagged".to_string())], "레코드가 플래그보다 먼저, 비밀은 지운다");
+}
+
+#[test]
+fn flag_probe_prefers_its_base_url() {
+    let (_g, _tmp) = crate::test_home("flag-probe");
+    let spec = probe_spec(
+        "{flags: {TP_USE_X: {env: [TP_X_BASE_URL], default: amazon-bedrock}, TP_USE_Y: google-vertex}, default: https://api.test}",
+    );
+    let at = |pairs: &[(&str, &str)]| endpoint_of(&spec, Some(&envs(pairs)), "anthropic", "api");
+    assert_eq!(at(&[("TP_USE_X", "1")]), "amazon-bedrock", "플래그만 있으면 그 id");
+    assert_eq!(
+        at(&[("TP_USE_X", "1"), ("TP_X_BASE_URL", "https://u:p@br.corp/v1?x=1")]),
+        "https://br.corp/v1",
+        "플래그와 base URL이 함께면 URL(정규화)"
+    );
+    assert_eq!(at(&[("TP_USE_X", "0"), ("TP_USE_Y", "true")]), "google-vertex", "0은 꺼진 플래그");
+    assert_eq!(at(&[]), "https://api.test");
+}
+
+#[test]
+fn endpoint_order() {
+    let (_g, tmp) = crate::test_home("endpoint-order");
+    for var in ["TP_FLAG", "TP_URL_A", "TP_URL_B"] {
+        std::env::remove_var(var);
+    }
+    let file = tmp.join("providers.json");
+    fs::write(&file, r#"{"p": {"acme": "https://file.acme/v1"}}"#).unwrap();
+    let spec = probe_spec(&format!(
+        "{{flags: {{TP_FLAG: flagged}}, env: [TP_URL_A, TP_URL_B], path: {file:?}, key: \"p[$ctx.vendor]\", \
+          default: {{api: \"https://api.default\", unknown: \"https://unknown.default\"}}}}"
+    ));
+    let at = |pairs: &[(&str, &str)], vendor: &str, plan: &str| endpoint_of(&spec, Some(&envs(pairs)), vendor, plan);
+    assert_eq!(at(&[("TP_FLAG", "1"), ("TP_URL_A", "https://a.sess")], "acme", "api"), "flagged", "플래그 → env");
+    std::env::set_var("TP_URL_A", "https://a.daemon");
+    assert_eq!(at(&[("TP_URL_B", "https://b.sess")], "acme", "api"), "https://b.sess", "세션 routing_env → 데몬 환경");
+    assert_eq!(at(&[], "acme", "api"), "https://a.daemon", "데몬 환경 → 파일");
+    std::env::remove_var("TP_URL_A");
+    assert_eq!(at(&[], "acme", "api"), "https://file.acme/v1", "파일 → default");
+    assert_eq!(at(&[], "other", "api"), "https://api.default", "요금제별 default");
+    assert_eq!(at(&[], "other", "subscription"), "https://unknown.default", "맞는 요금제가 없으면 unknown 칸");
+    let bare = probe_spec("{env: [TP_URL_A]}");
+    assert_eq!(endpoint_of(&bare, None, "sakana", "api"), "sakana", "마지막은 벤더를 맨 id로");
+}
+
+#[test]
+fn legacy_endpoint_key_is_an_alias_in_user_override_only() {
+    let (_g, root) = crate::test_home("legacy-endpoint");
+    write_user_services(&root, "services:\n  old-ep:\n    roots: [\"~/x\"]\n    fields: {output: n}\n    endpoint: https://legacy.test/v1\n");
+    assert!(load_report().warnings.is_empty(), "옛 키는 경고 없이 바뀐다");
+    let spec = load_all_specs().into_iter().find(|s| s.name == "old-ep").expect("옛 형식도 로딩된다");
+    assert_eq!(ServiceReader::new(spec).endpoint_for("", "acme"), "https://legacy.test/v1", "endpoint → endpoint_probe.default");
+    assert!(uses_legacy("endpoint: https://x"), "adapters/에 넣으면 builtin_adapters_use_current_syntax가 막는다");
+    assert!(!uses_legacy("endpoint_probe: {default: https://x}"));
+    let raw = specs_from_yaml("services: {t: {roots: [\"~/x\"], endpoint: https://legacy.test/v1}}").pop().unwrap();
+    assert_eq!(ServiceReader::new(raw).endpoint_for("", "acme"), "acme", "덮어쓰기 밖에서는 바꾸지 않는다");
 }
 
 #[test]
@@ -871,7 +987,7 @@ fn builtin_probe_keys_take_the_vendor_from_ctx() {
     assert_eq!(codex.endpoint_for("", "ollama"), "http://localhost:11434/v1");
     let mut opencode = ServiceReader::new(spec_at("opencode", &root));
     assert_eq!(opencode.endpoint_for("", "acme"), "https://gw.acme.test/v1");
-    assert_eq!(opencode.endpoint_for("", "nope"), "", "벤더 항목이 없으면 비어 있다(opencode는 default가 없다)");
+    assert_eq!(opencode.endpoint_for("", "nope"), "nope", "벤더 항목도 default도 없으면 벤더를 맨 id로");
 }
 
 #[test]

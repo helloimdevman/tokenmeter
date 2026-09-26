@@ -3,7 +3,6 @@
 use super::delta::TokenDelta;
 use super::ledger::{Ledger, Vals};
 use super::now_secs;
-use super::probe::resolve_plan;
 use super::roots::{dedup, excluded, expand, glob_under, roots_from, Vars};
 use super::spec::{Compiled, ServiceSpec};
 use super::sqlite::{self, DbStamp, SqlErr};
@@ -28,7 +27,8 @@ pub struct ServiceReader {
     /// 서비스 수준 자리(프로브 키, `live_chars`). 소스 자리는 `Source::x`.
     pub(super) x: Compiled,
     pub(super) sources: Vec<Source>,
-    pub(super) plan: String,
+    /// 벤더 → 요금제 라벨(F9).
+    pub(super) plan: HashMap<String, String>,
     pub(super) endpoint: HashMap<String, String>,
     /// delta 키(없으면 레코드 해시)의 칸별 최댓값. 서비스에 하나, 소스들이 같이 쓴다(F2, F11).
     pub(super) ledger: Ledger,
@@ -135,7 +135,6 @@ impl Source {
 impl ServiceReader {
     pub fn new(spec: ServiceSpec) -> Self {
         let x = Compiled::new(&spec).unwrap_or_default();
-        let plan = resolve_plan(&spec, x.plan_key.as_ref());
         // 소스가 없으면 서비스 자체가 소스 하나다(F11)
         let views = if spec.sources.is_empty() {
             vec![spec.clone()]
@@ -146,7 +145,7 @@ impl ServiceReader {
             spec,
             x,
             sources: views.into_iter().map(Source::new).collect(),
-            plan,
+            plan: HashMap::new(),
             endpoint: HashMap::new(),
             ledger: Ledger::new(now_secs, LEDGER_CAP),
             live_out: HashMap::new(),

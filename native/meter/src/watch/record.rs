@@ -4,7 +4,7 @@ use super::cond;
 use super::delta::TokenDelta;
 use super::expr::{Env, Pick};
 use super::ledger::{self, key_hash, record_hash, Vals};
-use super::probe::resolve_endpoint;
+use super::probe::{resolve_endpoint, resolve_plan};
 use super::reader::{path_key, ServiceReader, Source};
 use super::time::parse_ts;
 use serde_json::Value;
@@ -132,7 +132,12 @@ impl ServiceReader {
         };
         let session = pick_ctx("session", "");
         let effort = pick_ctx("effort", "");
-        let endpoint = self.endpoint_for(&session, &vendor);
+        let plan = self.plan_for(&vendor);
+        // 레코드의 엔드포인트가 먼저다(스펙 9절). 프로브 결과처럼 사용자 정보·쿼리를 지운다.
+        let endpoint = match pick_ctx("endpoint", "") {
+            e if e.trim().is_empty() => self.endpoint_for(&session, &vendor),
+            e => tokenmeter_hook::normalize_endpoint(&e),
+        };
         output_tokens = self.adjust_live_output(&env, &session, output_tokens, fresh);
         let subagent = src.x.subagent.as_ref().is_some_and(|p| p.truthy(&env));
         let (ctx_now, ctx_win) = if subagent {
@@ -159,7 +164,7 @@ impl ServiceReader {
             project: tokenmeter_hook::project_key(&cwd),
             session,
             vendor,
-            plan: self.plan.clone(),
+            plan,
             endpoint,
             cwd,
             effort,
@@ -181,6 +186,20 @@ impl ServiceReader {
         }
     }
 
+    /// 벤더마다 최종 요금제 라벨만 캐시한다(프로브 문서는 버린다, 스펙 2.0).
+    /// ponytail: 프로브 파일이 바뀌어도 리더가 살아 있는 동안은 옛 라벨이다. 필요하면 mtime을 캐시 키에 넣는다.
+    pub(super) fn plan_for(&mut self, vendor: &str) -> String {
+        if let Some(plan) = self.plan.get(vendor) {
+            return plan.clone();
+        }
+        let plan = resolve_plan(&self.spec, self.x.plan_key.as_ref(), vendor);
+        if self.plan.len() > 1000 {
+            self.plan.clear();
+        }
+        self.plan.insert(vendor.to_string(), plan.clone());
+        plan
+    }
+
     pub(super) fn endpoint_for(&mut self, session: &str, vendor: &str) -> String {
         let key = format!("{session}|{vendor}");
         if let Some(value) = self.endpoint.get(&key) {
@@ -200,13 +219,8 @@ impl ServiceReader {
                         .collect::<HashMap<_, _>>()
                 })
         };
-        let value = resolve_endpoint(
-            &self.spec,
-            self.x.endpoint_key.as_ref(),
-            env.as_ref(),
-            vendor,
-            &self.plan,
-        );
+        let plan = self.plan_for(vendor);
+        let value = resolve_endpoint(&self.spec, self.x.endpoint_key.as_ref(), env.as_ref(), vendor, &plan);
         if self.endpoint.len() > 1000 {
             self.endpoint.clear();
         }

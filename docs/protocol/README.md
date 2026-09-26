@@ -19,9 +19,11 @@ contract. The JSON Schemas here are generated from `native/protocol` and a test 
 | `POST /v1/rooms/{id}/join` | logged-in device | → `room` |
 | `POST /v1/rooms/{id}/leave` | logged-in device | → 204 |
 | `DELETE /v1/rooms/{id}` | the room's host | → 204 |
+| `POST /v1/rooms/{id}/matches` | the room's host | `match-request` → 201 match info (the `match` object in `match-result`) |
+| `GET /v1/rooms/{id}/matches/latest` | a room member | → `match-result` (provisional until `finalized`) |
 
 Errors are `error.schema.json` (`{error, message}`) with codes `invalid` (400), `unauthorized` (401),
-`forbidden` (403), `not_found` (404), `room_full` and `too_many_rooms` (409), `rate_limited` (429, with
+`forbidden` (403), `not_found` (404), `room_full`, `too_many_rooms` and `match_active` (409), `rate_limited` (429, with
 `Retry-After`), `upgrade_required` (426), `internal` (500) and `upstream` (502, GitHub did not answer).
 The client sends `User-Agent: tokenmeter/<version>`; the server answers 426 to versions it no longer
 accepts or cannot read.
@@ -83,3 +85,16 @@ opens: iroh sends address candidates as soon as a connection is set up, before t
 Leaving a room or logging out makes a new key. Only a relay-only mode (planned with public rooms)
 would hide addresses. On macOS with the firewall on, you may be asked to allow incoming connections;
 Deny keeps live rates working through the relay.
+
+## Matches
+
+A room's host starts a match for 10 minutes to 7 days, ruled by output tokens or estimated cost.
+Every member at the start plays, and members see each player's score (output tokens or estimated
+cost added). A room has at most one match that is not final yet; starting another before then
+answers 409 `match_active`. A player's score is how much their total (all their devices) grew
+between their first sync after the start and their first sync after the end; the
+server finalizes a match an hour after it ends, using the total at that moment for anyone who has not
+synced since the end. Players who never synced after the start score 0. Rooms in `GET /v1/rooms`
+carry their latest match (`match`). When a match starts, the host's meter sends `{"match": <id>}` on
+its live connections so members sync right away; every meter also syncs within 10 seconds after the
+end. Costs are the client's estimates.

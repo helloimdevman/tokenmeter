@@ -311,6 +311,8 @@ settings:
 | `league login` / `logout` | GitHub Device Flow 로그인(코드를 클립보드로, 터미널이 없으면 알림) / 이 기기 연결 해제 |
 | `league open` | 방을 열고 초대 링크(`https://tokenmeter.online/j/<id>`) 출력 |
 | `league join <id\|링크>` / `leave [id]` / `close [id]` | 참가 / 나가기 / 닫기(호스트만). id를 빼면 포커스된 방 |
+| `league match` | 포커스된 방의 최근 경기 순위. 확정 전에는 잠정(끝 기록이 없으면 지금 누적치) |
+| `league match start [--minutes 10..10080] [--rule output\|cost]` | 경기 열기(호스트만, 방마다 확정 전 경기는 하나). 참가자는 지금 멤버 |
 | `share on\|off\|status\|preview` | 익명 사용 통계. 설치 때 한 번 묻는다. `preview`는 다음 업로드 JSON |
 | `account delete [--yes]` | 이 기기가 서버에 보낸 데이터 삭제, 공유 끔 |
 | `start` / `stop` | 훅이 없는 환경에서 라이브 세션을 수동 등록/해제 |
@@ -462,6 +464,8 @@ settings:
 ## Token League와 사용 통계
 
 Token League 방은 TokenMeter 서버가 갖고, 실시간 tok/s는 멤버의 데몬끼리 iroh(QUIC)로 주고받는다. 로그인하면 데몬이 포커스된 방의 멤버에게 직접 연결하고, 막히면 `relay.tokenmeter.online`을 거친다. 로컬 파일: `league-auth.json`(uid·handle·로그인 시각), `league-key`(iroh 비밀키. 방을 나가거나 로그아웃하면 지우고 새로 만든다), `league.json`(방 목록·포커스), `league-cache.json`(오버레이가 읽는 멤버 행), 모두 0600. `settings.league.relay`를 적으면 서버의 릴레이 설정 대신 그 주소를 쓴다(시험·자체 서버용).
+
+경기 점수는 경기 시작·끝 뒤 각자의 첫 동기화 사이에 늘어난 누적치(그 사용자 모든 기기의 출력 토큰 또는 추정 비용)다. 호스트 데몬이 경기를 열면 P2P로 알려 멤버가 곧바로 동기화하고, 끝나면 모든 데몬이 10초 안에 한 번 더 보낸다. 서버는 끝나고 1시간 뒤 확정하고, 데몬은 확정되면 알림을 한 번 띄운다. 오차는 동기화 한 번 간격(보통 1분 이내)이다.
 
 익명 사용 통계는 `share`가 켜져 있을 때만 `settings.league.server`(기본 `https://api.tokenmeter.online`)로 간다. 활동 중에는 1분, 쉬는 중에는 15분마다 시간 칸을 덮어쓴다. 보내는 항목과 보내지 않는 항목은 `docs/protocol/README.md`에 있다. 로컬 파일: `device.json`(기기 토큰, 0600), `league-sync.json`(마지막 전송 위치). `settings.league.server`를 빈 문자열로 덮으면 통계도 리그도 네트워크를 쓰지 않는다.
 

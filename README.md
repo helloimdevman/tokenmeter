@@ -1,10 +1,17 @@
 # TokenMeter
 
-**See when your AI coding agents are working, waiting, or running out of context.**
+**See at a glance which AI coding agent is working, waiting, or needs you.**
 
-TokenMeter is a local-first desktop meter for Claude Code, Codex, OpenCode, and Cursor. It discovers active sessions, shows `확인` (needs attention), `작업` (working), `대기` (waiting), or `종료` (done), and keeps usage history locally.
+[![Test](https://github.com/helloimdevman/tokenmeter/actions/workflows/test.yml/badge.svg)](https://github.com/helloimdevman/tokenmeter/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/helloimdevman/tokenmeter)](https://github.com/helloimdevman/tokenmeter/releases/latest)
+![macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[한국어](README.ko.md) · [Advanced reference](docs/reference.ko.md) · [Add an agent](docs/add-service.md)
+A small always-on-top meter for Claude Code, Codex, OpenCode, Grok CLI, Cursor, and 44 more coding agents. It reads the agents' own local logs: no API key, and metering never touches the network.
+
+**New in 0.2.0: [Token League](#token-league-race-your-friends).** Make a room, invite your friends, and race your agents live, peer to peer.
+
+[한국어](README.ko.md) · [Reference (Korean)](docs/reference.ko.md) · [Add an agent](docs/add-service.md)
 
 ```text
 ┌────────────────────────────────────────────────────┐
@@ -20,136 +27,138 @@ TokenMeter is a local-first desktop meter for Claude Code, Codex, OpenCode, and 
 └────────────────────────────────────────────────────┘
 ```
 
-## Why TokenMeter
+| Status | Meaning |
+|---|---|
+| `작업` Work | Tokens are arriving |
+| `대기` Wait | Turn finished, your move |
+| `확인` Check | The agent asked for permission or input. The only status that sends a notification |
+| `종료` Done | Session ended |
 
-- **Know what needs attention.** Sessions use the actual UI labels `확인`, `작업`, `대기`, and `종료`.
-- **See context pressure.** Context pressure changes color at 70% and 90%; Context Runway or compaction prediction is not implemented.
-- **Understand usage locally.** Inspect tokens, estimated API-equivalent cost, cache savings, projects, models, and daily history.
-- **Stop watching terminals.** A desktop notification fires only on an explicit transition to `확인`.
+Context changes color at 70% and 90%. Dollars are API list-price estimates, not invoices. Labels switch to English in settings (`⋯`).
 
-TokenMeter reads local agent logs. It does not require an API key or store prompt contents. Metering stays local. The optional quota view uses already-logged-in Claude, Codex, or Grok credentials to read remaining plan windows.
+## Token League: race your friends
+
+Make your own room, send the invite link, and race. Every friend's live output rate shows up on your meter, and a timed match crowns a winner.
+
+```text
+┌────────────────────────────────────────────────────┐
+│ TOKENMETER                                   TODAY │
+│ 412 total output tok/s      API-equivalent $3.2104 │
+│ ██┃███████████░░░░┃░░░┃░░░░░░░░░░░░░░░           ▏ │
+├────────────────────────────────────────────────────┤
+│ LEAGUE                                    3 people │
+│ ● mina                                     980.4/s │
+│ ● joon                                     655.0/s │
+│ ● alex                                      12.3/s │
+└────────────────────────────────────────────────────┘
+```
+
+<sub>Illustration. Each friend is a colored needle on your gauge and a row in the League tab, fastest first.</sub>
+
+```bash
+tokenmeter league login                  # sign in with GitHub; no permissions requested
+tokenmeter league open                   # new room + invite link (tokenmeter.online/j/<id>)
+tokenmeter league join <invite link>     # your friends run this
+tokenmeter league match start --minutes 120 --rule output   # host starts a race: 10 min to 7 days, output or cost
+tokenmeter league match                  # standings; the final result arrives as a notification
+```
+
+`tokenmeter league logout` disconnects this device; `tokenmeter account delete` deletes the account.
+
+### Peer to peer by design
+
+```mermaid
+flowchart LR
+    S["tokenmeter.online<br>GitHub sign-in · rooms<br>match scores"]
+    subgraph room ["room · up to 20 people"]
+        direction LR
+        A["you"] <-- "tok/s only" --> B["friend"]
+        A <--> C["friend"]
+        B <--> C
+    end
+    S -. "member list" .-> room
+```
+
+- Meters in a room connect directly over QUIC ([iroh](https://github.com/n0-computer/iroh)) and fall back to a relay only when a network blocks it. The server handles sign-in, member lists, and match scores; it never sees live rates.
+- A meter sends only a number (`{"tps": 123.4}`). Names come from the server's member list, so nobody can post as someone else. Direct connections let members see each other's IP address.
+- Anyone can open rooms: up to 20 people each, 8 rooms per person. Match scores are each member's output (or cost) between start and end, taken from usage sync. Friend rooms run on trust: cost is what each meter reports.
+- A global league with seasons and a public board is planned on the same opt-in usage sync that shipped in 0.1.0.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Claude Code · Codex · OpenCode<br>Grok CLI · Cursor"] -- "lifecycle event" --> H["tokenmeter-hook<br>5 ms, then exits"]
+    A -- writes --> L[("session logs")]
+    H -- "session status" --> M["tokenmeter<br>background meter"]
+    L -- "new bytes only, every 2 s" --> M
+    M --> U["overlay · menu bar<br>notifications · CLI JSON"]
+```
+
+## By the numbers
+
+![Hook 5 ms per agent event (p95 7 ms). Memory 71 MB with the overlay open. Install 11 MB, two native binaries. Local state 1.4 MB with 500 sessions, no prompts.](docs/assets/metrics.svg)
+
+<sub>Measured 2026-09-26 on an Apple M4 Pro, macOS 26.6, TokenMeter 0.1.0, 16 live sessions. Hook: 300 runs with the meter running. Memory: median resident size over 10 minutes. Install: macOS arm64 release assets (18 MB on Linux x64). 144 tests run on every pull request.</sub>
 
 ## Install
 
-Requirements: **macOS or Linux** (Windows is not supported). TokenMeter is two native binaries, `tokenmeter` and `tokenmeter-hook`. The install script downloads both from the latest GitHub Release, checks them against the release `SHA256SUMS`, puts them in `~/.local/bin` (override with `TOKENMETER_INSTALL_DIR`), and runs `tokenmeter install`:
+macOS or Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/helloimdevman/tokenmeter/main/install.sh | sh
 ```
 
-Then activate your first measurement:
+The script downloads two binaries from the latest release, checks them against `SHA256SUMS`, puts them in `~/.local/bin` (`TOKENMETER_INSTALL_DIR` overrides), and installs the hooks. Restart any agent that was already running, then send one prompt; older sessions are not measured. Nothing on screen? `tokenmeter doctor`.
 
-1. Fully restart Claude Code, Codex, OpenCode, or Cursor if they were already running. Sessions started before the restart are not measured.
-2. The overlay should appear immediately. If it does not, run `tokenmeter doctor`.
-3. Run one new prompt so that session is measured. Cursor shows status only.
+| Agent | Tokens & cost | Live status |
+|---|:-:|:-:|
+| Claude Code · Codex · Grok CLI | ✓ | ✓ |
+| OpenCode | ✓ | ✓ generated plugin |
+| Cursor (IDE · CLI) | — | ✓ |
+| Amp, Augment Code, Cline, Roo Code, Kilo, Goose, GitHub Copilot CLI, Qwen Code, Kimi, pi and about 30 more | ✓ | — |
 
-Existing TokenPet hooks are detected and replaced in place.
+Any other agent that writes logs can be added with config only: [guide](docs/add-service.md).
 
-## Supported agents
+## Use
 
-| Agent | Local usage | Automatic lifecycle hook |
-|---|---:|---:|
-| Claude Code | Yes | Yes |
-| Codex | Yes | Yes |
-| OpenCode | Yes | Yes, generated plugin |
-| Grok CLI | Yes | Yes, dedicated `~/.grok/hooks` plus Claude-compat remap when the session id matches |
-| Cursor (IDE · CLI) | **Status only** (`확인`/`작업`/`대기`/`종료`) — no token or cost totals | Yes, `~/.cursor/hooks.json`. CLI omits `stop` usage hooks |
+- Drag to move. `S` `M` `L` switch between meter only, sessions, and full detail. `×` hides the window; measuring continues.
+- On macOS the meter also lives in the menu bar: left-click folds the window, right-click opens the menu.
+- The big number is total output tok/s including sub-agents; session rows show the main model only. Both are log arrival rates, not provider benchmarks.
 
-Adding another log-based agent is configuration-only. See [the service guide](docs/add-service.md).
-
-## Commands
+<details>
+<summary>Commands</summary>
 
 ```bash
-tokenmeter status --json
+tokenmeter status --json          # snapshot for scripts
 tokenmeter watch --jsonl
 tokenmeter receipt --format markdown
+tokenmeter quota                  # remaining Claude/Codex/Grok plan windows
+tokenmeter services               # detected logs and hook state
+tokenmeter doctor [--json]        # validate parsers and install (JSON has no home paths or prompts)
 tokenmeter adapter init gemini-cli --log ~/.gemini/tmp
 tokenmeter adapter check ./gemini-cli-adapter
 tokenmeter share on|off|preview   # anonymous usage stats (opt-in)
 tokenmeter account delete         # delete what this device sent
-tokenmeter league login           # Token League: sign in with GitHub (device code)
-tokenmeter league open            # open a room and print its invite link
-tokenmeter league join <link>     # join a friend's room
-tokenmeter league match start --minutes 60   # host: a one-hour match (output tokens)
-tokenmeter league match                      # standings (provisional until final)
-tokenmeter quota                  # remaining Claude/Codex/Grok plan windows
-tokenmeter services               # detected logs and hook state
-tokenmeter doctor                 # validate parsers and installation
 tokenmeter meter off              # hide overlay; keep measuring
-tokenmeter update on              # opt in to daily stable-release updates
-tokenmeter off                    # stop measuring; keep hooks
-tokenmeter on                     # resume measurement
-tokenmeter uninstall              # remove only TokenMeter hooks
-tokenmeter uninstall --purge      # hooks + daemon + local state + league tokens
-tokenmeter doctor --json          # support paste (no home paths or prompts)
+tokenmeter off | on               # stop or resume measuring; keep hooks
+tokenmeter update on|off|now      # daily stable-release updates, off by default
+tokenmeter uninstall [--purge]    # hooks only, or also daemon, local state, league tokens
 ```
 
-Drag the overlay to move it. The wheel scrolls when it is over a list row and resizes the window elsewhere. Use the visible `S/M/L` controls to switch between simple (meter only), normal (Sessions, Projects, Quota), and detail (adds Speed and Daily). `⌘K`/`Ctrl+K` is an optional quick search. Theme, reduced transparency, and reduced motion live in the settings window (`⋯` or right-click). `×` hides only the overlay, so measurement continues. On macOS the meter also lives in the menu bar as a short LED bar (left-click folds or unfolds the window, right-click opens its menu), and there is no Dock icon or ⌘Q. To stop measurement, choose `TokenMeter 종료 · 측정 중지` from settings or the menu bar menu.
+The wheel scrolls over a list row and resizes the window elsewhere. `⌘K`/`Ctrl+K` opens quick search. To stop measuring from the UI, choose `TokenMeter 종료 · 측정 중지` in settings or the menu bar menu. Optional agent skill: `npx skills add helloimdevman/tokenmeter -g -a claude-code` adds `/tm`, `/tm-meter`, `/tm-measure`, `/tm-doctor`.
 
-The global meter label is **전체 출력** (aggregate output throughput, including sub-agents). Session column **메인** excludes sub-agent output. Both rates are log-delta arrival rates, not a provider streaming benchmark. Session rows keep status, cumulative output, and context usage in separate columns. The social surface is Token League. The leftover self-hosted `leaderboard.endpoint` / `team` command stays in [the reference](docs/reference.ko.md) and is hidden while offline.
+</details>
 
-## Agent skill
+## Privacy
 
-The optional skill lets compatible coding agents operate TokenMeter in natural language.
+- Reads agent logs (which can contain prompts) but stores allowlisted metadata only: never prompts, responses, tool commands, or file names. Public JSON also drops paths, session IDs, and routing URLs.
+- The quota view reuses credentials Claude, Codex, or Grok already stored. Anonymous sharing is opt-in (the installer asks once) and sends hourly token counts per tool, route label, and model family; `tokenmeter share preview` shows the next upload. [Protocol](docs/protocol/README.md).
+- Token League is opt-in too. GitHub login tokens are checked once and discarded. The server keeps your GitHub id and login, your rooms and a per-device iroh EndpointId; with sharing off it takes one hourly total only while a match runs. Anyone who knows your EndpointId (current or past room members) can learn your public IP and local addresses while the meter is in a room.
+- State: `~/Library/Application Support/tokenmeter` (macOS) or `${XDG_STATE_HOME:-~/.local/state}/tokenmeter` (Linux). Overrides: `${XDG_CONFIG_HOME:-~/.config}/tokenmeter`.
 
-```bash
-npx skills add helloimdevman/tokenmeter -g -a claude-code
-```
-
-It provides `/tm`, `/tm-meter`, `/tm-measure`, and `/tm-doctor`.
-
-## Privacy and data
-
-- Metering **reads** agent logs (those files may contain prompts) and **stores** allowlisted metadata only: no prompt, response, tool command, or filename.
-- Public JSON and team output omit internal paths, session IDs, routing URLs, and session content.
-- Runtime state: `~/Library/Application Support/tokenmeter` (macOS) or `${XDG_STATE_HOME:-~/.local/state}/tokenmeter` (Linux).
-- User overrides: `${XDG_CONFIG_HOME:-~/.config}/tokenmeter`.
-- Quota (`tokenmeter quota`) reuses already-stored Claude/Codex/Grok credentials to read remaining plan windows. Session logs are not sent.
-- Dollar amounts are **API-list estimates**, not invoices.
-- Anonymous usage sharing is opt-in: the installer asks once, and `tokenmeter share on|off` changes it. It sends hourly token counts per tool, route label and model family to the TokenMeter server, from the hour you turn it on in (that hour is sent whole, hours that ended before it never are, and off and on again starts over) — never prompts, code, paths, project names, session ids, private hostnames or custom model names. `tokenmeter share preview` shows the next upload and `tokenmeter account delete` removes what was sent. Details: [docs/protocol](docs/protocol/README.md).
-- Token League is opt-in too. `tokenmeter league login` signs in with GitHub; the GitHub token is checked once by the server, revoked, and never stored. The server keeps your GitHub id and login, your rooms and an iroh endpoint id per device; with sharing off it gets one total cell per hour for matches. Room members see your login and live output rate. When the host starts a match, every member plays, and members see how many output tokens or how much estimated cost (USD) you added during it. While you are in a room, anyone who knows your meter's endpoint id (current or past room members) gets your public IP and local addresses when they connect, whether or not a direct path opens; leaving a room or logging out changes the key. `tokenmeter league logout` unlinks this device; `tokenmeter account delete` deletes the account.
-- A leftover self-hosted `leaderboard.endpoint` stays off until you set it.
-
-## Token League
-
-Token League shows friends' live output rate in shared rooms. `tokenmeter league login` signs in with GitHub, `tokenmeter league open` prints an invite link (`https://tokenmeter.online/j/<id>`), and a friend runs `tokenmeter league join <link>`. The overlay's league panel then lists each member's tok/s. Rates travel directly between members' meters over QUIC (iroh) and fall back to the TokenMeter relay when a direct path is blocked; the server keeps only the room list. A room holds 20 people and you can be in 8 rooms. `tokenmeter league` shows your rooms and invite link; `leave` and `close` end them. On macOS with the firewall on, you may be asked to allow incoming connections; Deny keeps live rates working through the relay. The host can start a match (`tokenmeter league match start --minutes 60 --rule output|cost`); the server scores how much each member's output or estimated cost grew during it and finalizes an hour after it ends. `tokenmeter league match` prints the standings, the overlay's league panel shows the time left, and a desktop notice shows the final podium.
-
-## Update or remove
-
-Automatic updates are off by default. Opt in to check once per day when the daemon starts, or update immediately:
-
-```bash
-tokenmeter update on
-tokenmeter update now
-```
-
-Only stable GitHub Releases are installed, and only when both binaries match the release `SHA256SUMS`. The binaries are replaced in place. Turn it back off with `tokenmeter update off`. Running the install script again also updates.
-
-Remove hooks before deleting the two binaries:
-
-```bash
-tokenmeter uninstall
-rm ~/.local/bin/tokenmeter ~/.local/bin/tokenmeter-hook
-```
-
-Hooks + local state + league tokens:
-
-```bash
-tokenmeter uninstall --purge
-```
-
-## Development
-
-```bash
-git clone https://github.com/helloimdevman/tokenmeter.git
-cd tokenmeter
-cargo test --manifest-path native/Cargo.toml
-cargo build --release --manifest-path native/Cargo.toml
-./native/target/release/tokenmeter install --dry-run
-```
+Updates are off until `tokenmeter update on`, and install only stable releases that match `SHA256SUMS`. To remove: `tokenmeter uninstall`, then delete `~/.local/bin/tokenmeter` and `~/.local/bin/tokenmeter-hook`.
 
 ## Contributing
 
-New agent adapters, provider entries, bug reports, and fixes are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and ask questions in [Discussions](https://github.com/helloimdevman/tokenmeter/discussions). Report security issues privately as described in [SECURITY.md](SECURITY.md).
-
-TokenMeter is created and maintained by imdevman and licensed under the [MIT License](LICENSE).
+Adapters, provider entries, bug reports, and fixes are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md), ask in [Discussions](https://github.com/helloimdevman/tokenmeter/discussions), and report security issues privately per [SECURITY.md](SECURITY.md). Created and maintained by imdevman under the [MIT License](LICENSE).

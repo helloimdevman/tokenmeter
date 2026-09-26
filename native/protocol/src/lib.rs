@@ -23,6 +23,10 @@ pub const MAX_LINE: usize = 1024;
 pub const MAX_ROOMS: i64 = 8;
 /// 한 방의 최대 인원.
 pub const MAX_MEMBERS: i64 = 20;
+/// 경기 길이(분): 10분에서 7일.
+pub const MATCH_MINUTES: std::ops::RangeInclusive<u32> = 10..=7 * 24 * 60;
+/// 경기 규칙: 출력 토큰 수 또는 추정 비용(클라이언트가 보낸 값).
+pub const RULES: [&str; 2] = ["output", "cost"];
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct ServerConfig {
@@ -111,6 +115,9 @@ pub struct Room {
     pub host_id: i64,
     /// 들어온 순서.
     pub members: Vec<Member>,
+    /// 진행 중이거나 24시간 안에 확정된 가장 최근 경기.
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<MatchInfo>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
@@ -127,6 +134,46 @@ pub struct Member {
 pub struct LiveLine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tps: Option<f64>,
+    /// 호스트가 경기를 열었다: 받은 멤버는 곧바로 동기화한다.
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub match_id: Option<i64>,
+}
+
+/// `POST /v1/rooms/{id}/matches`. 호스트만 연다.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct MatchRequest {
+    pub minutes: u32,
+    /// `output` 또는 `cost`.
+    pub rule: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct MatchInfo {
+    pub id: i64,
+    pub rule: String,
+    /// 유닉스 초.
+    pub starts_at: i64,
+    pub ends_at: i64,
+    /// 끝나고 1시간 뒤 서버가 확정한다. 그전 순위는 잠정이다.
+    pub finalized: bool,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct Standing {
+    pub user_id: i64,
+    pub login: String,
+    /// 규칙이 output이면 토큰 수, cost면 USD.
+    pub score: f64,
+    /// 시작 기록이 있는가. 없으면 0점이다.
+    pub started: bool,
+}
+
+/// `GET /v1/rooms/{id}/matches/latest`. 점수 높은 순.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct MatchResult {
+    #[serde(rename = "match")]
+    pub info: MatchInfo,
+    pub standings: Vec<Standing>,
 }
 
 pub fn endpoint_ok(id: &str) -> bool {
@@ -421,7 +468,9 @@ mod tests {
     #[test]
     fn live_lines_ignore_what_they_do_not_know() {
         let line: LiveLine = serde_json::from_str(r#"{"tps": 12.5, "later": 1}"#).unwrap();
-        assert_eq!(line.tps, Some(12.5));
+        assert_eq!((line.tps, line.match_id), (Some(12.5), None));
+        let line: LiveLine = serde_json::from_str(r#"{"match": 7}"#).unwrap();
+        assert_eq!((line.tps, line.match_id), (None, Some(7)), "경기 신호에는 tps가 없다(0으로 읽지 않는다)");
         assert_eq!(serde_json::to_string(&LiveLine::default()).unwrap(), "{}");
     }
 
@@ -526,6 +575,8 @@ mod tests {
             ("room", pretty(&schemars::schema_for!(Room))),
             ("rooms", pretty(&schemars::schema_for!(RoomList))),
             ("live-line", pretty(&schemars::schema_for!(LiveLine))),
+            ("match-request", pretty(&schemars::schema_for!(MatchRequest))),
+            ("match-result", pretty(&schemars::schema_for!(MatchResult))),
         ];
         for (name, text) in schemas {
             let path = dir.join(format!("{name}.schema.json"));

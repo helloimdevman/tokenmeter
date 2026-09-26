@@ -11,6 +11,17 @@
       "description": "URL에 쓸 수 있는 12자(`[A-Za-z0-9_-]`).",
       "type": "string"
     },
+    "match": {
+      "description": "진행 중이거나 24시간 안에 확정된 가장 최근 경기.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MatchInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "members": {
       "description": "들어온 순서.",
       "type": "array",
@@ -25,6 +36,38 @@
     "members"
   ],
   "$defs": {
+    "MatchInfo": {
+      "type": "object",
+      "properties": {
+        "ends_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "finalized": {
+          "description": "끝나고 1시간 뒤 서버가 확정한다. 그전 순위는 잠정이다.",
+          "type": "boolean"
+        },
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "rule": {
+          "type": "string"
+        },
+        "starts_at": {
+          "description": "유닉스 초.",
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "id",
+        "rule",
+        "starts_at",
+        "ends_at",
+        "finalized"
+      ]
+    },
     "Member": {
       "type": "object",
       "properties": {

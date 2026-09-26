@@ -177,7 +177,7 @@ async fn stream(conn: &Connection, tps: &watch::Receiver<f64>) {
     loop {
         let now = *tps.borrow();
         if last.is_nan() || (now - last).abs() >= 1.0 || sent_at.elapsed() >= RESEND {
-            let mut line = serde_json::to_vec(&LiveLine { tps: Some(now) }).unwrap_or_default();
+            let mut line = serde_json::to_vec(&LiveLine { tps: Some(now), match_id: None }).unwrap_or_default();
             line.push(b'\n');
             if out.write_all(&line).await.is_err() {
                 return;

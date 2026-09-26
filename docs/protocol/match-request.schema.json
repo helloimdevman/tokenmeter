@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MatchRequest",
+  "description": "`POST /v1/rooms/{id}/matches`. 호스트만 연다.",
+  "type": "object",
+  "properties": {
+    "minutes": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "rule": {
+      "description": "`output` 또는 `cost`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "minutes",
+    "rule"
+  ]
+}

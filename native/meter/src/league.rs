@@ -61,7 +61,8 @@ fn path(name: &str) -> PathBuf {
 /// 0600 임시 파일에 쓰고 바꾼다. 디렉터리는 만들지 않는다(`uninstall --purge` 뒤 데몬이 되살리지 않게).
 fn write_private(name: &str, text: &str) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    let tmp = path(&format!("{name}.tmp"));
+    // 데몬과 CLI가 같은 파일을 동시에 쓸 수 있어 임시 파일은 프로세스마다 따로 둔다.
+    let tmp = path(&format!("{name}.{}.tmp", std::process::id()));
     fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?.write_all(text.as_bytes())?;
     fs::rename(tmp, path(name))
 }
@@ -378,13 +379,16 @@ pub fn open_room(_rule: &str) -> i32 {
     }
 }
 
-/// `<id>`나 초대 링크(`https://tokenmeter.online/j/<id>`) 둘 다 받는다.
+/// `<id>`나 초대 링크(`https://tokenmeter.online/j/<id>`) 둘 다 받는다. 형식이 틀리면 None(URL 경로에 넣지 않는다).
+fn room_arg(room: &str) -> Option<&str> {
+    room.trim().trim_end_matches('/').rsplit('/').next().filter(|id| room_id_ok(id))
+}
+
 pub fn join_room(room: &str) -> i32 {
-    let id = room.trim().trim_end_matches('/').rsplit('/').next().unwrap_or("");
-    if !room_id_ok(id) {
+    let Some(id) = room_arg(room) else {
         println!("  usage: tokenmeter league join <room id or invite link>");
         return 1;
-    }
+    };
     let Some(token) = ready() else { return 1 };
     match server::json::<Room>("POST", &format!("/v1/rooms/{id}/join"), &token, None) {
         Ok(room) => {
@@ -410,27 +414,35 @@ pub fn close_room(rid: Option<&str>) -> i32 {
 }
 
 fn room_call(rid: Option<&str>, method: &str, suffix: &str, done: &str) -> i32 {
-    let id = rid.map(str::to_string).unwrap_or_else(current_focus);
-    if id.is_empty() {
+    let arg = rid.map(str::to_string).unwrap_or_else(current_focus);
+    if arg.is_empty() {
         println!("  You are not in a room.");
         return 1;
     }
+    let Some(id) = room_arg(&arg) else {
+        println!("  usage: tokenmeter league leave|close [room id or invite link]");
+        return 1;
+    };
     let Some(token) = ready() else { return 1 };
+    let known = book().rooms.iter().any(|r| r.room_id == id);
     match server::json::<()>(method, &format!("/v1/rooms/{id}{suffix}"), &token, None) {
-        Ok(()) | Err(ApiError::Status(404, _)) => {
-            let mut b = book();
-            b.rooms.retain(|r| r.room_id != id);
-            save_book(&b);
-            // 이 방 멤버였던 사람이 옛 EndpointId로 내 주소를 받아 가지 못하게 키를 바꾼다. 데몬이 새 키로 다시 띄운다.
-            let _ = fs::remove_file(path("league-key"));
-            println!("  {done} {id}.");
-            0
-        }
+        Ok(()) => {}
+        // 404는 내 목록에 있던 방일 때만 성공(서버에서 이미 닫힌 방). 오타 id에 "나갔다"고 하면 안 된다.
+        Err(ApiError::Status(404, _)) if known => {}
         Err(e) => {
             println!("  Couldn't do that: {}", reason(&e));
-            1
+            return 1;
         }
     }
+    let mut b = book();
+    b.rooms.retain(|r| r.room_id != id);
+    save_book(&b);
+    // 이 방 멤버였던 사람이 옛 EndpointId로 내 주소를 받아 가지 못하게 키를 바꾼다. 데몬이 새 키로 다시 띄운다.
+    // ponytail: 새 EndpointId는 다음 동기화나 로그인으로 서버에 간다. 그 전까지 남은 방의 실시간 행이 끊긴다.
+    // M3 A4가 엔드포인트를 띄울 때 sync::kick()을 불러 곧바로 올린다.
+    let _ = fs::remove_file(path("league-key"));
+    println!("  {done} {id}.");
+    0
 }
 
 /// `tokenmeter league`: 로그인, 방, 초대 링크. 네트워크를 쓰지 않는다.
@@ -644,9 +656,55 @@ mod tests {
         let old_key = key().unwrap().public();
         assert_eq!(leave(None), 0);
         assert!(seen.recv().unwrap().starts_with("POST /v1/rooms/aZ0_-aZ0_-aZ/leave"));
-        assert!(list_rooms().is_empty() && !room_open());
+        assert!(list_rooms().is_empty());
         assert_ne!(key().unwrap().public(), old_key, "방을 나가면 키를 바꾼다");
         assert_eq!(join_room("../etc"), 1, "형식이 틀린 id는 보내지 않는다");
+    }
+
+    #[test]
+    fn leave_and_close_only_succeed_for_rooms_i_am_in() {
+        let (_g, _tmp) = crate::test_home("league-leave-bad");
+        let (url, seen) = serve(vec![(404, r#"{"error":"not_found","message":""}"#), (404, r#"{"error":"not_found","message":""}"#)]);
+        use_server(&url);
+        logged_in("7", "bob");
+        let old_key = key().unwrap().public();
+        assert_eq!(close_room(Some("../account")), 1);
+        assert_eq!(close_room(Some("%2e%2e/account")), 1);
+        assert_eq!(leave(Some("aZ0_-aZ0_-aX")), 1, "내 목록에 없는 방의 404는 실패");
+        let sent = seen.recv().unwrap();
+        assert!(sent.starts_with("POST /v1/rooms/aZ0_-aZ0_-aX/leave"), "형식이 틀린 id는 보내지 않는다: {sent}");
+        assert_eq!(key().unwrap().public(), old_key, "실패하면 키를 그대로 둔다");
+        save_book(&Book { rooms: vec![LocalRoom { room_id: "aZ0_-aZ0_-aZ".into(), ..LocalRoom::default() }], ..Book::default() });
+        assert_eq!(close_room(None), 0, "서버에서 이미 닫힌 내 방은 목록에서 뺀다");
+        assert!(seen.recv().unwrap().starts_with("DELETE /v1/rooms/aZ0_-aZ0_-aZ "));
+        assert!(list_rooms().is_empty());
+        assert_ne!(key().unwrap().public(), old_key);
+    }
+
+    #[test]
+    fn tick_opens_the_room_and_restarts_on_a_new_key() {
+        let (_g, _tmp) = crate::test_home("league-tick");
+        logged_in("7", "bob");
+        // 서버에는 요청하지 않는다(refresh_at을 미룬다). 릴레이는 닿지 않아도 엔드포인트는 뜬다.
+        let dir = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tokenmeter");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("services.yaml"), "settings:\n  league:\n    server: \"http://127.0.0.1:9\"\n    relay: \"http://127.0.0.1:9\"\n").unwrap();
+        save_book(&Book { rooms: vec![LocalRoom { room_id: "aZ0_-aZ0_-aZ".into(), ..LocalRoom::default() }], ..Book::default() });
+        let run = || {
+            let mut t = ticker().lock().unwrap();
+            (t.next, t.next_look, t.refresh_at) = (0.0, 0.0, f64::MAX);
+            drop(t);
+            tick(&Value::Null, 3.0);
+            ticker().lock().unwrap().live.as_ref().map(Live::id)
+        };
+        let first = run();
+        assert!(room_open() && first.is_some());
+        let v: Value = serde_json::from_str(&fs::read_to_string(path("league-cache.json")).unwrap()).unwrap();
+        assert_eq!((v["members"]["7"]["handle"].as_str(), v["members"]["7"]["tps"].as_f64()), (Some("bob"), Some(3.0)));
+        fs::remove_file(path("league-key")).unwrap();
+        let second = run();
+        assert!(second.is_some() && second != first, "키가 바뀌면 새 키로 다시 띄운다");
+        *ticker().lock().unwrap() = Ticker::default();
     }
 
     #[test]

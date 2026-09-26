@@ -186,7 +186,30 @@ pub fn live_path(service: &str, session_id: &str) -> PathBuf {
     ))
 }
 
-fn is_routing_key(key: &str) -> bool {
+/// `scheme://host[:port]/path`만 남긴다(호스트 소문자, 끝 `/` 제거).
+/// 사용자 정보·쿼리·조각은 지운다. 스킴이 없으면(`bedrock`, `1`) 사용자 정보만 뗀다.
+pub fn normalize_endpoint(url: &str) -> String {
+    let url = url.trim();
+    let Some((scheme, rest)) = url.split_once("://") else {
+        let end = url.find('/').unwrap_or(url.len());
+        return match url[..end].rfind('@') {
+            Some(at) => url[at + 1..].to_string(),
+            None => url.to_string(),
+        };
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let path = path.trim_end_matches('/');
+    let mut out = format!("{}://{}", scheme.to_ascii_lowercase(), host.to_ascii_lowercase());
+    if !path.is_empty() {
+        out.push('/');
+        out.push_str(path);
+    }
+    out
+}
+
+pub fn is_routing_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     upper.ends_with("_BASE_URL")
         || upper.ends_with("_API_BASE")
@@ -194,9 +217,10 @@ fn is_routing_key(key: &str) -> bool {
         || matches!(upper.as_str(), "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY")
         || upper.contains("USE_BEDROCK")
         || upper.contains("USE_VERTEX")
+        || upper.contains("USE_FOUNDRY")
 }
 
-fn is_secretish(key: &str) -> bool {
+pub fn is_secretish(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
         .iter()
@@ -209,7 +233,7 @@ pub fn routing_env() -> Map<String, Value> {
         if value.trim().is_empty() || !is_routing_key(&key) || is_secretish(&key) {
             continue;
         }
-        let clipped: String = value.chars().take(200).collect();
+        let clipped: String = normalize_endpoint(&value).chars().take(200).collect();
         out.insert(key, Value::String(clipped));
     }
     out
@@ -706,6 +730,40 @@ mod tests {
         for key in ["EDITOR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
             assert!(!routing.contains_key(key), "{key}");
         }
+    }
+
+    #[test]
+    fn normalize_endpoint_keeps_scheme_host_port_path() {
+        assert_eq!(
+            normalize_endpoint("https://user:pass@Proxy.Example:8080/v1/?api-key=abc#x"),
+            "https://proxy.example:8080/v1"
+        );
+        assert_eq!(normalize_endpoint("https://api.anthropic.com/"), "https://api.anthropic.com");
+        assert_eq!(normalize_endpoint("bedrock"), "bedrock");
+        assert_eq!(normalize_endpoint("1"), "1");
+        assert_eq!(normalize_endpoint(""), "");
+        // 스킴 없는 프록시 값(curl 이 받는 `user:pass@host:port`)도 사용자 정보를 뗀다.
+        assert_eq!(normalize_endpoint("u:p@proxy.corp:3128"), "proxy.corp:3128");
+    }
+
+    #[test]
+    fn routing_env_strips_credentials_from_proxy_urls() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let vars = [
+            ("HTTPS_PROXY", "http://u:p@proxy:3128"),
+            ("CLAUDE_CODE_USE_FOUNDRY", "1"),
+        ];
+        for (key, value) in vars {
+            env::set_var(key, value);
+        }
+        let routing = routing_env();
+        for (key, _) in vars {
+            env::remove_var(key);
+        }
+        assert_eq!(routing["HTTPS_PROXY"], "http://proxy:3128");
+        assert_eq!(routing["CLAUDE_CODE_USE_FOUNDRY"], "1");
+        assert!(is_routing_key("CLAUDE_CODE_USE_FOUNDRY"));
+        assert!(is_secretish("ANTHROPIC_AUTH_TOKEN"));
     }
 
     #[test]

@@ -1,0 +1,32 @@
+label: pi
+# <agentDir>/sessions/--<cwd>--/<ts>_<uuid>.jsonl, pi-subagents 자식 <…>/run-N/session.jsonl.
+# PI_CODING_AGENT_SESSION_DIR는 평평한 디렉터리다.
+roots: ["${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions", "$PI_CODING_AGENT_SESSION_DIR"]
+patterns: ["**/*.jsonl"]
+# pi-subagents의 머리 줄 없는 디버그 사본
+exclude: ["**/subagent-artifacts/**"]
+match:
+  type: message
+  message.role: assistant
+  message.model: {$exists: true}
+mode: delta
+# 포크·분기는 항목을 원래 id·시각 그대로 새 파일에 복사한다. responseId는 프로바이더마다 고유하고,
+# 8자리 id만으로는 세션 사이에 부딪힌다(pi.md §7).
+key: [message.responseId, "id & timestamp"]
+timestamp: timestamp
+# 포크 파일의 머리 줄 시각보다 이른 복사본은 부모가 없어도 거른다(스펙 4.5)
+replay_gate: true
+fields:
+  # input은 캐시를 뺀 값, output은 추론(usage.reasoning)을 포함한다. cacheWrite1h는 cacheWrite 안이다.
+  input: message.usage.input
+  cache_read: message.usage.cacheRead
+  cache_write: message.usage.cacheWrite
+  output: message.usage.output
+cost_usd: message.usage.cost.total
+context:
+  session: {path: id, when: {type: session}}
+  cwd: {path: cwd, when: {type: session}}
+  model: message.model
+  # anthropic, openai-codex, github-copilot, dots, models.json의 사용자 프로바이더
+  vendor: message.provider
+default_model: default

@@ -1,0 +1,28 @@
+label: oh-my-pi
+# <cwd>/<ts>_<uuid>.jsonl, 서브에이전트 <ts>_<uuid>/<Agent>.jsonl, 조언자 그 아래 한 단 더.
+# omp config migrate 뒤에는 $XDG_DATA_HOME/omp/sessions(agent/ 없이). PI_CODING_AGENT_DIR는 pi 몫이라 읽지 않는다.
+roots: ["~/.omp/agent/sessions", "$XDG_DATA_HOME/omp/sessions"]
+patterns: ["**/*.jsonl"]
+match:
+  type: message
+  message.role: assistant
+  message.model: {$exists: true}
+mode: delta
+# 포크 복사본은 원래 id·시각을 그대로 갖는다(pi 형식, pi.md §3·§7)
+key: [message.responseId, "id & timestamp"]
+timestamp: timestamp
+replay_gate: true
+fields:
+  # input은 캐시를 뺀 값, output은 추론(reasoningTokens)을 포함한다. orchestration은 네 칸 밖에서
+  # 따로 청구되는 프로바이더 쪽 토큰이다(omp catalog types.ts:152-164).
+  input: "message.usage.input + message.usage.orchestration.input"
+  cache_read: "message.usage.cacheRead + message.usage.orchestration.cacheRead"
+  cache_write: message.usage.cacheWrite
+  output: "message.usage.output + message.usage.orchestration.output"
+cost_usd: message.usage.cost.total
+context:
+  session: {path: id, when: {type: session}}
+  cwd: {path: cwd, when: {type: session}}
+  model: message.model
+  vendor: message.provider
+default_model: default

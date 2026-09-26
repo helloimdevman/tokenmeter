@@ -1,0 +1,12 @@
+{
+  "source": "synthetic: pi-format transcripts that Craft's Pi backend writes to <workspace>/sessions/<sid>/.pi-sessions/ (craft-agents-oss packages/pi-agent-server/src/index.ts:666-706, pi-mono session-manager.ts), a relocated workspace listed in config.json workspaces[].rootPath (TokenTracker src/lib/rollout.js:16047-16082; relative here because the fixture HOME moves), and TokenTracker's session.jsonl header from test/rollout-parser.test.js:10880-10917 (MIT © xiufengsun/TokenTracker), which is not read. step-2 rewrites the transcript whole with one new row (pi migration and Craft save rewrite files, craft.md §2).",
+  "steps": [{"calls": 2, "input": 1300, "cache_read": 5500, "cache_write": 0, "output": 240, "cost_usd": 0.0184,
+             "by_model": {"gpt-5": {"calls": 1, "input": 1000, "cache_read": 5500, "output": 200},
+                          "claude-sonnet-4-6": {"calls": 1, "input": 300, "output": 40}},
+             "sessions": ["260405-swift-river", "260406-calm-lake"]},
+            {"calls": 3, "input": 1350, "cache_read": 5500, "cache_write": 0, "output": 250, "cost_usd": 0.0186,
+             "by_model": {"gpt-5": {"calls": 2, "input": 1050, "cache_read": 5500, "output": 210},
+                          "claude-sonnet-4-6": {"calls": 1, "input": 300, "output": 40}},
+             "sessions": ["260405-swift-river", "260406-calm-lake"]}],
+  "differs": "TokenTracker reads only the session.jsonl header snapshot (here 1000/5500/1100/200, cost 0.04). Its input and cache fields are the last call's prompt, not a sum, and Claude-backend sessions are also in ~/.claude/projects (craft.md §3, §6), so we read the Pi transcripts instead and leave Claude-backend usage to claude-code."
+}

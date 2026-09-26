@@ -1,0 +1,27 @@
+label: OmO
+# OmO Native(senpi 엔진의 브랜드). ~/.omo 자체는 OpenCode 플러그인 세대의 상태라 루트로 두지 않는다.
+# ~/.omo/sessions는 통합 전의 평평한 배치다(세션은 옮겨지지 않았다).
+roots: ["${OMO_CODING_AGENT_DIR:-~/.omo/agent}/sessions", "~/.omo/sessions", "$OMO_CODING_AGENT_SESSION_DIR"]
+patterns: ["**/*.jsonl"]
+match:
+  type: message
+  message.role: assistant
+  message.model: {$exists: true}
+mode: delta
+# 포크 복사본은 원래 id·시각을 그대로 갖는다(pi 형식, pi.md §3·§7)
+key: [message.responseId, "id & timestamp"]
+timestamp: timestamp
+replay_gate: true
+fields:
+  # input은 캐시를 뺀 값, output은 추론을 포함한다(pi 형식)
+  input: message.usage.input
+  cache_read: message.usage.cacheRead
+  cache_write: message.usage.cacheWrite
+  output: message.usage.output
+cost_usd: message.usage.cost.total
+context:
+  session: {path: id, when: {type: session}}
+  cwd: {path: cwd, when: {type: session}}
+  model: message.model
+  vendor: message.provider
+default_model: default

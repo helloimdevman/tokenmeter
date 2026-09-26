@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"5d2e9b71-6c3a-4f0e-8e7b-0a1c2d3e4f50","timestamp":"2026-04-06T09:00:00.000Z","cwd":"/work/relocated"}
+{"type":"message","id":"f1a2b3c4","parentId":null,"timestamp":"2026-04-06T09:00:20.000Z","message":{"role":"assistant","api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4-6","responseId":"msg_c2","stopReason":"stop","usage":{"input":300,"output":40,"cacheRead":0,"cacheWrite":0,"totalTokens":340,"cost":{"total":0.0015}}}}

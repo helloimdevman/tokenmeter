@@ -1,0 +1,52 @@
+label: Qoder
+# 2026-08(앱 0.1.2)부터 Claude Agent SDK 모양의 JSONL을 쓴다. 그 전 기록은 옛 local.db(SQLite)에 있다.
+# 두 소스는 서비스의 키 장부 하나를 같이 쓴다.
+roots: ["${QODER_PROJECTS_DIR:-~/.qoder/projects}"]
+patterns: ["**/*.jsonl"]
+# 스트리밍 중에 같은 message.id를 다시 쓴다. 칸마다 큰 값 유지(TokenTracker는 마지막 값으로 바꿔 씀).
+mode: delta
+key: "sessionId & message.id"
+timestamp: [timestamp, message.timestamp]
+fields:
+  input: message.usage.input_tokens
+  cache_read: [message.usage.cache_read_input_tokens, message.usage.cached_tokens]
+  cache_write: message.usage.cache_creation_input_tokens
+  output: message.usage.output_tokens
+context:
+  cwd: cwd
+  model: message.model
+  session: sessionId
+subagent: isSidechain
+# 공식 모델(qmodel_*)은 크레딧 요금이라 토큰 값만 센다. 크레딧만 있는 줄은 토큰이 0이라 버려진다.
+default_model: qoder-agent
+sources:
+  - match: {type: assistant, message.role: assistant}
+  # 옛 앱의 채팅 DB. 행은 제자리에서 고쳐 쓰이고(token_info가 나중에 붙음) 더는 늘지 않으므로 커서 없이 훑는다.
+  - roots:
+      - "${QODER_HOME:-~/Library/Application Support/Qoder}/SharedClientCache/cache/db"
+      - "~/.config/Qoder/SharedClientCache/cache/db"
+    patterns: ["local.db"]
+    format: sqlite
+    query: |
+      SELECT cm.rowid AS row_id, cm.id, cm.session_id, cm.token_info, cm.model_info, cm.gmt_create,
+             cr.extra AS record_extra, cs.preferred_model_info, cs.project_uri
+      FROM chat_message AS cm
+      LEFT JOIN chat_record AS cr ON cr.request_id = cm.request_id
+      LEFT JOIN chat_session AS cs ON cs.session_id = cm.session_id
+      WHERE cm.role = 'assistant' AND cm.token_info IS NOT NULL AND trim(cm.token_info) NOT IN ('', '{}')
+    key: ["session_id & id", row_id]
+    timestamp: gmt_create
+    input_includes: [cache_read]          # prompt_tokens에 cached_tokens가 들어 있다
+    fields:
+      input: token_info@json.prompt_tokens
+      cache_read: token_info@json.cached_tokens
+      cache_write: null
+      output: token_info@json.completion_tokens
+    context:
+      cwd: project_uri
+      model:
+        - model_info@json.model_key
+        - record_extra@json.modelConfig.key
+        - preferred_model_info@json.model_key
+        - preferred_model_info@json.preferred_model
+      session: session_id

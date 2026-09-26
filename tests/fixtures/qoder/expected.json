@@ -1,0 +1,17 @@
+{
+  "source": "JSONL: TokenTracker test/qoder-new-parser.test.js:42-90 (sess1, credit-only), :135-176 (sess2 + step-2, as an appended rewrite), :426-459 (sess-cache). SQLite: TokenTracker test/qoder-parser.test.js:34-52 (assistant-3), :54-119 (assistant-1, assistant-2) with the columns of src/lib/rollout.js:5777-5797; assistant-3's model from chat_session and assistant-4's late token_info are synthetic (rollout.js:5928-5943, :6052-6110). MIT (c) 2026 xiufengsun",
+  "steps": [
+    {"calls": 5, "input": 58403, "cache_read": 114731, "cache_write": 123, "output": 3821,
+     "by_model": {
+       "qmodel_38max": {"calls": 2, "input": 100, "cache_read": 0, "cache_write": 123, "output": 50},
+       "quest-ultimate": {"calls": 2, "input": 57857, "cache_read": 56878, "cache_write": 0, "output": 959},
+       "quest-pro": {"calls": 1, "input": 446, "cache_read": 57853, "cache_write": 0, "output": 2812}},
+     "sessions": ["sess-2", "sess-cache", "session-1", "session-2"]},
+    {"calls": 6, "input": 58523, "cache_read": 114811, "cache_write": 123, "output": 3831,
+     "by_model": {
+       "qmodel_38max": {"calls": 2, "input": 200, "output": 50},
+       "quest-ultimate": {"calls": 2, "input": 57857},
+       "quest-pro": {"calls": 2, "input": 466, "cache_read": 57933, "output": 2822}}}
+  ],
+  "differs": "TokenTracker counts a billable credit-only row as a conversation with 0 tokens; we emit nothing for it. It replaces a rewritten key with its latest value (a downward correction lowers the total); we keep the field max. It strips the BYOK prefix qoder-custom-<uuid>/ from the model; we keep the model as logged. QODER_DB_PATH (a db file, not a directory) is not read. TokenTracker counts only one conversation per request_id; we count calls per row key."
+}

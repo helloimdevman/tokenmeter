@@ -1,0 +1,9 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/cherrystudio.rs:417-441 (session.jsonl) and :443-467 (session2.jsonl, sessionId s2 added: the Claude Agent SDK writes it on every line) (MIT (c) 2025 Junho Yeo). The V1 copy of session.jsonl stands for a session that exists in both roots",
+  "steps": [
+    {"calls": 3, "input": 240, "cache_read": 230, "cache_write": 55, "output": 340,
+     "by_model": {"deepseek-v4-pro": {"calls": 3, "input": 240, "cache_read": 230, "cache_write": 55, "output": 340}},
+     "sessions": ["s1", "s2"]}
+  ],
+  "differs": "tokscale groups rows per file by union-find over requestId, message.id and uuid, drops a V1 file only when V2 has the same relative path, and takes the session from the file stem. We use the claude-code keys over the whole service (message.id & requestId, else sessionId & message.id) with the field max, so the V1 copy counts once whatever its name, and the session is sessionId. Rows carrying only a uuid or only a requestId are counted per row (tokscale links them through a later complete row)."
+}

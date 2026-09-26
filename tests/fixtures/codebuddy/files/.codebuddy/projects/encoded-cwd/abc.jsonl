@@ -1,0 +1,4 @@
+{"type":"topic","topic":"Hello"}
+{"type":"message","role":"assistant","uuid":"msg-1","timestamp":1777427166667,"sessionId":"sess-test","providerData":{"model":"hy3-preview-agent","rawUsage":{"prompt_tokens":22223,"completion_tokens":250,"total_tokens":22473,"prompt_tokens_details":{"cached_tokens":512,"reasoning_tokens":0},"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"credit":0.42},"usage":{"requests":1,"inputTokens":22223,"outputTokens":250,"totalTokens":22473}},"message":{"usage":{"input_tokens":22223,"output_tokens":250,"total_tokens":22473}}}
+{"type":"file-history-snapshot","path":"x.txt"}
+{"type":"reasoning","text":"thinking..."}

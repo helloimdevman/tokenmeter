@@ -167,7 +167,7 @@ fn doctor_since_groups_by_record_local_date() {
     got["days"]["2026-09-22"]["cost_usd"].take();
     assert_eq!(
         got,
-        json!({"service": "claude-code", "verified": true, "records": 5, "dropped_by_match": 1,
+        json!({"service": "claude-code", "verified": true, "records": 10, "dropped_by_match": 1,
                "fields": {"input": 1.0, "cache_read": 0.75, "cache_write": 0.75, "output": 1.0},
                "days": {
                    "2026-09-20": {"input": 2, "cache_read": 100, "cache_write": 10, "output": 8, "calls": 1, "cost_usd": null,
@@ -195,6 +195,7 @@ fn doctor_json_hides_env_and_registry_roots() {
         "services:\n  mine:\n    roots: [\"${TM_SECRET_DIR}/logs\"]\n    roots_from: [{file: \"~/reg.json\", each: projects, path: dir, patterns: [\"*.jsonl\"]}]\n    key: id\n    fields: {output: o}\n    context: {model: m}\n  bad:\n    roots: [\"/Users/secret-bad/*\"]\n    fields: {output: o}\n",
     );
     write(&home.join(".claude/projects/slug/s.jsonl"), &claude_line("u1", "2026-09-20T10:00:00Z", "assistant", json!({"output_tokens": 1})));
+    write(&home.join(".config/claude/projects/slug/s.jsonl"), &claude_line("u2", "2026-09-20T10:00:00Z", "assistant", json!({"output_tokens": 1})));
     let out = command(&root, Path::new(BIN), &["doctor", "--json"]).env("TM_SECRET_DIR", &secret).output().unwrap();
     assert!(out.status.success());
     let raw = stdout(&out);
@@ -203,7 +204,7 @@ fn doctor_json_hides_env_and_registry_roots() {
     }
     let payload: Value = serde_json::from_str(&raw).unwrap();
     let service = |n: &str| payload["services"].as_array().unwrap().iter().find(|s| s["name"] == n).unwrap().clone();
-    assert_eq!(service("claude-code")["roots"], json!(["~/.claude/projects"]), "기본 어댑터의 글자 그대로 루트만 경로로");
+    assert_eq!(service("claude-code")["roots"], json!(["claude-code#0", "~/.config/claude/projects"]), "기본 어댑터의 글자 그대로 루트만 경로로");
     let mine = service("mine");
     assert_eq!((mine["roots"].clone(), mine["models"].clone(), mine["ok"].clone()), (json!(["mine#0"]), json!(["other"]), json!(true)), "{mine}");
     assert_eq!(payload["skipped"], json!([{"service": "bad", "site": "roots"}]));

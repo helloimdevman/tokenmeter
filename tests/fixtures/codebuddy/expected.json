@@ -1,0 +1,12 @@
+{
+  "source": "encoded-cwd/abc.jsonl: TokenTracker test/rollout-parser.test.js:7646-7747 (MIT (c) 2026 xiufengsun). c-work-repo/session-1, session-2: tokscale crates/tokscale-core/src/sessions/codebuddy.rs:24-64 (MIT (c) 2025 Junho Yeo; cwd changed to /work/repo). session-3: synthetic B1 check, a zero first copy of messageId resp-3 then the real row (TokenTracker rollout.js:10159-10176)",
+  "steps": [
+    {"calls": 4, "input": 32284, "cache_read": 15435, "cache_write": 0, "output": 355,
+     "by_model": {
+       "hy3-preview-agent": {"calls": 2, "input": 22511, "cache_read": 712, "cache_write": 0, "output": 350},
+       "glm-5.2": {"calls": 1, "input": 9766, "cache_read": 14720, "cache_write": 0, "output": 3},
+       "minimax-m3-pay": {"calls": 1, "input": 7, "cache_read": 3, "cache_write": 0, "output": 2}},
+     "sessions": ["sess-test", "session-1", "session-2", "session-3"], "vendor": "tencent"}
+  ],
+  "differs": "session-2: tokscale keeps an input that it cannot prove includes the cache (no total_tokens) and reports 10/3/0/2 = 15; we subtract the cache from prompt_tokens like TokenTracker (7/3/0/2 = 12). tokscale reads message.usage before rawUsage and never reads prompt_tokens_details.cached_tokens, so on abc.jsonl it reports input 22223 and cache_read 0 (same total). tokscale drops rows whose status is not completed and keeps the larger duplicate per file; we keep the field max over the service. IDE extension text logs are not read (no text format)."
+}

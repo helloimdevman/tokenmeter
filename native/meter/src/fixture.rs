@@ -2,7 +2,7 @@
 //! `tests/fixtures.rs`와 `adapter check`가 같이 쓴다. 프로세스 전역 환경(HOME 등)을 바꾼다.
 
 use crate::engine::route_labels;
-use crate::watch::{load_all_specs, specs_from_yaml_opts, ServiceReader, TokenDelta, ADAPTERS};
+use crate::watch::{load_all_specs, specs_from_yaml_opts, ReadOpts, ServiceReader, TokenDelta, ADAPTERS};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -99,8 +99,8 @@ fn run_in(id: &str, spec_text: Option<&str>, dir: &Path, tmp: &Path) -> Result<V
     }
     .ok_or_else(|| format!("adapter {id} did not load"))?;
 
-    // ponytail: prime() 없이 폴 — 모든 레코드가 새것이다. 2.9가 ReadOpts::no_gate()로 바꾼다.
-    let mut reader = ServiceReader::new(spec);
+    // 시각 문턱을 끈다: 모든 레코드가 새것이다(`replay_gate`와 키 장부는 그대로, 스펙 13절).
+    let mut reader = ServiceReader::with_opts(spec, ReadOpts::no_gate());
     let mut deltas = reader.poll();
     let mut steps = vec![totals(&deltas)];
     let step2 = dir.join("step-2");

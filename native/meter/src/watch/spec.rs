@@ -85,6 +85,9 @@ pub struct ServiceSpec {
     /// 레코드 시각(F8). 없으면 읽은 시각.
     #[serde(default)]
     pub timestamp: serde_yaml::Value,
+    /// 모르는 파일에서 그 파일의 첫 시각 − 60초보다 이른 레코드는 배우기만 한다(스펙 4.5).
+    #[serde(default)]
+    pub replay_gate: bool,
     /// 실제 로그로 맞춰 본 어댑터인지. false면 `doctor`가 "검증 안 됨"으로 보인다.
     #[serde(default = "default_true")]
     pub verified: bool,
@@ -460,6 +463,8 @@ struct YamlService {
     #[serde(default)]
     timestamp: serde_yaml::Value,
     #[serde(default)]
+    replay_gate: bool,
+    #[serde(default)]
     verified: Option<bool>,
     #[serde(default)]
     label: Option<String>,
@@ -479,6 +484,7 @@ include!(concat!(env!("OUT_DIR"), "/adapters.rs"));
 pub const KNOWN_SOURCE_KEYS: &[&str] = &[
     "roots", "patterns", "exclude", "roots_from", "format", "query", "cursor", "match", "mode", "key", "input_includes", "fields",
     "context", "each", "sidecars", "ctx_tokens", "ctx_window", "subagent", "duration_ms", "cost_usd", "rebase_on", "timestamp",
+    "replay_gate",
 ];
 
 /// 서비스 수준에만 두는 키(F11). 소스 항목에 있으면 그 서비스가 빠진다.
@@ -895,6 +901,7 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             cost_usd: raw.cost_usd,
             rebase_on: raw.rebase_on,
             timestamp: raw.timestamp,
+            replay_gate: raw.replay_gate,
             verified: raw.verified != Some(false),
             install: raw.install.unwrap_or_default(),
             sources: Vec::new(),

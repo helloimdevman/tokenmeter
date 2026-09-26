@@ -1743,3 +1743,286 @@ fn sqlite_rows_have_no_file_context_memory() {
     let got: Vec<(String, String)> = reader.poll().iter().map(|d| (d.session.clone(), d.cwd.clone())).collect();
     assert_eq!(got, [("S2".into(), "".into()), ("".into(), "".into())], "행은 제 열만 쓴다(머리 행도 잇지 않는다)");
 }
+
+// ── 읽기 상태 되살리기와 문턱(F8, B2, 스펙 4.3–4.5, 13절 상태 테스트) ──
+
+const HOUR: f64 = 3600.0;
+const TS_KEYED: &str = "key: id, timestamp: ts, fields: {output: out}";
+
+/// 레코드 `{id, out, ts}`. `ago`는 지금부터 몇 초 전인지.
+fn rec_at(id: &str, out: i64, ago: f64) -> Value {
+    json!({"id": id, "out": out, "ts": (now_secs() - ago) as i64})
+}
+
+fn set_mtime(path: &Path, ago: f64) {
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs_f64(ago);
+    fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
+}
+
+/// 커밋(`export` → `stage` → `finish`)하고 새 리더를 `gate` 문턱으로 되살린다(데몬 재시작).
+fn restart(old: &mut ServiceReader, root: &Path, body: &str, gate: f64) -> ServiceReader {
+    let store = checkpoint::Store { dir: root.with_extension("readers") };
+    let (mut file, keys) = old.export();
+    file.seq = store.load("t").map_or(1, |f| f.seq + 1);
+    store.stage("t", &file, &keys).unwrap();
+    store.finish("t").unwrap();
+    let mut r = inline(root, body);
+    r.set_gate(gate);
+    r.restore(store.load("t"), store.keys("t", file.seq));
+    r
+}
+
+#[test]
+fn first_run_emits_nothing() {
+    let (_g, tmp) = crate::test_home("first-run");
+    // JSONL: 48시간 안은 끝까지 배우고, 그 밖은 끝 위치의 차가운 항목
+    let root = tmp.join("jsonl");
+    append(&root.join("new.jsonl"), &lines(&[rec_at("a", 5, 60.0)]));
+    append(&root.join("old.jsonl"), &lines(&[rec_at("b", 7, 3.0 * 86_400.0)]));
+    set_mtime(&root.join("old.jsonl"), 3.0 * 86_400.0);
+    let mut r = inline(&root, TS_KEYED);
+    r.prime();
+    assert!(r.poll().is_empty());
+    let (file, _) = r.export();
+    let old = &file.files[&checkpoint::path_key(&root.join("old.jsonl"))];
+    assert!(old.head.is_none() && old.off > 0, "오래된 파일은 짧은 항목");
+    append(&root.join("new.jsonl"), &lines(&[rec_at("a", 9, 0.0)]));
+    assert_eq!(outs(&r.poll()), [4], "배운 값에서 늘어난 만큼만");
+
+    // JSON 통파일: 나이와 상관없이 한 번 읽어 배운다(누적 스냅샷의 평생 합계를 내지 않는다)
+    let root = tmp.join("json");
+    let path = root.join("s.json");
+    write_json(&path, &json!({"sid": "s", "out": 1000}), 1);
+    let mut r = inline(&root, r#"format: json, patterns: ["*.json"], mode: cumulative, key: sid, fields: {output: out}"#);
+    r.prime();
+    assert!(r.poll().is_empty());
+    write_json(&path, &json!({"sid": "s", "out": 1010}), 2);
+    assert_eq!(outs(&r.poll()), [10]);
+
+    // SQLite: 커서 없이 끝까지 배우고 커서를 최댓값으로, 재시작 뒤에도 그대로
+    let root = tmp.join("oc");
+    let conn = sql_db(&root.join("x.db"), MSG_TABLE);
+    msg(&conn, "m1", 1000, out_msg(50, 0.5));
+    let mut r = inline(&root, MSG_SPEC);
+    r.prime();
+    rewind(&mut r);
+    assert!(r.poll().is_empty());
+    let mut r = restart(&mut r, &root, MSG_SPEC, now_secs() - 600.0);
+    assert_eq!(r.sources[0].db.values().next().and_then(|d| d.cursor), Some(1000));
+    assert!(r.poll().is_empty(), "되살린 장부와 커서: 다시 읽어도 내지 않는다");
+    msg(&conn, "m2", 2000, out_msg(3, 0.0));
+    rewind(&mut r);
+    let got = r.poll();
+    assert_eq!((outs(&got), got.iter().map(|d| d.cost_usd).collect::<Vec<_>>()), (vec![3], vec![None]));
+}
+
+#[test]
+fn known_file_resumes_at_offset() {
+    let (_g, tmp) = crate::test_home("resume");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    append(&path, &lines(&[rec_at("a", 5, 60.0)]));
+    let mut r = inline(&root, TS_KEYED);
+    assert_eq!(outs(&r.poll()), [5]);
+    // 꺼진 동안 붙은 줄은 문턱보다 이른 시각이어도 새 기록이다. 7일보다 이른 것만 배운다.
+    append(&path, &lines(&[rec_at("b", 6, 2.0 * HOUR), rec_at("c", 7, 8.0 * 86_400.0), rec_at("d", 8, 30.0)]));
+    let mut r = restart(&mut r, &root, TS_KEYED, now_secs() - 600.0);
+    assert_eq!(outs(&r.poll()), [6, 8]);
+    assert_eq!(r.sources[0].offset[&super::reader::path_key(&path)], fs::metadata(&path).unwrap().len());
+}
+
+#[test]
+fn head_hash_under_4k_appends_only_new_lines() {
+    let (_g, tmp) = crate::test_home("head-4k");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    append(&path, &lines(&[rec_at("a", 5, 60.0), rec_at("b", 6, 60.0)]));
+    let mut r = inline(&root, TS_KEYED);
+    assert_eq!(outs(&r.poll()), [5, 6]);
+    let size = fs::metadata(&path).unwrap().len();
+    let mut r = restart(&mut r, &root, TS_KEYED, now_secs());
+    let (h, n) = r.sources[0].head[&super::reader::path_key(&path)];
+    assert_eq!((n as u64, h), (size, ledger::fnv1a64(&fs::read(&path).unwrap())), "4 KB 미만이면 파일 전체");
+    // 줄이 붙어도 같은 길이만큼 다시 해시하므로 head가 같다
+    append(&path, &lines(&[rec_at("c", 7, 3.0 * HOUR)]));
+    assert_eq!(outs(&r.poll()), [7]);
+    append(&path, &lines(&[rec_at("d", 8, 3.0 * HOUR)]));
+    assert_eq!(outs(&r.poll()), [8], "head 길이가 자라도 이어 읽는다");
+}
+
+#[test]
+fn rewritten_file_is_unknown_and_old_records_only_learn() {
+    let (_g, tmp) = crate::test_home("rewritten");
+    let root = tmp.join("d");
+    let (old, new) = (HOUR, 10.0);
+    let (a, b, c) = (root.join("a.jsonl"), root.join("b.jsonl"), root.join("c.jsonl"));
+    append(&a, &lines(&[rec_at("a1", 5, old)]));
+    append(&b, &lines(&[rec_at("b1", 5, old), rec_at("b2", 6, old), rec_at("b3", 6, old)]));
+    append(&c, &lines(&[rec_at("c1", 5, old)]));
+    let mut r = inline(&root, TS_KEYED);
+    assert_eq!(r.poll().len(), 5);
+    let mut r = restart(&mut r, &root, TS_KEYED, now_secs() - 600.0);
+    // ino 바뀜: 새 파일을 이름 바꿔 덮는다(더 길다)
+    let tmp_a = root.join("a.tmp");
+    fs::write(&tmp_a, lines(&[rec_at("a1", 5, old), rec_at("a2", 6, old), rec_at("a3", 7, new)])).unwrap();
+    fs::rename(&tmp_a, &a).unwrap();
+    // size < off
+    fs::write(&b, lines(&[rec_at("b4", 9, old), rec_at("b5", 8, new)])).unwrap();
+    // 같은 inode에 머리만 바뀜(첫 줄 길이가 같아 off부터 읽으면 c7, c2를 새 줄로 센다)
+    fs::write(&c, lines(&[rec_at("c9", 9, old), rec_at("c7", 7, old), rec_at("c2", 6, new)])).unwrap();
+    let mut got = outs(&r.poll());
+    got.sort();
+    assert_eq!(got, [6, 7, 8], "모르는 파일: 문턱 뒤 레코드만 낸다");
+}
+
+#[test]
+fn cold_entry_relearns_up_to_offset_then_emits_tail() {
+    let (_g, tmp) = crate::test_home("cold");
+    let root = tmp.join("d");
+    let path = root.join("old.jsonl");
+    let body = "mode: cumulative, key: sid, fields: {output: out}";
+    append(&path, &lines(&[json!({"sid": "s1", "out": 100}), json!({"sid": "s2", "out": 200})]));
+    set_mtime(&path, 3.0 * 86_400.0);
+    let mut r = inline(&root, body);
+    r.prime();
+    let mut r = restart(&mut r, &root, body, now_secs() - 600.0);
+    assert!(r.sources[0].blind.contains(&super::reader::path_key(&path)), "짧은 항목은 차가운 항목으로 돌아온다");
+    assert!(r.poll().is_empty());
+    // B2: s2는 배운 기준값에서 잇고(평생 합계 200을 내지 않음), 새 스트림 s3는 문턱(파일 mtime)으로 낸다
+    append(&path, &lines(&[json!({"sid": "s2", "out": 250}), json!({"sid": "s3", "out": 5})]));
+    assert_eq!(outs(&r.poll()), [50, 5]);
+    append(&path, &lines(&[json!({"sid": "s1", "out": 130})]));
+    assert_eq!(outs(&r.poll()), [30]);
+}
+
+#[test]
+fn unknown_file_records_after_threshold_emit_before_learn() {
+    let (_g, tmp) = crate::test_home("unknown-gate");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    let mut r = inline(&root, TS_KEYED);
+    r.set_gate(now_secs() - 600.0);
+    append(&path, &lines(&[rec_at("x", 5, HOUR), rec_at("y", 6, 60.0)]));
+    assert_eq!(outs(&r.poll()), [6], "문턱 전 레코드는 배우기만 한다");
+    append(&path, &lines(&[rec_at("x", 9, HOUR)]));
+    assert_eq!(outs(&r.poll()), [4], "배운 키는 늘어난 만큼만");
+}
+
+#[test]
+fn timestampless_record_uses_file_mtime() {
+    let (_g, tmp) = crate::test_home("no-ts");
+    let root = tmp.join("d");
+    append(&root.join("a.jsonl"), &lines(&[json!({"id": "a", "out": 5})]));
+    set_mtime(&root.join("a.jsonl"), HOUR);
+    append(&root.join("b.jsonl"), &lines(&[json!({"id": "b", "out": 6})]));
+    let mut r = inline(&root, TS_KEYED);
+    r.set_gate(now_secs() - 600.0);
+    assert_eq!(outs(&r.poll()), [6]);
+}
+
+#[test]
+fn backlog_older_than_7d_only_learns() {
+    let (_g, tmp) = crate::test_home("backlog");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    append(&path, &lines(&[rec_at("a", 1, 60.0)]));
+    let mut r = inline(&root, TS_KEYED);
+    r.prime();
+    append(&path, &lines(&[rec_at("old", 5, 8.0 * 86_400.0), rec_at("mid", 6, 6.0 * 86_400.0)]));
+    assert_eq!(outs(&r.poll()), [6], "아는 파일이어도 7일보다 이르면 배우기만");
+    let mut open = inline(&root, TS_KEYED);
+    assert_eq!(outs(&open.poll()), [1, 5, 6], "문턱이 없으면(doctor --since) 7일 상한도 없다");
+}
+
+#[test]
+fn new_cumulative_stream_in_known_file_uses_threshold() {
+    let (_g, tmp) = crate::test_home("cum-new-stream");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    let body = "mode: cumulative, key: sid, timestamp: ts, fields: {output: out}";
+    let cum = |sid: &str, out: i64, ago: f64| json!({"sid": sid, "out": out, "ts": (now_secs() - ago) as i64});
+    append(&path, &lines(&[cum("s1", 100, 60.0)]));
+    let mut r = inline(&root, body);
+    r.prime();
+    r.set_gate(now_secs() - 600.0);
+    append(&path, &lines(&[cum("s2", 50, HOUR), cum("s3", 7, 0.0), cum("s1", 120, 0.0), cum("s2", 55, 0.0)]));
+    assert_eq!(outs(&r.poll()), [7, 20, 5], "문턱 전에 나타난 새 스트림은 기준값만 잡는다");
+}
+
+#[test]
+fn replay_gate_skips_records_before_header_minus_60() {
+    let (_g, tmp) = crate::test_home("replay-gate");
+    let root = tmp.join("d");
+    let header = json!({"type": "session", "ts": (now_secs() - 100.0) as i64});
+    let m = |id: &str, out: i64, ago: f64| json!({"type": "m", "id": id, "out": out, "ts": (now_secs() - ago) as i64});
+    let recs = [header, m("k1", 1, 220.0), m("k2", 2, 130.0), m("k3", 3, 50.0)];
+    append(&root.join("s.jsonl"), &lines(&recs));
+    for (gate, want) in [("true", vec![2, 3]), ("false", vec![1, 2, 3])] {
+        let mut r = inline(&root, &format!("match: {{type: m}}, replay_gate: {gate}, {TS_KEYED}"));
+        r.set_gate(now_secs() - 600.0);
+        assert_eq!(outs(&r.poll()), want, "replay_gate: {gate}");
+    }
+}
+
+#[test]
+fn orphan_fork_is_filtered_by_header_time() {
+    let (_g, tmp) = crate::test_home("orphan-fork");
+    let root = tmp.join("d");
+    // 부모 파일 없는 pi 포크: 머리 줄(포크 시각) 뒤에 원본 항목이 원래 시각으로 복사된다
+    append(&root.join("fork.jsonl"), &lines(&[
+        json!({"type": "session", "ts": "2026-09-20T10:00:00Z"}),
+        json!({"type": "m", "id": "p1", "out": 40, "ts": "2026-09-19T09:00:00Z"}),
+        json!({"type": "m", "id": "p2", "out": 50, "ts": "2026-09-20T09:58:59Z"}),
+        json!({"type": "m", "id": "n1", "out": 7, "ts": "2026-09-20T10:00:10Z"}),
+    ]));
+    let spec = specs_from_yaml(&format!(
+        "services: {{t: {{roots: [{:?}], match: {{type: m}}, replay_gate: true, {TS_KEYED}}}}}",
+        root
+    ))
+    .pop()
+    .unwrap();
+    let mut r = ServiceReader::with_opts(spec, ReadOpts::no_gate());
+    assert_eq!(outs(&r.poll()), [7], "문턱이 없어도(하네스) 복제 문턱은 거른다");
+}
+
+#[test]
+fn keyless_copy_is_not_counted_twice_across_restart() {
+    let (_g, tmp) = crate::test_home("keyless-restart");
+    let root = tmp.join("d");
+    let body = "fields: {output: out}";
+    let recs = [json!({"n": 1, "out": 5}), json!({"n": 2, "out": 6})];
+    append(&root.join("a.jsonl"), &lines(&recs));
+    let mut r = inline(&root, body);
+    assert_eq!(outs(&r.poll()), [5, 6]);
+    let mut r = restart(&mut r, &root, body, now_secs() - 600.0);
+    let mut copy = recs.to_vec();
+    copy.push(json!({"n": 3, "out": 7}));
+    append(&root.join("b.jsonl"), &lines(&copy));
+    assert_eq!(outs(&r.poll()), [7], "되살린 장부가 복사본을 거른다");
+}
+
+#[test]
+fn measure_off_period_is_not_counted() {
+    let (_g, tmp) = crate::test_home("measure-off");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    append(&path, &lines(&[rec_at("a", 1, 2.0 * HOUR)]));
+    let mut r = inline(&root, TS_KEYED);
+    r.prime();
+    append(&path, &lines(&[rec_at("b", 2, HOUR)]));
+    assert_eq!(outs(&r.poll()), [2]);
+    // 끔(1시간): 그동안 쓴 기록. 켤 때 readers를 지우고 문턱 = 켠 시각으로 처음 실행.
+    append(&path, &lines(&[rec_at("c", 3, 1800.0)]));
+    append(&root.join("n.jsonl"), &lines(&[rec_at("d", 4, 1200.0)]));
+    let on = now_secs() - 60.0;
+    let mut r = inline(&root, TS_KEYED);
+    r.set_gate(on);
+    r.restore(None, Vec::new());
+    assert!(r.poll().is_empty());
+    // 켠 뒤에 나타난 파일에도 끈 동안의 레코드는 배우기만
+    append(&root.join("late.jsonl"), &lines(&[rec_at("e", 5, 600.0), rec_at("f", 6, 0.0)]));
+    append(&path, &lines(&[rec_at("g", 7, 0.0)]));
+    let mut got = outs(&r.poll());
+    got.sort();
+    assert_eq!(got, [6, 7]);
+}

@@ -5,7 +5,8 @@ use super::delta::TokenDelta;
 use super::expr::{Env, Pick};
 use super::ledger::{self, key_hash, record_hash, Vals};
 use super::probe::{resolve_endpoint, resolve_plan};
-use super::reader::{FileCtx, ServiceReader, Source};
+use super::now_secs;
+use super::reader::{FileCtx, Pass, ServiceReader, Source, BACKLOG_SECS};
 use super::time::parse_ts;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -51,7 +52,7 @@ impl ServiceReader {
         obj: &Value,
         file: &FileCtx,
         out: &mut Vec<TokenDelta>,
-        emit: bool,
+        pass: Pass,
     ) {
         let key = &file.key;
         let side = |name: &str| file.side.get(name).cloned();
@@ -80,7 +81,7 @@ impl ServiceReader {
             src.first.entry(key.clone()).or_insert(t);
         }
         let Some(each) = &src.x.each else {
-            return self.element(src, &env, &learned, out, emit);
+            return self.element(src, &env, &learned, out, pass);
         };
         // 배열은 원소마다, 맵은 (키, 값)마다(F4). 원소가 없으면 델타도 없다.
         let elems: Vec<(Option<String>, Value)> = match each.value(&env) {
@@ -95,7 +96,7 @@ impl ServiceReader {
                 index: Some(i),
                 ..file_env(obj, file, &get, &side)
             };
-            self.element(src, &env, &learned, out, emit);
+            self.element(src, &env, &learned, out, pass);
         }
     }
 
@@ -106,7 +107,7 @@ impl ServiceReader {
         env: &Env,
         learned: &HashMap<String, String>,
         out: &mut Vec<TokenDelta>,
-        emit: bool,
+        pass: Pass,
     ) {
         let key = env.file.map(|f| f.path.clone()).unwrap_or_default();
         // 펼쳤으면 원소에서 나온 문맥 값이 먼저, 없으면 배운 값(F4). `when` 문맥은 배운 값만.
@@ -155,16 +156,33 @@ impl ServiceReader {
             .as_ref()
             .and_then(|k| k.text(env))
             .map(|k| key_hash(&k));
-        let (d, calls, fresh) = if src.spec.mode == "cumulative" {
-            let Some((d, calls)) = self.cumulative(src, &key, stream, vals) else {
+        let cumulative = src.spec.mode == "cumulative";
+        let (d, calls, seen) = if cumulative {
+            let Some(got) = self.cumulative(src, &key, stream, vals) else {
                 return;
             };
-            (d, calls, true)
+            got
         } else {
             let k = stream.unwrap_or_else(|| record_hash(env.elem.unwrap_or(env.outer)));
-            let fresh = !self.ledger.has(k);
+            let seen = self.ledger.has(k);
             let (d, calls) = self.ledger.grow(k, vals);
-            (d, calls, fresh)
+            (d, calls, seen)
+        };
+        let fresh = cumulative || !seen;
+        // 시각 문턱(스펙 4.4, 4.5): 배우기만 할 레코드인가. 장부·기준값은 위에서 이미 배웠다.
+        let learn = {
+            let gate = self.opts.gate;
+            let late = |t: f64| gate.is_none_or(|g| t >= g);
+            let old = gate.is_some() && at.is_some_and(|t| t < now_secs() - BACKLOG_SECS);
+            let replay = src.spec.replay_gate
+                && at.is_some_and(|t| src.first.get(&key).is_some_and(|f| t < f - 60.0));
+            let when = at.unwrap_or(src.file_mtime);
+            match pass {
+                Pass::Learn => true,
+                _ if old => true,
+                Pass::Unknown => replay || (!seen && !late(when)),
+                Pass::Known => cumulative && !seen && !late(when),
+            }
         };
         let input_tokens = d[0] as i64;
         let cache_read = d[1] as i64;
@@ -242,7 +260,7 @@ impl ServiceReader {
         if delta.total() <= 0 && delta.cost_usd.is_none() {
             return;
         }
-        if emit {
+        if !learn {
             out.push(std::mem::take(&mut delta));
         }
     }
@@ -289,9 +307,10 @@ impl ServiceReader {
         value
     }
 
-    /// cumulative(F2): 스트림(키, 없으면 파일)의 기준값과의 차이와 calls. None이면 낼 것이 없다.
+    /// cumulative(F2): 스트림(키, 없으면 파일)의 기준값과의 차이, calls, 기준값이 있었는지.
+    /// 기준값이 어디에도 없으면 0에서 시작한 스트림으로 보고, 낼지는 문턱이 정한다(4.4). None이면 낼 것이 없다.
     /// `src`는 `with_source`로 꺼내 둔 소스라 `self.sources`에는 다른 소스만 남아 있다.
-    fn cumulative(&mut self, src: &mut Source, file: &str, stream: Option<u64>, v: Vals) -> Option<(Vals, bool)> {
+    fn cumulative(&mut self, src: &mut Source, file: &str, stream: Option<u64>, v: Vals) -> Option<(Vals, bool, bool)> {
         let mine = src.base.get(file).and_then(|b| b.get(&stream)).copied();
         // 이 파일에 기준값이 없으면 같은 서비스 다른 파일 항목(다른 소스 포함)의 같은 키(파일 사이 복사본)
         // ponytail: 파일 수만큼 훑는다(파일·스트림마다 처음 한 번). 느려지면 키 → 파일 색인을 둔다.
@@ -312,12 +331,10 @@ impl ServiceReader {
         if src.rolling {
             return None;
         }
-        if mine.is_none() && other.is_none() && src.blind.remove(file) {
-            return None;
-        }
-        // 기준값이 어디에도 없으면 지금처럼 0에서 시작한 스트림으로 본다(2.9가 문턱으로 가른다).
+        let seen = mine.is_some() || other.is_some();
         let mut base = mine;
-        ledger::diff(&mut base, other.or(Some([0.0; 6])), v)
+        let (d, calls) = ledger::diff(&mut base, other.or(Some([0.0; 6])), v)?;
+        Some((d, calls, seen))
     }
 
     /// `fresh`가 아니면(이미 본 키) 추정하지 않는다: 다시 읽힌 청크 줄을 두 번 세지 않는다.

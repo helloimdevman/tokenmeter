@@ -1,8 +1,9 @@
 //! 파일 찾기, 폴, JSON·JSONL 읽기. 소스(F11)마다 파일 상태, 서비스마다 장부·프로브 캐시.
 
+use super::checkpoint::{self, FileEntry, ReaderFile};
 use super::delta::TokenDelta;
 use super::expr::FileVars;
-use super::ledger::{Ledger, Vals};
+use super::ledger::{fnv1a64, Ledger, Vals};
 use super::now_secs;
 use super::roots::{dedup, excluded, expand, glob_under, read_outside, roots_from, Vars};
 use super::spec::{Compiled, ServiceSpec};
@@ -11,11 +12,17 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub(super) const TOKEN_FIELDS: [&str; 4] = ["input", "cache_read", "cache_write", "output"];
-const PRIME_WINDOW_SECS: f64 = 2.0 * 24.0 * 3600.0;
+/// 이 안에 바뀐 파일은 뜨거운 항목: 처음 실행에서 끝까지 배우고, 내보낼 때 전체를 둔다(스펙 4.1, 4.3).
+const HOT_SECS: f64 = 48.0 * 3600.0;
+/// 밀린 기록의 상한: 이보다 이른 레코드는 배우기만 한다(스펙 4.4).
+pub(super) const BACKLOG_SECS: f64 = 7.0 * 86_400.0;
+/// `head`는 파일 앞 이만큼의 해시다.
+const HEAD_BYTES: u64 = 4096;
 /// 서비스 하나의 키 장부 상한(스펙 F2).
 const LEDGER_CAP: usize = 500_000;
 /// 같은 DB를 이보다 자주 쿼리하지 않는다(스펙 5절).
@@ -23,8 +30,33 @@ const SQLITE_GAP_SECS: f64 = 2.0;
 /// 커서 없는 쿼리가 이보다 많은 행을 내면 `doctor` 경고.
 const SQLITE_BIG_SCAN: usize = 10_000;
 
+/// 읽기 옵션. `gate`는 시각 문턱(스펙 4.4)이다. None이면 문턱과 7일 상한이 없다.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReadOpts {
+    pub gate: Option<f64>,
+}
+
+impl ReadOpts {
+    /// 하네스와 `doctor --since`: 모든 레코드가 새것이다. `replay_gate`와 키 장부는 그대로 쓴다.
+    pub fn no_gate() -> Self {
+        Self { gate: None }
+    }
+}
+
+/// 파일 한 번 읽기의 레코드 처리 방식.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Pass {
+    /// 키·기준값·문맥만 배운다(처음 실행, 차가운 항목의 `off`까지).
+    Learn,
+    /// 아는 파일에 새로 붙은 줄: 모두 새 기록이다(7일 상한과 새 누적 스트림만 문턱을 본다).
+    Known,
+    /// 모르는 파일, JSON 통파일, SQLite 행: 장부에 없는 레코드는 문턱으로 가른다.
+    Unknown,
+}
+
 pub struct ServiceReader {
     pub spec: ServiceSpec,
+    pub(super) opts: ReadOpts,
     /// 서비스 수준 자리(프로브 키, `live_chars`). 소스 자리는 `Source::x`.
     pub(super) x: Compiled,
     pub(super) sources: Vec<Source>,
@@ -67,8 +99,12 @@ pub(super) struct DbState {
 pub(super) struct Source {
     pub(super) spec: ServiceSpec,
     pub(super) x: Compiled,
-    offset: HashMap<String, u64>,
+    pub(super) offset: HashMap<String, u64>,
     mtime: HashMap<String, f64>,
+    /// 마지막으로 읽을 때의 (ino, 크기).
+    stat: HashMap<String, (u64, u64)>,
+    /// JSONL 앞 min(4096, off) 바이트의 (FNV-1a, 길이). 다시 쓰인 파일을 알아본다(스펙 4.1).
+    pub(super) head: HashMap<String, (u64, u32)>,
     pub(super) ctx: HashMap<String, HashMap<String, String>>,
     /// cumulative 기준값: 파일 → 스트림 키 해시(키가 없으면 None) → 값.
     pub(super) base: HashMap<String, HashMap<Option<u64>, Vals>>,
@@ -76,8 +112,11 @@ pub(super) struct Source {
     pub(super) roll: HashMap<String, u64>,
     /// 이번 파일 읽기에서 `rebase_on`이 바뀌었다: 기준값만 잡고 내지 않는다.
     pub(super) rolling: bool,
+    /// 이번에 읽는 파일의 mtime(SQLite는 `-wal`까지 본 최신). 시각 없는 레코드가 문턱과 견준다(4.4).
+    pub(super) file_mtime: f64,
+    /// 차가운 항목(읽지 않은 blind 포함): 바뀌면 0부터 `off`까지 배우며 읽고 그 뒤를 낸다(B2).
     pub(super) blind: HashSet<String>,
-    /// 파일마다 처음 파싱된 레코드 시각(match와 상관없이, 스펙 4.5). 저장은 2.9.
+    /// 파일마다 처음 파싱된 레코드 시각(match와 상관없이, 스펙 4.5).
     pub(super) first: HashMap<String, f64>,
     /// `format: sqlite`의 DB마다 도장·커서.
     pub(super) db: HashMap<String, DbState>,
@@ -204,7 +243,12 @@ impl Source {
 }
 
 impl ServiceReader {
+    /// 문턱 없이(`ReadOpts::no_gate`). 데몬은 `prime`이나 `set_gate`로 문턱을 둔다.
     pub fn new(spec: ServiceSpec) -> Self {
+        Self::with_opts(spec, ReadOpts::no_gate())
+    }
+
+    pub fn with_opts(spec: ServiceSpec, opts: ReadOpts) -> Self {
         let x = Compiled::new(&spec).unwrap_or_default();
         // 소스가 없으면 서비스 자체가 소스 하나다(F11)
         let views = if spec.sources.is_empty() {
@@ -214,6 +258,7 @@ impl ServiceReader {
         };
         Self {
             spec,
+            opts,
             x,
             sources: views.into_iter().map(Source::new).collect(),
             plan: HashMap::new(),
@@ -248,7 +293,7 @@ impl ServiceReader {
                         fs::metadata(&path).is_ok_and(|m| mtime_of(&m) >= since)
                     };
                     if changed {
-                        all.extend(me.read_in(src, &path, true));
+                        all.extend(me.read_in(src, &path, Pass::Unknown));
                     }
                 }
             });
@@ -271,26 +316,71 @@ impl ServiceReader {
         self.sources[i] = src;
     }
 
+    /// 시각 문턱(스펙 4.4). 데몬이 max(마지막 커밋 − 10분, 지금 − 7일, 측정을 켠 시각)을 넣는다.
+    pub fn set_gate(&mut self, threshold: f64) {
+        self.opts.gate = Some(threshold);
+    }
+
+    /// 데몬의 처음 실행: 문턱은 지금(스펙 4.3).
     pub fn prime(&mut self) {
-        let cutoff = now_secs() - PRIME_WINDOW_SECS;
+        self.set_gate(now_secs());
+        self.restore(None, Vec::new());
+    }
+
+    /// 저장한 읽기 상태를 되살린다. None이면 처음 실행이다(스펙 4.3): 48시간 안의 JSONL은 끝까지,
+    /// JSON 통파일은 나이와 상관없이 한 번, SQLite는 커서 없이 끝까지 읽어 배우기만 하고,
+    /// 오래된 JSONL은 끝 위치의 차가운 항목으로 둔다. 루트를 다시 훑어 해시로 항목을 찾고,
+    /// 못 찾은 항목(지워진 파일)은 버린다. 시각 문턱은 건드리지 않는다.
+    pub fn restore(&mut self, file: Option<ReaderFile>, keys: Vec<(u64, [f64; 7])>) {
+        self.ledger.load(keys);
+        let first_run = file.is_none();
+        let mut entries = file.map(|f| f.files).unwrap_or_default();
+        let now = now_secs();
         for i in 0..self.sources.len() {
             self.with_source(i, |me, src| {
                 for path in src.files() {
-                    let Ok(stat) = fs::metadata(&path) else {
-                        continue;
-                    };
-                    // SQLite는 커서 없이 끝까지 읽어 키만 배우고 커서를 최댓값으로 둔다(스펙 5절 처음 읽기)
-                    if src.spec.format == "sqlite" || mtime_of(&stat) >= cutoff {
-                        let _ = me.read_in(src, &path, false);
-                    } else {
-                        let key = path_key(&path);
-                        src.offset.insert(key.clone(), stat.len());
-                        src.mtime.insert(key.clone(), mtime_of(&stat));
-                        src.blind.insert(key);
+                    if first_run {
+                        let Ok(stat) = fs::metadata(&path) else { continue };
+                        if src.spec.format == "jsonl" && now - mtime_of(&stat) > HOT_SECS {
+                            let key = path_key(&path);
+                            src.offset.insert(key.clone(), stat.len());
+                            src.mtime.insert(key.clone(), mtime_of(&stat));
+                            src.stat.insert(key.clone(), (stat.ino(), stat.len()));
+                            src.blind.insert(key);
+                        } else {
+                            let _ = me.read_in(src, &path, Pass::Learn);
+                        }
+                    } else if let Some(e) = entries.remove(&entry_key(i, &path)) {
+                        src.load_entry(&path, e);
                     }
                 }
             });
         }
+    }
+
+    /// 파일 상태와 마지막 내보내기 뒤 새로 생기거나 늘어난 키. `seq`는 부르는 쪽이 채운다(4.2).
+    /// 48시간 넘게 바뀌지 않은 JSONL은 짧은 항목이다. 없어진 파일은 여기서 잊는다.
+    pub fn export(&mut self) -> (ReaderFile, Vec<(u64, [f64; 7])>) {
+        let now = now_secs();
+        let mut files = std::collections::BTreeMap::new();
+        for (i, src) in self.sources.iter_mut().enumerate() {
+            let paths: HashSet<String> = src.mtime.keys().chain(src.db.keys()).cloned().collect();
+            for p in paths {
+                let path = PathBuf::from(&p);
+                if !path.exists() {
+                    src.forget(&p);
+                    src.base.remove(&p);
+                    src.roll.remove(&p);
+                    src.db.remove(&p);
+                    src.mtime.remove(&p);
+                    src.stat.remove(&p);
+                    continue;
+                }
+                files.insert(entry_key(i, &path), src.entry(&p, now));
+            }
+        }
+        let file = ReaderFile { v: 1, seq: 0, at: now, files, est: Default::default() };
+        (file, self.ledger.take_dirty())
     }
 
     /// 다음 폴이 같은 DB 쿼리 간격(2초)을 기다리지 않게 한다. 하네스가 step-2 앞에서 부른다.
@@ -307,7 +397,7 @@ impl ServiceReader {
             self.with_source(i, |me, src| {
                 for path in src.files() {
                     if !src.unchanged(&path) {
-                        all.extend(me.read_in(src, &path, true));
+                        all.extend(me.read_in(src, &path, Pass::Unknown));
                     }
                 }
             });
@@ -323,28 +413,33 @@ impl ServiceReader {
         for i in 0..self.sources.len() {
             self.with_source(i, |me, src| {
                 if only || src.files().iter().any(|p| p == path) {
-                    out.extend(me.read_in(src, path, emit));
+                    out.extend(me.read_in(src, path, if emit { Pass::Unknown } else { Pass::Learn }));
                 }
             });
         }
         out
     }
 
-    fn read_in(&mut self, src: &mut Source, path: &Path, emit: bool) -> Vec<TokenDelta> {
+    fn read_in(&mut self, src: &mut Source, path: &Path, pass: Pass) -> Vec<TokenDelta> {
         let mut out = Vec::new();
         src.rolling = false;
+        src.file_mtime = if src.spec.format == "sqlite" {
+            sqlite::stamp(path).map_or(0.0, |s| s.mtime.max(s.wal_mtime))
+        } else {
+            fs::metadata(path).map_or(0.0, |m| mtime_of(&m))
+        };
         let file = src.file_ctx(path);
         if src.spec.format == "json" {
-            self.read_json(src, path, &file, &mut out, emit);
+            self.read_json(src, path, &file, &mut out, pass);
         } else if src.spec.format == "sqlite" {
-            self.read_sqlite(src, path, &file, &mut out, emit);
+            self.read_sqlite(src, path, &file, &mut out, pass);
         } else {
-            self.read_jsonl(src, path, &file, &mut out, emit);
+            self.read_jsonl(src, path, &file, &mut out, pass);
         }
         out
     }
 
-    fn read_json(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, emit: bool) {
+    fn read_json(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, pass: Pass) {
         let Ok(stat) = fs::metadata(path) else { return };
         let Ok(raw) = fs::read_to_string(path) else {
             return;
@@ -356,12 +451,14 @@ impl ServiceReader {
         let Ok(obj) = serde_json::from_str::<Value>(raw) else {
             return;
         };
-        self.handle(src, &obj, file, out, emit);
-        src.mtime.insert(path_key(path), mtime_of(&stat));
+        self.handle(src, &obj, file, out, pass);
+        let key = path_key(path);
+        src.stat.insert(key.clone(), (stat.ino(), stat.len()));
+        src.mtime.insert(key, mtime_of(&stat));
     }
 
     /// 폴 사이에 연결·트랜잭션을 들고 있지 않는다: 열고, 문장 하나를 끝까지 돌리고, 닫는다.
-    fn read_sqlite(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, emit: bool) {
+    fn read_sqlite(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, pass: Pass) {
         let key = path_key(path);
         let Some(stamp) = sqlite::stamp(path) else { return };
         let now = now_secs();
@@ -389,7 +486,7 @@ impl ServiceReader {
                 for row in &rows {
                     // 행 사이에는 문맥을 잇지 않는다(파일 문맥 기억 없음)
                     src.ctx.remove(&key);
-                    self.handle(src, row, file, out, emit);
+                    self.handle(src, row, file, out, pass);
                 }
                 src.ctx.remove(&key);
                 st.cursor = st.cursor.max(max);
@@ -418,32 +515,45 @@ impl ServiceReader {
         src.db.insert(key, st);
     }
 
-    fn read_jsonl(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, emit: bool) {
+    /// 아는 파일(`ino`·head 같음, `size ≥ off`)은 `off`부터 새 줄로, 차가운 항목은 `off`까지 배운 뒤 그 뒤를,
+    /// 다시 쓰인 파일은 처음부터 모르는 파일로 읽는다(스펙 4.4).
+    fn read_jsonl(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, pass: Pass) {
         let Ok(stat) = fs::metadata(path) else { return };
         let key = path_key(path);
         let size = stat.len();
-        let mut offset = src.offset.get(&key).copied().unwrap_or(0);
-        if size < offset {
-            offset = 0;
-        }
-        if size == offset {
-            src.mtime.insert(key, mtime_of(&stat));
-            return;
-        }
         let Ok(mut fh) = fs::File::open(path) else {
             return;
         };
-        if fh.seek(SeekFrom::Start(offset)).is_err() {
+        let (mut pass, mut start, mut learn_to) = (pass, 0, 0);
+        if let Some(off) = src.offset.get(&key).copied().filter(|_| pass != Pass::Learn) {
+            let same = src.stat.get(&key).is_none_or(|s| s.0 == stat.ino())
+                && size >= off
+                && src.head.get(&key).is_none_or(|h| head_of(&mut fh, u64::from(h.1)) == Some(*h));
+            if !same {
+                src.forget(&key);
+            } else if src.blind.remove(&key) {
+                (pass, learn_to) = (Pass::Known, off);
+            } else {
+                (pass, start) = (Pass::Known, off);
+            }
+        }
+        src.stat.insert(key.clone(), (stat.ino(), size));
+        if size == start {
+            src.offset.insert(key.clone(), start);
+            src.mtime.insert(key, mtime_of(&stat));
             return;
         }
-        let mut buf = Vec::with_capacity((size - offset).min(1024 * 1024) as usize);
+        if fh.seek(SeekFrom::Start(start)).is_err() {
+            return;
+        }
+        let mut buf = Vec::with_capacity((size - start).min(1024 * 1024) as usize);
         if fh.read_to_end(&mut buf).is_err() {
             return;
         }
         let Some(end) = buf.iter().rposition(|b| *b == b'\n') else {
             return;
         };
-        let mut pos = offset;
+        let mut pos = start;
         for chunk in buf[..end].split(|b| *b == b'\n') {
             pos += chunk.len() as u64 + 1;
             if chunk.is_empty() {
@@ -455,12 +565,113 @@ impl ServiceReader {
                 continue;
             }
             if let Ok(obj) = serde_json::from_str::<Value>(text) {
-                self.handle(src, &obj, file, out, emit);
+                let p = if pos <= learn_to { Pass::Learn } else { pass };
+                self.handle(src, &obj, file, out, p);
+            }
+        }
+        if src.head.get(&key).is_none_or(|h| u64::from(h.1) < pos.min(HEAD_BYTES)) {
+            if let Some(h) = head_of(&mut fh, pos.min(HEAD_BYTES)) {
+                src.head.insert(key.clone(), h);
             }
         }
         src.offset.insert(key.clone(), pos);
         src.mtime.insert(key, mtime_of(&stat));
     }
+}
+
+impl Source {
+    /// 다시 쓰인 파일: 위치·문맥·첫 시각·head를 잊는다. 기준값은 파일이 있는 동안 둔다(F2).
+    fn forget(&mut self, key: &str) {
+        self.offset.remove(key);
+        self.ctx.remove(key);
+        self.first.remove(key);
+        self.head.remove(key);
+        self.blind.remove(key);
+    }
+
+    /// 파일 하나의 저장 항목. 48시간 안에 바뀐 파일(SQLite는 늘)은 전체, 나머지는 짧은 항목(스펙 4.1).
+    fn entry(&self, key: &str, now: f64) -> FileEntry {
+        let hex = |h: u64| format!("{h:016x}");
+        let (ino, size) = self.stat.get(key).copied().unwrap_or_default();
+        let mut e = FileEntry {
+            ino,
+            size,
+            mtime: self.mtime.get(key).copied().unwrap_or_default(),
+            off: self.offset.get(key).copied().unwrap_or_default(),
+            base: self
+                .base
+                .get(key)
+                .map(|b| b.iter().map(|(k, v)| (k.map(hex).unwrap_or_default(), *v)).collect())
+                .unwrap_or_default(),
+            roll: self.roll.get(key).copied().map(hex),
+            ..Default::default()
+        };
+        if let Some(d) = self.db.get(key) {
+            (e.ino, e.size, e.mtime) = (d.stamp.ino, d.stamp.size, d.stamp.mtime);
+            e.wal = Some((d.stamp.wal_size, d.stamp.wal_mtime));
+            e.cursor = d.cursor;
+        } else if !self.blind.contains(key) && now - e.mtime <= HOT_SECS {
+            e.head = self.head.get(key).map(|(h, n)| (hex(*h), *n));
+            e.first = self.first.get(key).copied();
+            e.ctx = self.ctx.get(key).map(|c| c.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+        }
+        e
+    }
+
+    /// 저장 항목을 되살린다. head가 없는 JSONL 항목(차가운 항목)은 blind다.
+    fn load_entry(&mut self, path: &Path, e: FileEntry) {
+        let key = path_key(path);
+        let unhex = |s: &str| u64::from_str_radix(s, 16).ok();
+        if self.spec.format == "sqlite" {
+            let (wal_size, wal_mtime) = e.wal.unwrap_or_default();
+            let stamp = DbStamp { ino: e.ino, size: e.size, mtime: e.mtime, wal_size, wal_mtime };
+            self.db.insert(key.clone(), DbState { stamp, cursor: e.cursor, ..Default::default() });
+        } else {
+            self.offset.insert(key.clone(), e.off);
+            self.mtime.insert(key.clone(), e.mtime);
+            self.stat.insert(key.clone(), (e.ino, e.size));
+            match &e.head {
+                Some((h, n)) => {
+                    if let Some(h) = unhex(h) {
+                        self.head.insert(key.clone(), (h, *n));
+                    }
+                }
+                None if self.spec.format == "jsonl" && e.off > 0 => {
+                    self.blind.insert(key.clone());
+                }
+                None => {}
+            }
+        }
+        if let Some(t) = e.first {
+            self.first.insert(key.clone(), t);
+        }
+        if !e.ctx.is_empty() {
+            self.ctx.insert(key.clone(), e.ctx.into_iter().collect());
+        }
+        if !e.base.is_empty() {
+            let base = e.base.iter().map(|(k, v)| ((!k.is_empty()).then(|| unhex(k)).flatten(), *v)).collect();
+            self.base.insert(key.clone(), base);
+        }
+        if let Some(r) = e.roll.as_deref().and_then(unhex) {
+            self.roll.insert(key, r);
+        }
+    }
+}
+
+/// 저장 항목 키: 경로 해시. 둘째 소스부터는 `<번호>.`을 붙여 같은 파일을 읽는 소스끼리 겹치지 않게 한다.
+fn entry_key(source: usize, path: &Path) -> String {
+    match source {
+        0 => checkpoint::path_key(path),
+        i => format!("{i}.{}", checkpoint::path_key(path)),
+    }
+}
+
+/// 파일 앞 `len` 바이트의 (FNV-1a, 길이). 그만큼 읽지 못하면 None.
+fn head_of(fh: &mut fs::File, len: u64) -> Option<(u64, u32)> {
+    let mut buf = vec![0; len as usize];
+    fh.seek(SeekFrom::Start(0)).ok()?;
+    fh.read_exact(&mut buf).ok()?;
+    Some((fnv1a64(&buf), len as u32))
 }
 
 pub(super) fn path_key(path: &Path) -> String {

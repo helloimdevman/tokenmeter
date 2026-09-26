@@ -688,7 +688,7 @@ fn day_start(date: &str) -> Option<f64> {
 /// 기간 안에 바뀐 파일을 새 읽기 도구로 처음부터 읽어 레코드 시각의 로컬 날짜·공개 모델별로 모은다
 /// (스펙 13절). 시각이 없는 레코드는 오늘로 친다. 경로와 내용은 내지 않는다.
 fn doctor_since(spec: &ServiceSpec, since: &str, start: f64, until: &str) -> Value {
-    let mut reader = ServiceReader::new(spec.clone());
+    let mut reader = ServiceReader::with_opts(spec.clone(), crate::watch::ReadOpts::no_gate());
     let deltas = reader.read_since(start);
     let now = now_secs();
     let mut days = serde_json::Map::new();

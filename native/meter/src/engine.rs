@@ -3,7 +3,7 @@
 use crate::pricing::{cache_savings, cost_usd};
 use crate::watch::TokenDelta;
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,35 @@ const RATES_KEPT: usize = 4 * 24 * DAYS_KEPT;
 const BACKLOG_SECS: f64 = 7.0 * 86_400.0;
 /// 레코드 시각이 지금보다 이만큼 이르면 밀린 기록이다. 라이브 속도·주의 상태를 건드리지 않는다.
 const LIVE_SECS: f64 = 120.0;
+/// `perf` 칸이 보는 최근 폴 수(스펙 14절).
+const PERF_POLLS: usize = 300;
+
+/// 데몬 watch 스레드의 폴 비용과 커밋 쓰기 바이트(스펙 14절 예산 확인).
+#[derive(Default)]
+pub struct Perf {
+    /// 최근 폴의 (시작 시각, ms, 전체 훑기였나).
+    polls: VecDeque<(f64, f64, bool)>,
+    scan_ms: f64,
+    write_bytes: u64,
+}
+
+impl Perf {
+    /// `poll_ms_p95`는 뜨거운 폴만, `scan_ms`는 마지막 전체 훑기,
+    /// `watch_cpu`는 창 안 폴 ms 합 ÷ 경과 시간(%), `write_bytes`는 이 데몬이 커밋으로 쓴 바이트 누계.
+    fn json(&self) -> Value {
+        let mut hot: Vec<f64> = self.polls.iter().filter(|p| !p.2).map(|p| p.1).collect();
+        hot.sort_by(f64::total_cmp);
+        let p95 = hot.get((hot.len() * 95).div_ceil(100).saturating_sub(1)).copied().unwrap_or(0.0);
+        let span = match (self.polls.front(), self.polls.back()) {
+            (Some(a), Some(b)) => b.0 + b.1 / 1000.0 - a.0,
+            _ => 0.0,
+        };
+        let busy: f64 = self.polls.iter().map(|p| p.1).sum();
+        let cpu = if span > 0.0 { busy / 1000.0 / span * 100.0 } else { 0.0 };
+        let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+        json!({"poll_ms_p95": r3(p95), "scan_ms": r3(self.scan_ms), "watch_cpu": r3(cpu), "write_bytes": self.write_bytes})
+    }
+}
 
 pub struct Meter {
     pub state: Value,
@@ -27,6 +56,7 @@ pub struct Meter {
     /// 마지막 커밋 때의 state. 리그 업로드는 이것으로 만든다(스펙 4.7).
     committed: Value,
     dirty: bool,
+    perf: Perf,
 }
 
 impl Default for Meter {
@@ -46,6 +76,7 @@ impl Meter {
             state_path: None,
             clock,
             dirty: false,
+            perf: Perf::default(),
         }
     }
 
@@ -86,6 +117,7 @@ impl Meter {
             state_path: Some(path),
             clock,
             dirty: false,
+            perf: Perf::default(),
         }
     }
 
@@ -625,10 +657,10 @@ impl Meter {
     /// state.json을 커밋 번호 `seq`로 쓴다(압축 JSON, 임시 파일 → 이름 바꾸기, 스펙 4.2).
     /// 성공하면 커밋 스냅샷을 갱신한다. `ingest`는 쓰지 않고 데몬이 주기적으로 부른다.
     pub fn commit(&mut self, seq: u64) -> std::io::Result<()> {
-        self.state
-            .as_object_mut()
-            .expect("state object")
-            .insert("seq".into(), json!(seq));
+        let perf = self.perf.json();
+        let obj = self.state.as_object_mut().expect("state object");
+        obj.insert("seq".into(), json!(seq));
+        obj.insert("perf".into(), perf);
         self.save()?;
         self.committed = self.state.clone();
         self.dirty = false;
@@ -637,6 +669,22 @@ impl Meter {
 
     pub fn next_seq(&self) -> u64 {
         self.state.get("seq").and_then(Value::as_u64).unwrap_or(0) + 1
+    }
+
+    /// 데몬 폴 하나의 비용(`at` 시작 유닉스 초, `ms` 걸린 시간).
+    pub fn record_poll(&mut self, at: f64, ms: f64, full: bool) {
+        if full {
+            self.perf.scan_ms = ms;
+        }
+        self.perf.polls.push_back((at, ms, full));
+        while self.perf.polls.len() > PERF_POLLS {
+            self.perf.polls.pop_front();
+        }
+    }
+
+    /// state.json 밖에서 커밋이 쓴 바이트(`readers/`).
+    pub fn add_write_bytes(&mut self, n: u64) {
+        self.perf.write_bytes += n;
     }
 
     pub fn committed(&self) -> &Value {
@@ -660,7 +708,9 @@ impl Meter {
             .expect("state object")
             .insert("updated_at".into(), json!(crate::watch::now_secs()));
         let tmp = path.with_file_name(format!("state.json.{}.tmp", std::process::id()));
-        fs::write(&tmp, serde_json::to_string(&self.state)?)?;
+        let text = serde_json::to_string(&self.state)?;
+        self.perf.write_bytes += text.len() as u64;
+        fs::write(&tmp, text)?;
         match fs::rename(&tmp, &path) {
             Ok(()) => Ok(()),
             Err(err) => {

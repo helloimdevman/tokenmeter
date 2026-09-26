@@ -1012,6 +1012,12 @@ fn public_snapshot(state: &Value) -> Value {
         "plans": public_group(state.get("plans").unwrap_or(&Value::Null), false),
         "endpoints": public_endpoints(state.get("endpoints").unwrap_or(&Value::Null)),
         "sessions": sessions,
+        "perf": {
+            "poll_ms_p95": num_of(state.pointer("/perf/poll_ms_p95")),
+            "scan_ms": num_of(state.pointer("/perf/scan_ms")),
+            "watch_cpu": num_of(state.pointer("/perf/watch_cpu")),
+            "write_bytes": num_of(state.pointer("/perf/write_bytes")) as u64,
+        },
     })
 }
 
@@ -1610,6 +1616,27 @@ mod tests {
         assert_eq!(snap["sessions"], json!([]));
         assert_eq!(snap["today"]["totals"]["input_tokens"], 0);
         assert_eq!(snap["today"]["date"], "2026-08-14");
+    }
+
+    #[test]
+    fn status_json_has_perf() {
+        let (_g, tmp) = crate::test_home("perf");
+        let mut meter = crate::engine::Meter::load_test(tmp.join("state.json"));
+        let t = now_secs();
+        meter.record_poll(t, 50.0, true);
+        for i in 1..=100 {
+            meter.record_poll(t + 2.0 * i as f64, if i == 100 { 9.0 } else { 1.0 }, false);
+        }
+        meter.commit(1).unwrap();
+        meter.commit(2).unwrap();
+        let mut state = crate::engine::Meter::load_test(tmp.join("state.json")).status();
+        state["perf"]["path"] = json!("/Users/alice/secret");
+        let perf = &public_snapshot(&state)["perf"];
+        assert_eq!((perf["poll_ms_p95"].as_f64(), perf["scan_ms"].as_f64()), (Some(1.0), Some(50.0)));
+        // 폴 ms 합 158(훑기 50 + 99 + 9) ÷ 200.009초
+        assert!((perf["watch_cpu"].as_f64().unwrap() - 0.079).abs() < 0.001, "{perf}");
+        assert!(perf["write_bytes"].as_u64().unwrap() > 0, "첫 커밋의 state.json 바이트");
+        assert_eq!(perf.as_object().unwrap().len(), 4, "허용 목록 밖 칸은 나가지 않는다");
     }
 
     #[test]

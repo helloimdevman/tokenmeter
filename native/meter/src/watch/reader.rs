@@ -8,10 +8,11 @@ use super::now_secs;
 use super::roots::{dedup, excluded, expand, glob_under, read_outside, roots_from, Vars};
 use super::spec::{Compiled, ServiceSpec};
 use super::sqlite::{self, DbStamp, SqlErr};
+use glob::{MatchOptions, Pattern};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -29,6 +30,17 @@ const LEDGER_CAP: usize = 500_000;
 const SQLITE_GAP_SECS: f64 = 2.0;
 /// 커서 없는 쿼리가 이보다 많은 행을 내면 `doctor` 경고.
 const SQLITE_BIG_SCAN: usize = 10_000;
+/// 이 안에 바뀐 파일(과 그 부모 디렉터리)만 폴마다 stat한다(스펙 14절 폴 설계).
+const HOT_POLL_SECS: f64 = 3600.0;
+/// 전체 glob과 차가운 파일 stat 간격.
+const SCAN_SECS: f64 = 60.0;
+/// 파일 하나를 폴 한 번에 읽는 상한과 JSONL 조각 크기(스펙 14절).
+pub(super) const POLL_BYTES: u64 = 32 << 20;
+const CHUNK_BYTES: usize = 1 << 20;
+/// 이보다 큰 JSON 통파일은 mtime이 `SETTLE_SECS` 그대로일 때, 계속 바뀌면 늦어도 `SETTLE_MAX_SECS`마다 읽는다.
+const BIG_JSON: u64 = 1_000_000;
+const SETTLE_SECS: f64 = 2.0;
+const SETTLE_MAX_SECS: f64 = 10.0;
 
 /// 읽기 옵션. `gate`는 시각 문턱(스펙 4.4)이다. None이면 문턱과 7일 상한이 없다.
 #[derive(Clone, Copy, Debug, Default)]
@@ -68,6 +80,12 @@ pub struct ServiceReader {
     pub(super) live_out: HashMap<String, i64>,
     /// 읽은 레코드 수와 필드마다 값이 잡힌 수(`doctor`).
     pub stats: ReadStats,
+    /// 마지막 전체 훑기 시각, 다음 폴에 훑으라는 요청(`SessionStart`), 마지막 `poll_at`이 전체 훑기였나.
+    scanned: f64,
+    scan_asked: bool,
+    pub last_full: bool,
+    /// JSONL 파일 하나를 한 번에 읽는 상한. `doctor --since`는 끝까지 읽는다.
+    cap: u64,
 }
 
 /// `doctor`가 보이는 읽기 수. `hits`는 `TOKEN_FIELDS` 순서로 match를 지난 레코드 중 값이 잡힌 수.
@@ -81,6 +99,8 @@ pub struct ReadStats {
     pub sqlite_busy: u64,
     pub sqlite_failed: u64,
     pub sqlite_big_scans: u64,
+    /// 폴이 한 파일·디렉터리 stat 수(폴 설계 확인용).
+    pub stat_calls: u64,
 }
 
 /// SQLite DB 하나의 읽기 상태(F1). 커서는 결과 열 값의 단위 그대로다.
@@ -122,6 +142,12 @@ pub(super) struct Source {
     pub(super) db: HashMap<String, DbState>,
     /// 사이드카 경로 → (mtime, 파싱한 값). mtime이 바뀌면 다시 읽는다(F6).
     side: HashMap<PathBuf, (f64, Option<Value>)>,
+    /// 뜨거운 파일의 부모 디렉터리 → 마지막으로 본 mtime.
+    dirs: HashMap<PathBuf, f64>,
+    /// 마지막 훑기 때 루트 → mtime(없으면 None).
+    root_dirs: Vec<(PathBuf, Option<f64>)>,
+    /// 다시 쓰이는 큰 JSON 통파일 → (지난번 읽은 판의 mtime, 마지막 본 mtime, 그 mtime을 본 시각).
+    settle: HashMap<String, (f64, f64, f64)>,
 }
 
 /// 파일 하나를 읽는 동안의 자리: `$file.*`, `$root`, 사이드카 값(F6).
@@ -227,18 +253,68 @@ impl Source {
         out
     }
 
-    /// 지난 읽기 뒤로 바뀌지 않았다.
-    fn unchanged(&self, path: &Path) -> bool {
+    /// 지난 읽기 뒤로 바뀌었고 지금 읽을 때다. 1 MB 넘는 JSON 통파일은 다시 쓰기가 멎을 때까지 미룬다.
+    fn due(&mut self, path: &Path, now: f64, stats: &mut u64) -> bool {
+        *stats += 1;
         let key = path_key(path);
         if self.spec.format == "sqlite" {
             // 커밋은 `-wal`에 쌓이므로 본 파일 mtime만으로는 놓친다(스펙 5절)
-            return self.db.get(&key).is_some_and(|d| sqlite::stamp(path) == Some(d.stamp));
+            return !self.db.get(&key).is_some_and(|d| sqlite::stamp(path) == Some(d.stamp));
         }
-        fs::metadata(path).is_ok_and(|stat| {
-            self.mtime.get(&key).copied() == Some(mtime_of(&stat))
-                && (self.spec.format == "json"
-                    || self.offset.get(&key).copied().unwrap_or(0) >= stat.len())
-        })
+        let Ok(stat) = fs::metadata(path) else { return false };
+        let mtime = mtime_of(&stat);
+        let known = self.mtime.get(&key).copied();
+        if known == Some(mtime)
+            && (self.spec.format == "json" || self.offset.get(&key).copied().unwrap_or(0) >= stat.len())
+        {
+            return false;
+        }
+        let Some(read) = known.filter(|_| self.spec.format == "json" && stat.len() > BIG_JSON) else {
+            return true;
+        };
+        // 10초 상한은 지난번에 읽은 판의 mtime부터 잰다
+        let (first, seen, seen_at) = *self.settle.entry(key.clone()).or_insert((read.min(now), mtime, now));
+        if seen != mtime {
+            self.settle.insert(key.clone(), (first, mtime, now));
+        }
+        let ready = (seen == mtime && now - seen_at >= SETTLE_SECS) || now - first >= SETTLE_MAX_SECS;
+        if ready {
+            self.settle.remove(&key);
+        }
+        ready
+    }
+
+    /// 뜨거운 집합: 1시간 안에 바뀌었거나 아직 끝까지 읽지 못한 파일.
+    fn hot(&self, now: f64) -> Vec<PathBuf> {
+        let recent = |t: f64| now - t <= HOT_POLL_SECS;
+        let files = self.mtime.iter().filter(|(k, m)| {
+            recent(**m) || self.offset.get(*k).is_some_and(|off| self.stat.get(*k).is_some_and(|s| *off < s.1))
+        });
+        let dbs = self.db.iter().filter(|(_, d)| recent(d.stamp.mtime.max(d.stamp.wal_mtime)));
+        files.map(|(k, _)| k).chain(dbs.map(|(k, _)| k)).map(PathBuf::from).collect()
+    }
+
+    /// 디렉터리 하나에서 이 소스가 찾을 아직 모르는 파일(루트 패턴과 `exclude`를 그대로 따른다).
+    fn new_in(&self, dir: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+        let roots = self.roots();
+        let opts = MatchOptions { require_literal_separator: true, ..MatchOptions::new() };
+        let wanted = |p: &Path| {
+            roots.iter().any(|(root, pats)| {
+                p.strip_prefix(root).is_ok_and(|rel| {
+                    pats.iter().any(|pat| Pattern::new(pat).is_ok_and(|g| g.matches_path_with(rel, opts)))
+                }) && !excluded(root, p, &self.x.exclude)
+            })
+        };
+        entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let k = path_key(p);
+                !self.mtime.contains_key(&k) && !self.db.contains_key(&k)
+            })
+            .filter(|p| p.is_file() && wanted(p))
+            .collect()
     }
 }
 
@@ -266,6 +342,10 @@ impl ServiceReader {
             ledger: Ledger::new(now_secs, LEDGER_CAP),
             live_out: HashMap::new(),
             stats: ReadStats::default(),
+            scanned: f64::NEG_INFINITY,
+            scan_asked: false,
+            last_full: false,
+            cap: POLL_BYTES,
         }
     }
 
@@ -283,6 +363,7 @@ impl ServiceReader {
     /// `since`(유닉스 초) 뒤에 바뀐 파일을 처음부터 읽어 모든 델타를 낸다. 문턱 없음(`doctor --since`).
     /// 새 읽기 도구에서 부르므로 모든 키가 "지금 본 것"으로 적힌다(스펙 4.4).
     pub fn read_since(&mut self, since: f64) -> Vec<TokenDelta> {
+        self.cap = u64::MAX;
         let mut all = Vec::new();
         for i in 0..self.sources.len() {
             self.with_source(i, |me, src| {
@@ -298,6 +379,7 @@ impl ServiceReader {
                 }
             });
         }
+        self.cap = POLL_BYTES;
         all
     }
 
@@ -401,18 +483,84 @@ impl ServiceReader {
         }
     }
 
+    /// 전체 훑기: glob으로 찾은 파일을 모두 stat해 바뀐 것을 읽는다(하네스와 테스트, 데몬의 60초 훑기).
     pub fn poll(&mut self) -> Vec<TokenDelta> {
+        self.scan(now_secs())
+    }
+
+    /// 데몬의 폴(스펙 14절 폴 설계): 60초마다와 `request_scan` 뒤에는 전체 훑기,
+    /// 그 사이에는 뜨거운 파일과 그 부모 디렉터리만 stat하고 바뀐 디렉터리만 다시 읽는다.
+    pub fn poll_at(&mut self, now: f64) -> Vec<TokenDelta> {
+        self.last_full = self.scan_asked || now - self.scanned >= SCAN_SECS;
+        if self.last_full {
+            self.scan_asked = false;
+            self.scanned = now;
+            return self.scan(now);
+        }
         let mut all = Vec::new();
         for i in 0..self.sources.len() {
-            self.with_source(i, |me, src| {
-                for path in src.files() {
-                    if !src.unchanged(&path) {
-                        all.extend(me.read_in(src, &path, Pass::Unknown));
-                    }
-                }
-            });
+            self.with_source(i, |me, src| all.extend(me.poll_hot(src, now)));
         }
         all
+    }
+
+    /// 새 세션(`live/<서비스>__*.json`)이 보였다: 다음 폴에 전체를 훑는다(새 프로젝트 디렉터리).
+    pub fn request_scan(&mut self) {
+        self.scan_asked = true;
+    }
+
+    fn scan(&mut self, now: f64) -> Vec<TokenDelta> {
+        let mut all = Vec::new();
+        for i in 0..self.sources.len() {
+            self.with_source(i, |me, src| all.extend(me.scan_source(src, now)));
+        }
+        all
+    }
+
+    /// 소스 하나를 훑는다. 루트 mtime을 glob 앞에 적어 그사이 생긴 디렉터리는 다음 폴이 본다.
+    fn scan_source(&mut self, src: &mut Source, now: f64) -> Vec<TokenDelta> {
+        src.root_dirs = src.roots().into_iter().map(|(r, _)| (r.clone(), dir_mtime(&r))).collect();
+        self.stats.stat_calls += src.root_dirs.len() as u64;
+        let mut out = Vec::new();
+        for path in src.files() {
+            if src.due(&path, now, &mut self.stats.stat_calls) {
+                out.extend(self.read_in(src, &path, Pass::Unknown));
+            }
+        }
+        out
+    }
+
+    fn poll_hot(&mut self, src: &mut Source, now: f64) -> Vec<TokenDelta> {
+        // 루트 바로 아래가 바뀌었다(새 프로젝트 디렉터리, 없던 루트가 생김): 이 소스를 바로 훑는다
+        self.stats.stat_calls += src.root_dirs.len() as u64;
+        if src.root_dirs.iter().any(|(r, m)| dir_mtime(r) != *m) {
+            self.last_full = true;
+            return self.scan_source(src, now);
+        }
+        let mut out = Vec::new();
+        let mut dirs = HashSet::new();
+        for path in src.hot(now) {
+            if let Some(d) = path.parent() {
+                dirs.insert(d.to_path_buf());
+            }
+            if src.due(&path, now, &mut self.stats.stat_calls) {
+                out.extend(self.read_in(src, &path, Pass::Unknown));
+            }
+        }
+        src.dirs.retain(|d, _| dirs.contains(d));
+        for dir in dirs {
+            self.stats.stat_calls += 1;
+            let Ok(stat) = fs::metadata(&dir) else { continue };
+            let m = mtime_of(&stat);
+            // 처음 보는 디렉터리도 한 번 읽는다: 훑기와 이 폴 사이에 생긴 파일
+            if src.dirs.insert(dir.clone(), m) == Some(m) {
+                continue;
+            }
+            for path in src.new_in(&dir) {
+                out.extend(self.read_in(src, &path, Pass::Unknown));
+            }
+        }
+        out
     }
 
     /// 그 파일을 찾는 소스마다 읽는다(`doctor` 표본).
@@ -556,20 +704,19 @@ impl ServiceReader {
         if fh.seek(SeekFrom::Start(start)).is_err() {
             return;
         }
-        let mut buf = Vec::with_capacity((size - start).min(1024 * 1024) as usize);
-        if fh.read_to_end(&mut buf).is_err() {
-            return;
-        }
-        let Some(end) = buf.iter().rposition(|b| *b == b'\n') else {
-            return;
-        };
+        // 1 MiB 조각으로 줄 단위로 읽고, 배울 곳을 지나 폴당 `cap`까지만 낸다. 나머지는 다음 폴에.
+        let limit = if pass == Pass::Learn { u64::MAX } else { start.max(learn_to).saturating_add(self.cap) };
+        let mut rd = BufReader::with_capacity(CHUNK_BYTES, fh);
+        let mut line = Vec::new();
         let mut pos = start;
-        for chunk in buf[..end].split(|b| *b == b'\n') {
-            pos += chunk.len() as u64 + 1;
-            if chunk.is_empty() {
-                continue;
+        while pos < limit {
+            line.clear();
+            // 끝의 잘린 줄은 쓰지 않고 다음 폴까지 미룬다
+            if !matches!(rd.read_until(b'\n', &mut line), Ok(n) if n > 0) || line.last() != Some(&b'\n') {
+                break;
             }
-            let text = String::from_utf8_lossy(chunk);
+            pos += line.len() as u64;
+            let text = String::from_utf8_lossy(&line);
             let text = text.trim();
             if text.is_empty() {
                 continue;
@@ -579,6 +726,10 @@ impl ServiceReader {
                 self.handle(src, &obj, file, out, p);
             }
         }
+        if pos == start {
+            return;
+        }
+        let mut fh = rd.into_inner();
         if src.head.get(&key).is_none_or(|h| u64::from(h.1) < pos.min(HEAD_BYTES)) {
             if let Some(h) = head_of(&mut fh, pos.min(HEAD_BYTES)) {
                 src.head.insert(key.clone(), h);
@@ -688,10 +839,164 @@ pub(super) fn path_key(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn dir_mtime(path: &Path) -> Option<f64> {
+    fs::metadata(path).ok().map(|m| mtime_of(&m))
+}
+
 fn mtime_of(stat: &fs::Metadata) -> f64 {
     stat.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::watch::specs_from_yaml;
+    use std::time::Duration;
+
+    /// 인라인 서비스 `t` 하나: 줄마다 `{"id", "out"}`.
+    fn reader(root: &Path, body: &str) -> ServiceReader {
+        let text = format!("services: {{t: {{roots: [{root:?}], key: id, fields: {{output: out}}{body}}}}}");
+        ServiceReader::new(specs_from_yaml(&text).pop().unwrap())
+    }
+
+    /// `at` 유닉스 초를 mtime으로 두고 쓴다.
+    fn write_at(path: &Path, text: &str, at: f64) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+        let f = fs::File::options().write(true).open(path).unwrap();
+        f.set_modified(UNIX_EPOCH + Duration::from_secs_f64(at)).unwrap();
+    }
+
+    fn line(id: &str, out: i64) -> String {
+        format!("{}\n", serde_json::json!({"id": id, "out": out}))
+    }
+
+    fn out(got: &[TokenDelta]) -> i64 {
+        got.iter().map(|d| d.output_tokens).sum()
+    }
+
+    #[test]
+    fn hot_set_is_stat_every_poll_and_cold_every_60s() {
+        let (_g, tmp) = crate::test_home("hot-set");
+        let t = now_secs();
+        write_at(&tmp.join("d/p/hot.jsonl"), &line("h", 1), t - 10.0);
+        for i in 0..3 {
+            write_at(&tmp.join(format!("d/old{i}/c.jsonl")), &line(&format!("c{i}"), 1), t - 7200.0);
+        }
+        let mut r = reader(&tmp.join("d"), "");
+        let stats = |r: &mut ServiceReader, now: f64| {
+            let before = r.stats.stat_calls;
+            r.poll_at(now);
+            (r.last_full, r.stats.stat_calls - before)
+        };
+        assert_eq!(stats(&mut r, t), (true, 5), "처음 폴은 전체 훑기: 루트와 파일 넷");
+        for k in 1..30 {
+            // 루트, 뜨거운 파일 하나와 그 부모 디렉터리 하나
+            assert_eq!(stats(&mut r, t + 2.0 * k as f64), (false, 3), "{k}");
+        }
+        assert_eq!(stats(&mut r, t + 60.0), (true, 5), "60초마다 차가운 파일까지");
+        // 한 시간이 지나면 식는다
+        assert_eq!(stats(&mut r, t + 3700.0), (true, 5));
+        assert_eq!(stats(&mut r, t + 3702.0), (false, 1));
+    }
+
+    #[test]
+    fn new_file_in_a_hot_parent_dir_is_found_next_poll() {
+        let (_g, tmp) = crate::test_home("hot-dir");
+        let t = now_secs();
+        let dir = tmp.join("d/p");
+        write_at(&dir.join("a.jsonl"), &line("a", 1), t);
+        let mut r = reader(&tmp.join("d"), "");
+        assert_eq!(out(&r.poll_at(t)), 1);
+        assert!(r.poll_at(t + 2.0).is_empty());
+        write_at(&dir.join("b.jsonl"), &line("b", 7), t + 3.0);
+        write_at(&dir.join("skip.txt"), &line("x", 100), t + 3.0);
+        let got = r.poll_at(t + 4.0);
+        assert!(!r.last_full);
+        assert_eq!(out(&got), 7, "같은 디렉터리의 새 세션, 패턴 밖 파일은 빼고");
+        assert!(r.poll_at(t + 6.0).is_empty());
+    }
+
+    #[test]
+    fn session_start_triggers_a_scan() {
+        let (_g, tmp) = crate::test_home("scan-ask");
+        let t = now_secs();
+        write_at(&tmp.join("d/p/a.jsonl"), &line("a", 1), t);
+        fs::create_dir_all(tmp.join("d/q/sub")).unwrap();
+        let mut r = reader(&tmp.join("d"), "");
+        r.poll_at(t);
+        write_at(&tmp.join("d/q/sub/b.jsonl"), &line("b", 5), t + 1.0);
+        assert!(r.poll_at(t + 2.0).is_empty(), "뜨겁지 않은 디렉터리의 새 파일은 뜨거운 폴이 모른다");
+        r.request_scan();
+        assert_eq!(out(&r.poll_at(t + 4.0)), 5);
+        assert!(r.last_full);
+        r.poll_at(t + 6.0);
+        assert!(!r.last_full, "요청은 한 번만");
+    }
+
+    #[test]
+    fn new_project_dir_under_a_root_is_found_next_poll() {
+        let (_g, tmp) = crate::test_home("root-dir");
+        let t = now_secs();
+        let mut r = reader(&tmp.join("d"), "");
+        assert!(r.poll_at(t).is_empty(), "루트가 아직 없다");
+        write_at(&tmp.join("d/p/a.jsonl"), &line("a", 3), t + 1.0);
+        assert_eq!(out(&r.poll_at(t + 2.0)), 3, "루트가 생겼다");
+        write_at(&tmp.join("d/q/b.jsonl"), &line("b", 4), t + 3.0);
+        assert_eq!(out(&r.poll_at(t + 4.0)), 4, "새 프로젝트 디렉터리");
+        assert!(r.last_full);
+    }
+
+    #[test]
+    fn large_jsonl_is_read_32mib_per_poll_on_line_boundaries() {
+        assert_eq!(POLL_BYTES, 32 << 20);
+        let (_g, tmp) = crate::test_home("chunks");
+        let t = now_secs();
+        let path = tmp.join("d/big.jsonl");
+        let mut text: String = (0..100).map(|i| line(&format!("k{i:03}"), 1)).collect();
+        let len = line("k000", 1).len() as u64;
+        text.push_str("{\"id\": \"tail\", \"out\"");
+        write_at(&path, &text, t);
+        let mut r = reader(&tmp.join("d"), "");
+        // 조각 상한을 줄 10.5개로: 폴마다 11줄(줄 경계까지), 잘린 끝 줄은 세지 않는다
+        r.cap = len * 21 / 2;
+        let mut seen = Vec::new();
+        for k in 0..12 {
+            seen.push(r.poll_at(t + 2.0 * k as f64).len());
+            let off = r.sources[0].offset.get(&path_key(&path)).copied().unwrap_or(0);
+            assert_eq!(off % len, 0, "줄 경계");
+        }
+        assert_eq!(seen, [11, 11, 11, 11, 11, 11, 11, 11, 11, 1, 0, 0]);
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut f, b": 9}\n").unwrap();
+        assert_eq!(out(&r.poll_at(t + 30.0)), 9, "끝 줄이 이어지면 다음 폴에");
+    }
+
+    #[test]
+    fn big_json_rewritten_every_second_is_read_at_most_every_10s() {
+        let (_g, tmp) = crate::test_home("settle");
+        let t = now_secs();
+        let path = tmp.join("d/ui.json");
+        let pad = "x".repeat(1_100_000);
+        let write = |i: usize| write_at(&path, &format!("{{\"id\": \"r{i}\", \"out\": 1, \"pad\": \"{pad}\"}}"), t + i as f64);
+        write(0);
+        let mut r = reader(&tmp.join("d"), ", format: json, patterns: [\"*.json\"]");
+        let mut reads = vec![];
+        for i in 0..=30 {
+            write(i);
+            if !r.poll_at(t + i as f64).is_empty() {
+                reads.push(i);
+            }
+        }
+        assert_eq!(reads, [0, 10, 20, 30], "처음 한 번, 그 뒤 계속 바뀌면 10초마다");
+        // 쓰기가 멎으면 2초 뒤
+        write(31);
+        assert!(r.poll_at(t + 31.0).is_empty());
+        assert!(r.poll_at(t + 32.0).is_empty());
+        assert_eq!(out(&r.poll_at(t + 33.0)), 1);
+    }
 }

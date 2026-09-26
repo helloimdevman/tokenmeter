@@ -6,7 +6,7 @@ use crate::overlay::{snapshot_from_scale, SharedMeter};
 use crate::watch::checkpoint::Store;
 use crate::watch::{load_report, load_runtime_config, now_secs, ServiceReader};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +19,8 @@ static STOP: AtomicBool = AtomicBool::new(false);
 /// 바뀐 것이 있으면 이만큼에 한 번 state.json을 커밋한다(스펙 4.2).
 const COMMIT_EVERY: Duration = Duration::from_secs(30);
 /// `.keys` 압축 주기(스펙 4.1).
+/// 활동이 없어도 `perf` 칸을 이만큼마다 state.json에 쓴다.
+const PERF_EVERY: Duration = Duration::from_secs(300);
 const COMPACT_EVERY: Duration = Duration::from_secs(3600);
 /// 문턱 여유와 밀린 기록 상한(스펙 4.4).
 const GATE_SLACK: f64 = 600.0;
@@ -124,18 +126,32 @@ pub fn run(no_window: bool) -> i32 {
         let mut last_board = Instant::now() - Duration::from_secs(60);
         let mut last_commit = Instant::now();
         let mut last_compact = Instant::now();
+        let mut live_seen = HashSet::new();
+        new_sessions(&mut live_seen);
         while !STOP.load(Ordering::Relaxed) {
             if last_poll.elapsed() >= poll_every {
+                let (started, at) = (Instant::now(), now_secs());
+                // 새 세션은 새 프로젝트 디렉터리일 수 있다: 그 서비스를 이번 폴에 훑는다(스펙 14절)
+                for svc in new_sessions(&mut live_seen) {
+                    readers
+                        .iter_mut()
+                        .filter(|r| tokenmeter_hook::safe_name(&r.spec.name) == svc)
+                        .for_each(ServiceReader::request_scan);
+                }
+                let mut full = false;
                 for reader in &mut readers {
-                    for delta in reader.poll() {
+                    for delta in reader.poll_at(at) {
                         meter.ingest(delta);
                     }
+                    full |= reader.last_full;
                 }
+                meter.record_poll(at, started.elapsed().as_secs_f64() * 1000.0, full);
                 last_poll = Instant::now();
             }
             // ponytail: 델타 없이 배우기만 한 읽기 상태는 다음 커밋까지 기다린다. 그사이 죽으면 다시 배운다.
             let rolled = meter.state.pointer("/hour/h") != meter.committed().pointer("/hour/h");
-            if meter.dirty() && (rolled || last_commit.elapsed() >= COMMIT_EVERY) {
+            let since = last_commit.elapsed();
+            if (meter.dirty() && (rolled || since >= COMMIT_EVERY)) || since >= PERF_EVERY {
                 commit(&mut meter, &mut readers, &store, &mut staged);
                 last_commit = Instant::now();
                 if last_compact.elapsed() >= COMPACT_EVERY {
@@ -246,10 +262,14 @@ fn commit(meter: &mut Meter, readers: &mut [ServiceReader], store: &Store, stage
             continue;
         }
         file.seq = seq;
+        let keys_len = || fs::metadata(store.dir.join(format!("{}.keys", reader.spec.name))).map_or(0, |m| m.len());
+        let before = keys_len();
         if let Err(err) = store.stage(&reader.spec.name, &file, &keys) {
             eprintln!("{}", crate::l10n!("[TokenMeter] failed to save readers/{}: {}", "[TokenMeter] readers/{} 저장 실패: {}", reader.spec.name, err));
             continue;
         }
+        let next = fs::metadata(store.dir.join(format!("{}.next.json", reader.spec.name))).map_or(0, |m| m.len());
+        meter.add_write_bytes(next + keys_len().saturating_sub(before));
         done.push((reader.spec.name.clone(), files));
     }
     if let Err(err) = meter.commit(seq) {
@@ -269,6 +289,22 @@ fn measure_since(toggle: &Value, id: &str) -> f64 {
         .iter()
         .filter_map(|k| book?.get(k)?.as_f64())
         .fold(0.0, f64::max)
+}
+
+/// `live/<서비스>__*.json` 중 지난번에 없던 파일의 서비스(`safe_name`). `seen`은 지금 목록으로 바꾼다.
+fn new_sessions(seen: &mut HashSet<String>) -> Vec<String> {
+    let names: HashSet<String> = fs::read_dir(tokenmeter_hook::live_dir())
+        .map(|d| d.flatten().filter_map(|e| e.file_name().into_string().ok()).collect())
+        .unwrap_or_default();
+    let mut out: Vec<String> = names
+        .iter()
+        .filter(|n| n.ends_with(".json") && !seen.contains(*n))
+        .filter_map(|n| n.split_once("__").map(|(svc, _)| svc.to_string()))
+        .collect();
+    out.sort();
+    out.dedup();
+    *seen = names;
+    out
 }
 
 fn prune_live(ttl: Duration) {
@@ -351,4 +387,23 @@ fn already_running() -> bool {
 
 fn install_signals() {
     let _ = ctrlc::set_handler(|| STOP.store(true, Ordering::Relaxed));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_live_file_names_its_service_once() {
+        let (_g, _tmp) = crate::test_home("live-new");
+        let live = tokenmeter_hook::live_dir();
+        fs::create_dir_all(&live).unwrap();
+        fs::write(live.join("codex__old.json"), "{}").unwrap();
+        let mut seen = HashSet::new();
+        new_sessions(&mut seen);
+        fs::write(live.join("claude-code__s1.json"), "{}").unwrap();
+        fs::write(live.join("claude-code__s2.json"), "{}").unwrap();
+        assert_eq!(new_sessions(&mut seen), ["claude-code"]);
+        assert!(new_sessions(&mut seen).is_empty());
+    }
 }

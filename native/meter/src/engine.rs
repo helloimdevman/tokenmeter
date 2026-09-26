@@ -1853,7 +1853,7 @@ mod tests {
         });
         let r = &meter.state["hour"]["r"];
         assert!(r.get("claude-code\u{1f}self-hosted\u{1f}api\u{1f}claude-opus-5").is_some(), "{r}");
-        let upload = crate::sync::build(&json!({"hour": meter.state["hour"].clone()}), true, "", 0.0, crate::watch::now_secs() as i64).0;
+        let upload = crate::sync::build(&json!({"hour": meter.state["hour"].clone()}), true, (0, 0), 0.0, crate::watch::now_secs() as i64).0;
         let text = serde_json::to_string(&upload).unwrap();
         assert!(!text.contains("mycorp") && text.contains("self-hosted"), "{text}");
     }

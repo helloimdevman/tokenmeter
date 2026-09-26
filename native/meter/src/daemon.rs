@@ -158,7 +158,7 @@ pub fn run(no_window: bool) -> i32 {
                 last_quota_check = Instant::now();
             }
             crate::league::tick(&status, rate.rate);
-            crate::sync::tick(&status);
+            crate::sync::tick(meter.committed());
             if crate::board::online() && last_board.elapsed().as_secs_f64() >= crate::board::sync_seconds()
             {
                 crate::board::sync(&status, false);
@@ -169,7 +169,7 @@ pub fn run(no_window: bool) -> i32 {
         if meter.dirty() {
             let _ = meter.commit(meter.next_seq());
         }
-        crate::sync::flush(&meter.state);
+        crate::sync::flush(meter.committed());
         let _ = fs::remove_file(pid_file());
     });
 

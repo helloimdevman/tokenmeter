@@ -3,7 +3,7 @@
 use super::cond::{self, Cond};
 use super::expr::{legacy_path, Pick};
 use super::reader::TOKEN_FIELDS;
-use super::roots::home_dir;
+use super::roots::{self, check_pattern, check_root, home_dir, RootsFrom, Vars};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -23,6 +23,12 @@ pub struct ServiceSpec {
     pub roots: Vec<String>,
     #[serde(default = "default_patterns")]
     pub patterns: Vec<String>,
+    /// 루트 기준 glob. 맞는 파일은 읽지 않는다(F10).
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// 다른 앱의 레지스트리에서 읽는 루트(F10).
+    #[serde(default)]
+    pub roots_from: Vec<RootsFromSpec>,
     #[serde(default = "default_format")]
     pub format: String,
     /// 식 자리(스펙 2.0)는 YAML 그대로 두고 `Compiled::new`가 파싱한다. null은 자리가 없는 것.
@@ -72,6 +78,21 @@ pub struct ServiceSpec {
     pub sources: Vec<ServiceSpec>,
 }
 
+/// `roots_from` 항목 하나. 식 자리는 YAML 그대로 두고 `Compiled::new`가 파싱한다.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RootsFromSpec {
+    #[serde(default)]
+    pub file: String,
+    #[serde(default)]
+    pub each: serde_yaml::Value,
+    #[serde(default)]
+    pub path: serde_yaml::Value,
+    #[serde(default)]
+    pub base: serde_yaml::Value,
+    #[serde(default)]
+    pub patterns: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct InstallSpec {
     #[serde(default)]
@@ -111,6 +132,8 @@ pub struct Compiled {
     pub live_chars: Option<Pick>,
     pub plan_key: Option<Pick>,
     pub endpoint_key: Option<Pick>,
+    pub exclude: Vec<glob::Pattern>,
+    pub roots_from: Vec<RootsFrom>,
 }
 
 impl Compiled {
@@ -157,6 +180,40 @@ impl Compiled {
                 context.push((name.clone(), p));
             }
         }
+        // 루트 틀(F10): 와일드카드·중괄호와 틀 문법 오류는 로딩 때 막는다
+        let template = |t: &str| {
+            let vars = Vars { root: None, ctx: &|_| None };
+            check_root(t).and_then(|_| roots::expand(t, &vars).map(drop))
+        };
+        for r in &spec.roots {
+            template(r).map_err(|e| format!("roots: {e}"))?;
+        }
+        for p in &spec.patterns {
+            check_pattern(p).map_err(|e| format!("patterns: {e}"))?;
+        }
+        let mut exclude = Vec::new();
+        for p in &spec.exclude {
+            check_pattern(p)
+                .and_then(|_| glob::Pattern::new(p).map_err(|e| e.to_string()))
+                .map(|p| exclude.push(p))
+                .map_err(|e| format!("exclude: {e}"))?;
+        }
+        let mut roots_from = Vec::new();
+        for (i, r) in spec.roots_from.iter().enumerate() {
+            let at = format!("roots_from[{i}]");
+            let rf = RootsFrom {
+                file: r.file.clone(),
+                each: site(&format!("{at}.each"), &r.each)?,
+                path: site(&format!("{at}.path"), &r.path)?
+                    .ok_or_else(|| crate::l10n!("{at}.path: required", "{at}.path: 필요합니다"))?,
+                base: site(&format!("{at}.base"), &r.base)?,
+                patterns: r.patterns.clone(),
+            };
+            template(&rf.file)
+                .and_then(|_| rf.check())
+                .map_err(|e| format!("{at}: {e}"))?;
+            roots_from.push(rf);
+        }
         Ok(Self {
             fields,
             input_includes,
@@ -172,6 +229,8 @@ impl Compiled {
             live_chars: site("live_chars", &spec.live_chars)?,
             plan_key: probe_key("plan_probe", &spec.plan_probe)?,
             endpoint_key: probe_key("endpoint_probe", &spec.endpoint_probe)?,
+            exclude,
+            roots_from,
         })
     }
 }
@@ -273,6 +332,10 @@ struct YamlService {
     #[serde(default)]
     patterns: Option<Vec<String>>,
     #[serde(default)]
+    exclude: Vec<String>,
+    #[serde(default)]
+    roots_from: Vec<RootsFromSpec>,
+    #[serde(default)]
     format: Option<String>,
     #[serde(default, rename = "match")]
     match_fields: serde_yaml::Mapping,
@@ -328,7 +391,7 @@ include!(concat!(env!("OUT_DIR"), "/adapters.rs"));
 /// 소스 항목에 둘 수 있는 키(F11). 서비스 수준에 두면 모든 소스의 기본값이다.
 /// 모르는 키는 `LoadReport::warnings`로 간다.
 pub const KNOWN_SOURCE_KEYS: &[&str] = &[
-    "roots", "patterns", "format", "match", "mode", "key", "input_includes", "fields",
+    "roots", "patterns", "exclude", "roots_from", "format", "match", "mode", "key", "input_includes", "fields",
     "context", "ctx_tokens", "ctx_window", "subagent", "duration_ms", "cost_usd", "rebase_on",
 ];
 
@@ -339,10 +402,13 @@ pub const SERVICE_ONLY_KEYS: &[&str] = &[
 ];
 
 /// 로딩에서 빠진 서비스(id, 이유)와 모르는 키 경고. 데몬 로그와 `doctor`가 보인다.
+/// 겹치는 루트는 `overlaps`의 (서비스, 루트 번호) 쌍, `roots_from`은 버린 루트 수만 둔다(1절 개인정보).
 #[derive(Debug, Default)]
 pub struct LoadReport {
     pub skipped: Vec<(String, String)>,
     pub warnings: Vec<String>,
+    pub overlaps: Vec<[(String, usize); 2]>,
+    pub roots_from_dropped: usize,
 }
 
 /// 기본 어댑터만(사용자 덮어쓰기 없이), 켜진 것만.
@@ -359,7 +425,64 @@ pub fn is_builtin_service(name: &str) -> bool {
 
 /// 사용자 덮어쓰기까지 합친 설정을 읽을 때 빠진 서비스와 경고.
 pub fn load_report() -> LoadReport {
-    load_specs(&load_merged_yaml()).1
+    let (specs, mut report) = load_specs(&load_merged_yaml());
+    report.overlaps = overlaps(&specs);
+    let vars = Vars { root: None, ctx: &|_| None };
+    report.roots_from_dropped = specs
+        .iter()
+        .flat_map(source_views)
+        .flat_map(|s| Compiled::new(s).map(|x| x.roots_from).unwrap_or_default())
+        .map(|rf| roots::roots_from(&rf, &vars).1)
+        .sum();
+    report
+}
+
+/// 서비스의 읽기 단위(F11). 소스가 없으면 서비스 자체가 하나다.
+fn source_views(spec: &ServiceSpec) -> &[ServiceSpec] {
+    if spec.sources.is_empty() {
+        std::slice::from_ref(spec)
+    } else {
+        &spec.sources
+    }
+}
+
+/// 서비스의 루트 틀. 소스들의 `roots`를 순서대로 합친다. 번호가 `doctor`의 루트 번호다.
+pub fn root_templates(spec: &ServiceSpec) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for r in source_views(spec).iter().flat_map(|s| &s.roots) {
+        if !out.contains(&r.as_str()) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// 서비스 사이에 겹치는 루트(같거나 한쪽이 다른 쪽의 조상). 서비스 안은 리더가 합친다(F10).
+/// ponytail: 서비스 수 × 루트 수의 제곱. 어댑터가 수백 개가 되면 정렬한 경로로 바꾼다.
+pub fn overlaps(specs: &[ServiceSpec]) -> Vec<[(String, usize); 2]> {
+    let vars = Vars { root: None, ctx: &|_| None };
+    let canon = |p: PathBuf| fs::canonicalize(&p).unwrap_or(p);
+    let roots: Vec<(&str, usize, Vec<PathBuf>)> = specs
+        .iter()
+        .flat_map(|s| {
+            root_templates(s).into_iter().enumerate().map(|(i, t)| {
+                let paths = roots::expand(t, &vars).ok().flatten().unwrap_or_default();
+                (s.name.as_str(), i, paths.into_iter().map(canon).collect())
+            })
+        })
+        .collect();
+    let meet = |a: &[PathBuf], b: &[PathBuf]| {
+        a.iter().any(|x| b.iter().any(|y| x.starts_with(y) || y.starts_with(x)))
+    };
+    let mut out = Vec::new();
+    for (n, (sa, ia, pa)) in roots.iter().enumerate() {
+        for (sb, ib, pb) in &roots[n + 1..] {
+            if sa != sb && meet(pa, pb) {
+                out.push([(sa.to_string(), *ia), (sb.to_string(), *ib)]);
+            }
+        }
+    }
+    out
 }
 
 /// `{services: {<id>: <adapters/id.yaml>}}`. 깨진 파일은 빈 블록이 되어 로딩에서 빠진다.
@@ -620,6 +743,8 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             enabled,
             roots: raw.roots,
             patterns: raw.patterns.unwrap_or_else(default_patterns),
+            exclude: raw.exclude,
+            roots_from: raw.roots_from,
             format: raw.format.unwrap_or_else(default_format),
             match_fields: raw.match_fields,
             mode: raw.mode.unwrap_or_else(default_mode),

@@ -1005,3 +1005,152 @@ fn sources_report_under_the_service_name() {
     assert_eq!(got.iter().map(|d| (d.service.as_str(), d.output_tokens)).collect::<Vec<_>>(), [("mine", 3), ("mine", 4)]);
     assert!(reader.spec.sources.iter().all(|s| s.name == "mine" && s.label == "Mine"));
 }
+
+#[test]
+fn unset_var_root_is_dropped_not_absolute() {
+    let (_g, tmp) = crate::test_home("root-unset");
+    std::env::remove_var("TM_ROOT_NOPE");
+    // 빈 문자열로 펴면 `<tmp>/d`가 되어 아래 파일을 읽는다(B4)
+    append(&tmp.join("d/s.jsonl"), &lines(&[json!({"id": "a", "out": 5})]));
+    let root = format!("${{TM_ROOT_NOPE}}{}", tmp.join("d").display());
+    let spec = specs_from_yaml(&format!("services: {{t: {{roots: [{root:?}], key: id, fields: {{output: out}}}}}}"))
+        .pop()
+        .unwrap();
+    let mut reader = ServiceReader::new(spec);
+    assert!(reader.files().is_empty());
+    assert!(reader.poll().is_empty());
+}
+
+#[test]
+fn same_root_twice_reads_once() {
+    let (_g, tmp) = crate::test_home("root-twice");
+    std::env::remove_var("TM_ROOT_A");
+    let home = tmp.join("home");
+    append(&home.join("x/s.jsonl"), &lines(&[json!({"id": "a", "out": 5}), json!({"id": "b", "out": 2})]));
+    let spec = specs_from_yaml(
+        r#"services: {t: {roots: ["${TM_ROOT_A:-~/x}", "~/x", "~/./x/"], fields: {output: out}}}"#,
+    )
+    .pop()
+    .unwrap();
+    let mut reader = ServiceReader::new(spec);
+    assert_eq!(reader.files(), vec![home.join("x/s.jsonl")]);
+    assert_eq!(sum4(&reader.poll()).3, 7, "키가 없어도 한 번");
+}
+
+#[test]
+fn excluded_journal_is_not_read() {
+    let (_g, tmp) = crate::test_home("root-exclude");
+    let root = tmp.join("d");
+    append(&root.join("p/s.jsonl"), &lines(&[json!({"id": "a", "out": 5})]));
+    append(&root.join("p/subagents/workflows/w1/journal.jsonl"), &lines(&[json!({"id": "b", "out": 70})]));
+    append(&root.join("p/subagents/a.jsonl"), &lines(&[json!({"id": "c", "out": 2})]));
+    let mut reader = inline(
+        &root,
+        r#"key: id, fields: {output: out}, exclude: ["**/subagents/workflows/*/journal.jsonl"]"#,
+    );
+    assert_eq!(reader.files().len(), 2);
+    assert_eq!(sum4(&reader.poll()).3, 7);
+}
+
+#[test]
+fn roots_from_registry_patterns_find_files() {
+    let (_g, tmp) = crate::test_home("root-registry");
+    let home = tmp.join("home");
+    let app = tmp.join("code/C#/a[p]p");
+    let other = tmp.join("code/other");
+    append(&app.join(".crush/s.jsonl"), &lines(&[json!({"id": "a", "out": 5})]));
+    append(&app.join(".crush/deep/x.jsonl"), &lines(&[json!({"id": "b", "out": 70})]));
+    append(&other.join("data/s.jsonl"), &lines(&[json!({"id": "c", "out": 2})]));
+    fs::create_dir_all(home.join("reg")).unwrap();
+    fs::write(
+        home.join("reg/projects.json"),
+        json!({"projects": [
+            {"path": app, "data_dir": ".crush"},
+            {"path": other, "dir": "data"},
+            {"path": home, "data_dir": "."},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let text = r#"services:
+  t:
+    key: id
+    fields: {output: out}
+    roots_from:
+      - {file: "~/reg/projects.json", each: projects, path: [data_dir, dir], base: path, patterns: ["*.jsonl"]}
+"#;
+    write_user_services(&tmp, text);
+    assert_eq!(load_report().roots_from_dropped, 1, "doctor는 버린 수만 센다");
+    let spec = specs_from_yaml(text).pop().unwrap();
+    let mut reader = ServiceReader::new(spec);
+    let mut files = reader.files();
+    files.sort();
+    assert_eq!(files, vec![app.join(".crush/s.jsonl"), other.join("data/s.jsonl")], "항목 패턴만, HOME은 버린다");
+    assert_eq!(sum4(&reader.poll()).3, 7);
+}
+
+#[test]
+fn brace_root_is_a_validation_error() {
+    let (_g, root) = crate::test_home("root-brace");
+    write_user_services(
+        &root,
+        r#"services:
+  a:
+    roots: ["~/.{claude,codex}"]
+    fields: {output: n}
+  b:
+    roots: ["~/a/*/b"]
+    fields: {output: n}
+  c:
+    roots: ["~/x"]
+    patterns: ["*.{json,jsonl}"]
+    fields: {output: n}
+  d:
+    roots: ["~/x"]
+    exclude: ["{a,b}/*.jsonl"]
+    fields: {output: n}
+  e:
+    fields: {output: n}
+    roots_from: [{file: "~/r.json", path: p, patterns: ["**/crush.db"]}]
+  f:
+    roots: ["${TM_X"]
+    fields: {output: n}
+  g:
+    roots: ["${TM_ROOT_G:-~/x}"]
+    exclude: ["**/journal.jsonl"]
+    fields: {output: n}
+    roots_from: [{file: "~/r.json", each: projects, path: dir, patterns: ["*.db"]}]
+"#,
+    );
+    let names = loaded_names();
+    let report = load_report();
+    for (id, site) in [("a", "roots"), ("b", "roots"), ("c", "patterns"), ("d", "exclude"), ("e", "roots_from"), ("f", "roots")] {
+        assert!(!names.contains(&id.to_string()), "{id}");
+        assert!(report.skipped.iter().any(|(s, why)| s == id && why.starts_with(site)), "{id}: {:?}", report.skipped);
+    }
+    assert!(names.contains(&"g".to_string()), "{:?}", report.skipped);
+}
+
+#[test]
+fn overlapping_roots_across_services_are_reported() {
+    let (_g, tmp) = crate::test_home("root-overlap");
+    std::env::set_var("TM_ROOT_SHARED", tmp.join("home/.pi/agent"));
+    fs::create_dir_all(tmp.join("home/.pi/agent/sessions")).unwrap();
+    let specs = specs_from_yaml(
+        r#"services:
+  pi: {roots: ["~/.other", "${TM_ROOT_SHARED}/sessions"], fields: {output: n}}
+  omp: {roots: ["~/.pi/agent/sessions/"], fields: {output: n}}
+  mine: {roots: ["~/.mine", "~/.mine/sub"], fields: {output: n}}
+  up: {fields: {output: n}, sources: [{roots: ["~/.q"]}, {roots: ["~/.pi"]}]}
+"#,
+    );
+    let got = overlaps(&specs);
+    std::env::remove_var("TM_ROOT_SHARED");
+    let pair = |a: &str, i, b: &str, j| [(a.to_string(), i), (b.to_string(), j)];
+    assert_eq!(
+        got,
+        vec![pair("pi", 1, "omp", 0), pair("pi", 1, "up", 1), pair("omp", 0, "up", 1)],
+        "서비스 사이만, 같은 서비스 안(mine)은 아니다. 조상 루트도 겹친다"
+    );
+    assert!(load_report().overlaps.is_empty(), "기본 어댑터끼리는 겹치지 않는다");
+}

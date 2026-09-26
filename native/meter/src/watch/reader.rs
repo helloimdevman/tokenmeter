@@ -4,9 +4,8 @@ use super::delta::TokenDelta;
 use super::ledger::{Ledger, Vals};
 use super::now_secs;
 use super::probe::resolve_plan;
-use super::roots::expand_home;
+use super::roots::{dedup, excluded, expand, glob_under, roots_from, Vars};
 use super::spec::{Compiled, ServiceSpec};
-use glob::glob;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -55,20 +54,27 @@ impl Source {
         Self { spec, x, ..Default::default() }
     }
 
+    /// 루트 틀을 펴고(B4: 못 펴면 버림) 정규화한 경로로 합친 뒤 패턴으로 찾는다(F10).
+    /// ponytail: `roots_from` 레지스트리(1 MB 상한)를 훑을 때마다 다시 읽는다. 폴 비용이 보이면 mtime 캐시(2.11).
     fn files(&self) -> Vec<PathBuf> {
+        let vars = Vars { root: None, ctx: &|_| None };
+        let fixed = self.spec.roots.iter().filter_map(|r| expand(r, &vars).ok().flatten()).flatten();
+        let mut roots: Vec<(PathBuf, Vec<String>)> =
+            dedup(fixed.collect()).into_iter().map(|r| (r, self.spec.patterns.clone())).collect();
+        for rf in &self.x.roots_from {
+            roots.extend(roots_from(rf, &vars).0);
+        }
+        let mut seen = HashSet::new();
         let mut out = Vec::new();
-        for root in &self.spec.roots {
-            let root = expand_home(root);
-            if !root.exists() {
+        for (root, patterns) in roots {
+            // 없는 루트는 stat 한 번
+            if !root.is_dir() {
                 continue;
             }
-            for pattern in &self.spec.patterns {
-                let pat = root.join(pattern).to_string_lossy().into_owned();
-                if let Ok(paths) = glob(&pat) {
-                    for p in paths.flatten() {
-                        if p.is_file() {
-                            out.push(p);
-                        }
+            for pattern in &patterns {
+                for p in glob_under(&root, pattern) {
+                    if !excluded(&root, &p, &self.x.exclude) && seen.insert(p.clone()) {
+                        out.push(p);
                     }
                 }
             }

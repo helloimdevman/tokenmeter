@@ -3,7 +3,7 @@
 //! 경로 틀의 `$`는 한 가지 뜻이다. `$TOKENMETER_HOME`(데이터 디렉터리), `$root`, `$ctx.<이름>`은
 //! 예약 이름이고 나머지 `$VAR`·`${VAR:-기본}`은 환경 변수다. 맨 앞 `~`는 HOME이다.
 
-use super::expr::dig;
+use super::expr::{Env, Pick};
 use glob::{MatchOptions, Pattern};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -203,13 +203,12 @@ pub fn excluded(root: &Path, file: &Path, exclude: &[Pattern]) -> bool {
     exclude.iter().any(|p| p.matches_path_with(rel, opts))
 }
 
-/// 다른 앱의 레지스트리에서 읽는 루트(F10).
-/// 경로식(1.1)이 다른 레인에서 함께 만들어지는 중이라 식 자리는 지금 `dig` 점 경로다. 2.4가 `Pick`으로 바꾼다.
+/// 다른 앱의 레지스트리에서 읽는 루트(F10). `each`·`path`·`base`는 경로식(F3, F4와 같은 뜻)이다.
 pub struct RootsFrom {
     pub file: String,
-    pub each: Option<String>,
-    pub path: String,
-    pub base: Option<String>,
+    pub each: Option<Pick>,
+    pub path: Pick,
+    pub base: Option<Pick>,
     pub patterns: Vec<String>,
 }
 
@@ -233,31 +232,32 @@ impl RootsFrom {
 /// 레지스트리에서 프로젝트 루트를 뽑는다. `/`, HOME, HOME의 조상은 버리고 버린 수를 센다.
 pub fn roots_from(spec: &RootsFrom, vars: &Vars) -> (Vec<(PathBuf, Vec<String>)>, usize) {
     let home = home_dir().map(|h| fs::canonicalize(&h).unwrap_or(h));
-    let text = |v: &Value, path: &str| {
-        dig(v, path)
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
+    let text = |doc: &Value, elem: &Value, pick: &Pick| {
+        let env = Env {
+            elem: Some(elem),
+            ..Env::new(doc, vars.ctx)
+        };
+        pick.text(&env).map(PathBuf::from)
     };
     let (mut out, mut dropped) = (Vec::new(), 0);
     for file in expand(&spec.file, vars).ok().flatten().unwrap_or_default() {
         let Some(doc) = read_outside(&file) else {
             continue;
         };
-        let elems: Vec<&Value> = match &spec.each {
-            None => vec![&doc],
-            Some(each) => match dig(&doc, each) {
-                Some(Value::Array(a)) => a.iter().collect(),
-                Some(Value::Object(m)) => m.values().collect(),
+        let elems: Vec<Value> = match &spec.each {
+            None => vec![doc.clone()],
+            Some(each) => match each.value(&Env::new(&doc, vars.ctx)) {
+                Some(Value::Array(a)) => a,
+                Some(Value::Object(m)) => m.into_iter().map(|(_, v)| v).collect(),
                 _ => Vec::new(),
             },
         };
         let dir = file.parent().unwrap_or(Path::new(""));
-        for elem in elems {
-            let Some(path) = text(elem, &spec.path) else {
+        for elem in &elems {
+            let Some(path) = text(&doc, elem, &spec.path) else {
                 continue;
             };
-            let base = spec.base.as_deref().and_then(|b| text(elem, b));
+            let base = spec.base.as_ref().and_then(|b| text(&doc, elem, b));
             let root = base.as_deref().unwrap_or(dir).join(path);
             let canon = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
             if canon.parent().is_none() || home.as_ref().is_some_and(|h| h.starts_with(&canon)) {
@@ -436,6 +436,10 @@ mod tests {
             root: None,
             ctx: &no_ctx,
         }
+    }
+
+    fn pick(s: &str) -> Pick {
+        Pick::from_yaml(&s.into()).unwrap()
     }
 
     fn paths(template: &str) -> Option<Vec<PathBuf>> {
@@ -655,9 +659,9 @@ mod tests {
         .unwrap();
         let spec = RootsFrom {
             file: "~/reg/projects.json".into(),
-            each: Some("projects".into()),
-            path: "data_dir".into(),
-            base: Some("path".into()),
+            each: Some(pick("projects")),
+            path: pick("data_dir"),
+            base: Some(pick("path")),
             patterns: vec!["crush.db".into()],
         };
         let (roots, dropped) = roots_from(&spec, &plain());
@@ -679,8 +683,8 @@ mod tests {
         .unwrap();
         let spec = RootsFrom {
             file: "~/reg/ws.jsonc".into(),
-            each: Some("workspaces".into()),
-            path: "rootPath".into(),
+            each: Some(pick("workspaces")),
+            path: pick("rootPath"),
             base: None,
             patterns: vec!["sessions/*/.pi-sessions/*.jsonl".into()],
         };
@@ -704,7 +708,7 @@ mod tests {
         let spec = |p: &str| RootsFrom {
             file: "~/r.json".into(),
             each: None,
-            path: "p".into(),
+            path: pick("p"),
             base: None,
             patterns: vec!["crush.db".into(), p.into()],
         };

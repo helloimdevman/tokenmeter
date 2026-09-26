@@ -149,6 +149,15 @@ impl ServiceReader {
                 src.rolling = true;
             }
         }
+        // 복제 문턱(스펙 4.5): 모르는 파일의 복제본은 장부·기준값에도 넣지 않는다. 넣으면 뒤에 읽는
+        // 부모 파일(이름순으로 포크보다 늦을 수 있다)의 원본 레코드가 이미 본 것으로 가려진다.
+        if pass == Pass::Unknown
+            && src.spec.replay_gate.is_some_and(|s| {
+                at.is_some_and(|t| src.first.get(&key).is_some_and(|f| t < f + s))
+            })
+        {
+            return;
+        }
         // 키와 모드(F2)
         let stream = src
             .x
@@ -174,14 +183,11 @@ impl ServiceReader {
             let gate = self.opts.gate;
             let late = |t: f64| gate.is_none_or(|g| t >= g);
             let old = gate.is_some() && at.is_some_and(|t| t < now_secs() - BACKLOG_SECS);
-            let replay = src.spec.replay_gate.is_some_and(|s| {
-                at.is_some_and(|t| src.first.get(&key).is_some_and(|f| t < f + s))
-            });
             let when = at.unwrap_or(src.file_mtime);
             match pass {
                 Pass::Learn => true,
                 _ if old => true,
-                Pass::Unknown => replay || (!seen && !late(when)),
+                Pass::Unknown => !seen && !late(when),
                 Pass::Known => cumulative && !seen && !late(when),
             }
         };

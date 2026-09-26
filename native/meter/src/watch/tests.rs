@@ -2029,3 +2029,21 @@ fn measure_off_period_is_not_counted() {
     got.sort();
     assert_eq!(got, [6, 7]);
 }
+
+#[test]
+fn replay_copy_read_before_its_parent_does_not_hide_the_parent() {
+    let (_g, tmp) = crate::test_home("replay-order");
+    let root = tmp.join("d");
+    // 포크 파일이 이름순으로 부모보다 먼저 읽힌다. 복제본은 장부에 들어가면 안 된다.
+    append(&root.join("a-fork.jsonl"), &lines(&[
+        json!({"type": "session", "ts": "2026-09-20T10:00:00Z"}),
+        json!({"type": "m", "id": "p1", "out": 40, "ts": "2026-09-19T09:00:00Z"}),
+        json!({"type": "m", "id": "n1", "out": 7, "ts": "2026-09-20T10:00:10Z"}),
+    ]));
+    append(&root.join("b-parent.jsonl"), &lines(&[
+        json!({"type": "session", "ts": "2026-09-19T08:00:00Z"}),
+        json!({"type": "m", "id": "p1", "out": 40, "ts": "2026-09-19T09:00:00Z"}),
+    ]));
+    let mut r = inline(&root, &format!("match: {{type: m}}, replay_gate: true, {TS_KEYED}"));
+    assert_eq!(outs(&r.poll()), [7, 40], "부모 레코드는 복제본보다 늦게 읽혀도 센다");
+}

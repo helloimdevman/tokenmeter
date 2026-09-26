@@ -1217,3 +1217,207 @@ fn verified_defaults_to_true_and_is_a_service_key() {
     assert!(get("a") && !get("b"));
     assert!(load_report().warnings.is_empty(), "verified·timestamp는 아는 키");
 }
+
+// --- SQLite 소스(F1, 스펙 5절) ---
+
+fn sql_db(path: &Path, setup: &str) -> rusqlite::Connection {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(setup).unwrap();
+    conn
+}
+
+/// 테스트는 2초 간격을 기다리지 않는다.
+fn rewind(reader: &mut ServiceReader) {
+    for src in &mut reader.sources {
+        src.db.values_mut().for_each(|d| d.queried = 0.0);
+    }
+}
+
+const MSG_TABLE: &str = "CREATE TABLE message(id TEXT, session_id TEXT, updated INTEGER, data TEXT);";
+
+const MSG_SPEC: &str = r#"format: sqlite, patterns: ["x.db"], key: id, cursor: updated, default_model: dflt,
+    query: "SELECT id, session_id, updated, data FROM message WHERE updated >= ?1",
+    match: {data@json.role: assistant}, cost_usd: data@json.cost,
+    fields: {input: data@json.tokens.input, cache_read: data@json.tokens.cache.read,
+             cache_write: data@json.tokens.cache.write, output: data@json.tokens.output},
+    context: {session: session_id, model: data@json.modelID}"#;
+
+fn msg(conn: &rusqlite::Connection, id: &str, updated: i64, data: Value) {
+    conn.execute(
+        "INSERT INTO message VALUES (?1, 's', ?2, ?3)",
+        rusqlite::params![id, updated, data.to_string()],
+    )
+    .unwrap();
+}
+
+fn out_msg(out: i64, cost: f64) -> Value {
+    json!({"role": "assistant", "tokens": {"output": out}, "cost": cost})
+}
+
+#[test]
+fn sqlite_source_reads_rows_as_records() {
+    let (_g, tmp) = crate::test_home("sql-rows");
+    let root = tmp.join("oc");
+    let conn = sql_db(&root.join("x.db"), MSG_TABLE);
+    let ins = "INSERT INTO message VALUES (?1, ?2, ?3, ?4)";
+    conn.execute(ins, rusqlite::params!["m1", "s1", 1000, json!({"role": "assistant", "modelID": "claude-opus-4-5",
+        "tokens": {"input": 10, "output": 20, "cache": {"read": 5, "write": 1}}, "cost": 0.5}).to_string()]).unwrap();
+    conn.execute(ins, rusqlite::params!["m2", "s1", 1001, json!({"role": "user"}).to_string()]).unwrap();
+    conn.execute(ins, rusqlite::params!["m3", "s2", 1002, json!({"role": "assistant",
+        "tokens": {"input": 1, "output": 2, "cache": {"read": 0, "write": 0}}}).to_string()]).unwrap();
+    let mut reader = inline(&root, MSG_SPEC);
+    let got = reader.poll();
+    let seen: Vec<_> = got.iter().map(|d| (vec4(d), d.model.as_str(), d.session.as_str(), d.cost_usd)).collect();
+    assert_eq!(
+        seen,
+        [((10, 5, 1, 20), "claude-opus-4-5", "s1", Some(0.5)), ((1, 0, 0, 2), "dflt", "s2", None)],
+        "행은 앞 행의 문맥을 물려받지 않는다"
+    );
+    assert_eq!((reader.stats.records, reader.stats.dropped_by_match), (3, 1));
+}
+
+#[test]
+fn row_update_zero_to_final_counts_growth_once() {
+    let (_g, tmp) = crate::test_home("sql-update");
+    let root = tmp.join("oc");
+    let conn = sql_db(&root.join("x.db"), MSG_TABLE);
+    msg(&conn, "m1", 1000, out_msg(0, 0.0));
+    let mut reader = inline(&root, MSG_SPEC);
+    assert!(reader.poll().is_empty(), "스트림 시작의 0 행");
+    conn.execute("UPDATE message SET updated = 1030, data = ?1 WHERE id = 'm1'", [out_msg(50, 0.0).to_string()])
+        .unwrap();
+    rewind(&mut reader);
+    let got = reader.poll();
+    assert_eq!((got.len(), got[0].output_tokens, got[0].calls), (1, 50, 1));
+    rewind(&mut reader);
+    assert!(reader.poll().is_empty(), "도장이 그대로면 쿼리하지 않는다");
+}
+
+#[test]
+fn cursor_boundary_reread_counts_tokens_and_cost_once() {
+    let (_g, tmp) = crate::test_home("sql-cursor");
+    let root = tmp.join("oc");
+    let conn = sql_db(&root.join("x.db"), MSG_TABLE);
+    let ms = 1_790_000_000_000i64;
+    msg(&conn, "a", ms, out_msg(10, 0.125));
+    msg(&conn, "b", ms + 30_000, out_msg(5, 0.25));
+    let mut reader = inline(&root, MSG_SPEC);
+    let got = reader.poll();
+    assert_eq!((sum4(&got).3, got.iter().filter_map(|d| d.cost_usd).sum::<f64>()), (15, 0.375));
+    assert_eq!(reader.sources[0].db.values().next().unwrap().cursor, Some(ms + 30_000));
+    // 다음 쿼리는 ms − 30초부터: a·b를 다시 읽지만 장부가 거른다
+    msg(&conn, "c", ms + 40_000, out_msg(7, 0.0625));
+    rewind(&mut reader);
+    let got = reader.poll();
+    assert_eq!(reader.stats.records, 2 + 3, "경계 행을 다시 읽었다");
+    assert_eq!((got.len(), got[0].output_tokens, got[0].cost_usd, calls(&got)), (1, 7, Some(0.0625), 1));
+}
+
+#[test]
+fn wal_commit_without_db_mtime_change_is_seen() {
+    let (_g, tmp) = crate::test_home("sql-wal");
+    let root = tmp.join("oc");
+    let db = root.join("x.db");
+    let conn = sql_db(&db, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;");
+    conn.execute_batch(MSG_TABLE).unwrap();
+    msg(&conn, "a", 1000, out_msg(3, 0.0));
+    let mut reader = inline(&root, MSG_SPEC);
+    assert_eq!(sum4(&reader.poll()).3, 3);
+    let before = fs::metadata(&db).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    msg(&conn, "b", 1001, out_msg(4, 0.0));
+    let after = fs::metadata(&db).unwrap();
+    assert_eq!((before.len(), before.modified().ok()), (after.len(), after.modified().ok()), "본 파일은 그대로");
+    rewind(&mut reader);
+    let got = reader.poll();
+    assert_eq!((got.len(), got[0].output_tokens), (1, 4), "-wal의 커밋을 본다");
+}
+
+#[test]
+fn inode_change_or_shrink_resets_the_cursor() {
+    use std::os::unix::fs::MetadataExt;
+    let (_g, tmp) = crate::test_home("sql-reset");
+    let root = tmp.join("oc");
+    let db = root.join("x.db");
+    let conn = sql_db(&db, &format!("{MSG_TABLE} CREATE TABLE pad(b BLOB);"));
+    conn.execute("INSERT INTO pad VALUES (zeroblob(200000))", []).unwrap();
+    msg(&conn, "a", 2_000_000, out_msg(1, 0.0));
+    let mut reader = inline(&root, MSG_SPEC);
+    assert_eq!(sum4(&reader.poll()).3, 1);
+
+    // 줄었다(같은 inode): 커서보다 한참 이른 행도 읽는다
+    let ino = fs::metadata(&db).unwrap().ino();
+    let size = fs::metadata(&db).unwrap().len();
+    conn.execute_batch("DELETE FROM pad;").unwrap();
+    msg(&conn, "c", 1_000, out_msg(3, 0.0));
+    conn.execute_batch("VACUUM;").unwrap();
+    let meta = fs::metadata(&db).unwrap();
+    assert!(meta.ino() == ino && meta.len() < size, "같은 파일이 줄었다");
+    rewind(&mut reader);
+    let got = reader.poll();
+    assert_eq!(got.iter().map(|d| d.output_tokens).collect::<Vec<_>>(), [3]);
+
+    // 다른 파일(inode)로 바뀌었다
+    drop(conn);
+    let other = root.join("new.db");
+    let conn = sql_db(&other, MSG_TABLE);
+    msg(&conn, "b", 1_000, out_msg(4, 0.0));
+    drop(conn);
+    fs::rename(&other, &db).unwrap();
+    rewind(&mut reader);
+    let got = reader.poll();
+    assert_eq!(got.iter().map(|d| d.output_tokens).collect::<Vec<_>>(), [4]);
+}
+
+#[test]
+fn busy_skips_the_poll_and_counts_after_three() {
+    let (_g, tmp) = crate::test_home("sql-busy");
+    let root = tmp.join("oc");
+    let conn = sql_db(&root.join("x.db"), MSG_TABLE);
+    msg(&conn, "a", 1000, out_msg(9, 0.0));
+    conn.execute_batch("BEGIN EXCLUSIVE;").unwrap();
+    let mut reader = inline(&root, MSG_SPEC);
+    for n in [0, 0, 1] {
+        rewind(&mut reader);
+        assert!(reader.poll().is_empty(), "바쁘면 이번 폴을 건너뛴다");
+        assert_eq!(reader.stats.sqlite_busy, n, "세 번 이어지면 한 번 센다");
+    }
+    conn.execute_batch("COMMIT;").unwrap();
+    rewind(&mut reader);
+    assert_eq!(sum4(&reader.poll()).3, 9, "다음 폴에 다시 한다");
+}
+
+#[test]
+fn sqlite_without_key_or_query_is_rejected() {
+    let (_g, root) = crate::test_home("sql-check");
+    write_user_services(
+        &root,
+        "services:\n  nq:\n    roots: [\"~/x\"]\n    format: sqlite\n    key: id\n    fields: {output: n}\n  nk:\n    roots: [\"~/x\"]\n    format: sqlite\n    query: SELECT 1\n    fields: {output: n}\n  ok:\n    roots: [\"~/x\"]\n    format: sqlite\n    key: id\n    query: [SELECT a FROM t, SELECT 1]\n    cursor: updated\n    fields: {output: n}\n",
+    );
+    let names = loaded_names();
+    assert!(!names.contains(&"nq".to_string()) && !names.contains(&"nk".to_string()));
+    assert!(names.contains(&"ok".to_string()));
+    let report = load_report();
+    let skipped = report.skipped;
+    assert!(skipped.iter().any(|(id, why)| id == "nq" && why.starts_with("query")), "{skipped:?}");
+    assert!(skipped.iter().any(|(id, why)| id == "nk" && why.starts_with("key")), "{skipped:?}");
+    assert!(report.warnings.is_empty(), "query·cursor는 아는 키: {:?}", report.warnings);
+    let ok = load_all_specs().into_iter().find(|s| s.name == "ok").unwrap();
+    assert_eq!((ok.query.len(), ok.cursor.as_str()), (2, "updated"));
+}
+
+#[test]
+fn wal_shm_journal_files_do_not_match_patterns() {
+    let (_g, tmp) = crate::test_home("sql-patterns");
+    let root = tmp.join("oc");
+    fs::create_dir_all(&root).unwrap();
+    for f in ["opencode.db", "opencode.db-wal", "opencode.db-shm", "opencode-dev.db", "opencode-dev.db-journal"] {
+        fs::write(root.join(f), "").unwrap();
+    }
+    let reader = inline(&root, r#"format: sqlite, key: id, query: "SELECT 1", patterns: ["opencode.db", "opencode-*.db"]"#);
+    let mut names: Vec<String> =
+        reader.files().iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, ["opencode-dev.db", "opencode.db"]);
+}

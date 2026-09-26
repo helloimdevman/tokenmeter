@@ -6,6 +6,7 @@ use super::now_secs;
 use super::probe::resolve_plan;
 use super::roots::{dedup, excluded, expand, glob_under, roots_from, Vars};
 use super::spec::{Compiled, ServiceSpec};
+use super::sqlite::{self, DbStamp, SqlErr};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -17,6 +18,10 @@ pub(super) const TOKEN_FIELDS: [&str; 4] = ["input", "cache_read", "cache_write"
 const PRIME_WINDOW_SECS: f64 = 2.0 * 24.0 * 3600.0;
 /// 서비스 하나의 키 장부 상한(스펙 F2).
 const LEDGER_CAP: usize = 500_000;
+/// 같은 DB를 이보다 자주 쿼리하지 않는다(스펙 5절).
+const SQLITE_GAP_SECS: f64 = 2.0;
+/// 커서 없는 쿼리가 이보다 많은 행을 내면 `doctor` 경고.
+const SQLITE_BIG_SCAN: usize = 10_000;
 
 pub struct ServiceReader {
     pub spec: ServiceSpec,
@@ -39,6 +44,21 @@ pub struct ReadStats {
     pub dropped_by_match: u64,
     pub matched: u64,
     pub hits: [u64; 4],
+    /// SQLite: `SQLITE_BUSY`가 세 번 이어진 횟수, 모든 쿼리가 실패한 횟수, 커서 없이 1만 행을 넘은 DB 수.
+    pub sqlite_busy: u64,
+    pub sqlite_failed: u64,
+    pub sqlite_big_scans: u64,
+}
+
+/// SQLite DB 하나의 읽기 상태(F1). 커서는 결과 열 값의 단위 그대로다.
+#[derive(Default)]
+pub(super) struct DbState {
+    pub(super) stamp: DbStamp,
+    pub(super) cursor: Option<i64>,
+    /// 마지막 쿼리 시각(유닉스 초).
+    pub(super) queried: f64,
+    busy: u32,
+    big: bool,
 }
 
 /// 읽기 단위 하나(F11): 병합한 스펙과 그 파일 상태.
@@ -58,6 +78,8 @@ pub(super) struct Source {
     pub(super) blind: HashSet<String>,
     /// 파일마다 처음 파싱된 레코드 시각(match와 상관없이, 스펙 4.5). 저장은 2.9.
     pub(super) first: HashMap<String, f64>,
+    /// `format: sqlite`의 DB마다 도장·커서.
+    pub(super) db: HashMap<String, DbState>,
 }
 
 impl Source {
@@ -98,6 +120,10 @@ impl Source {
     /// 지난 읽기 뒤로 바뀌지 않았다.
     fn unchanged(&self, path: &Path) -> bool {
         let key = path_key(path);
+        if self.spec.format == "sqlite" {
+            // 커밋은 `-wal`에 쌓이므로 본 파일 mtime만으로는 놓친다(스펙 5절)
+            return self.db.get(&key).is_some_and(|d| sqlite::stamp(path) == Some(d.stamp));
+        }
         fs::metadata(path).is_ok_and(|stat| {
             self.mtime.get(&key).copied() == Some(mtime_of(&stat))
                 && (self.spec.format == "json"
@@ -146,7 +172,12 @@ impl ServiceReader {
         for i in 0..self.sources.len() {
             self.with_source(i, |me, src| {
                 for path in src.files() {
-                    if fs::metadata(&path).is_ok_and(|m| mtime_of(&m) >= since) {
+                    let changed = if src.spec.format == "sqlite" {
+                        sqlite::stamp(&path).is_some_and(|s| s.mtime.max(s.wal_mtime) >= since)
+                    } else {
+                        fs::metadata(&path).is_ok_and(|m| mtime_of(&m) >= since)
+                    };
+                    if changed {
                         all.extend(me.read_in(src, &path, true));
                     }
                 }
@@ -178,7 +209,8 @@ impl ServiceReader {
                     let Ok(stat) = fs::metadata(&path) else {
                         continue;
                     };
-                    if mtime_of(&stat) >= cutoff {
+                    // SQLite는 커서 없이 끝까지 읽어 키만 배우고 커서를 최댓값으로 둔다(스펙 5절 처음 읽기)
+                    if src.spec.format == "sqlite" || mtime_of(&stat) >= cutoff {
                         let _ = me.read_in(src, &path, false);
                     } else {
                         let key = path_key(&path);
@@ -225,6 +257,8 @@ impl ServiceReader {
         src.rolling = false;
         if src.spec.format == "json" {
             self.read_json(src, path, &mut out, emit);
+        } else if src.spec.format == "sqlite" {
+            self.read_sqlite(src, path, &mut out, emit);
         } else {
             self.read_jsonl(src, path, &mut out, emit);
         }
@@ -245,6 +279,64 @@ impl ServiceReader {
         };
         self.handle(src, &obj, path, out, emit);
         src.mtime.insert(path_key(path), mtime_of(&stat));
+    }
+
+    /// 폴 사이에 연결·트랜잭션을 들고 있지 않는다: 열고, 문장 하나를 끝까지 돌리고, 닫는다.
+    fn read_sqlite(&mut self, src: &mut Source, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {
+        let key = path_key(path);
+        let Some(stamp) = sqlite::stamp(path) else { return };
+        let now = now_secs();
+        let mut st = src.db.remove(&key).unwrap_or_default();
+        if now - st.queried < SQLITE_GAP_SECS {
+            src.db.insert(key, st);
+            return;
+        }
+        // 다른 파일이 되었거나 줄었다: 커서를 비우고 다시 읽는다(키 장부가 이미 센 행을 거른다)
+        if st.stamp.ino != stamp.ino || stamp.size < st.stamp.size {
+            st.cursor = None;
+        }
+        st.queried = now;
+        let cursor = Some(src.spec.cursor.as_str()).filter(|c| !c.is_empty());
+        let result = sqlite::open_ro(path)
+            .map_err(|e| SqlErr::Other(e.to_string()))
+            .and_then(|conn| sqlite::run(&conn, &src.spec.query, cursor, st.cursor));
+        match result {
+            Ok((rows, max)) => {
+                st.busy = 0;
+                if cursor.is_none() && rows.len() > SQLITE_BIG_SCAN && !st.big {
+                    st.big = true;
+                    self.stats.sqlite_big_scans += 1;
+                }
+                for row in &rows {
+                    // 행 사이에는 문맥을 잇지 않는다(파일 문맥 기억 없음)
+                    src.ctx.remove(&key);
+                    self.handle(src, row, path, out, emit);
+                }
+                src.ctx.remove(&key);
+                st.cursor = st.cursor.max(max);
+            }
+            // 이번 폴을 건너뛴다. 도장을 두지 않아 다음 폴에 다시 한다.
+            Err(SqlErr::Busy) => {
+                st.busy += 1;
+                if st.busy == 3 {
+                    self.stats.sqlite_busy += 1;
+                    eprintln!(
+                        "[TokenMeter] {}",
+                        crate::l10n!(
+                            "{}: SQLite busy for 3 polls in a row",
+                            "{}: SQLite가 폴 세 번 이어 바쁩니다",
+                            self.spec.name
+                        )
+                    );
+                }
+                src.db.insert(key, st);
+                return;
+            }
+            // 쿼리가 모두 실패했거나 열 수 없다: 다음 변화까지 건너뛴다
+            Err(_) => self.stats.sqlite_failed += 1,
+        }
+        st.stamp = stamp;
+        src.db.insert(key, st);
     }
 
     fn read_jsonl(&mut self, src: &mut Source, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {

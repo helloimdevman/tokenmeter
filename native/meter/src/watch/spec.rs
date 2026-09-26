@@ -36,6 +36,12 @@ pub struct ServiceSpec {
     pub match_fields: serde_yaml::Mapping,
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// `format: sqlite`의 쿼리. 목록이면 앞에서부터 처음 준비되는 것(F1, 스펙 5절).
+    #[serde(default)]
+    pub query: Vec<String>,
+    /// 숫자 결과 열 이름. `?1`에 지난번 최댓값 − 60초를 넣는다. 비면 커서 없이 전체.
+    #[serde(default)]
+    pub cursor: String,
     #[serde(default)]
     pub key: serde_yaml::Value,
     /// input에 들어 있어서 뺄 칸 이름(F5).
@@ -354,6 +360,10 @@ struct YamlService {
     #[serde(default)]
     mode: Option<String>,
     #[serde(default)]
+    query: serde_yaml::Value,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
     key: serde_yaml::Value,
     #[serde(default)]
     input_includes: Vec<String>,
@@ -407,7 +417,7 @@ include!(concat!(env!("OUT_DIR"), "/adapters.rs"));
 /// 소스 항목에 둘 수 있는 키(F11). 서비스 수준에 두면 모든 소스의 기본값이다.
 /// 모르는 키는 `LoadReport::warnings`로 간다.
 pub const KNOWN_SOURCE_KEYS: &[&str] = &[
-    "roots", "patterns", "exclude", "roots_from", "format", "match", "mode", "key", "input_includes", "fields",
+    "roots", "patterns", "exclude", "roots_from", "format", "query", "cursor", "match", "mode", "key", "input_includes", "fields",
     "context", "ctx_tokens", "ctx_window", "subagent", "duration_ms", "cost_usd", "rebase_on", "timestamp",
 ];
 
@@ -690,17 +700,24 @@ fn load_specs(raw: &serde_yaml::Value) -> (Vec<ServiceSpec>, LoadReport) {
 
 /// 읽기 단위 하나의 검증(1절). 틀리면 "자리: 이유".
 fn check_source(s: &ServiceSpec) -> Result<(), String> {
-    if !["jsonl", "json"].contains(&s.format.as_str()) {
-        return Err(format!("format: unknown value {:?} (jsonl, json)", s.format));
+    if !["jsonl", "json", "sqlite"].contains(&s.format.as_str()) {
+        return Err(format!("format: unknown value {:?} (jsonl, json, sqlite)", s.format));
+    }
+    if s.format == "sqlite" && s.query.is_empty() {
+        return Err(crate::l10n!(
+            "query: required when format is sqlite",
+            "query: format이 sqlite이면 필요합니다"
+        ));
     }
     if !["delta", "cumulative"].contains(&s.mode.as_str()) {
         return Err(format!("mode: unknown value {:?} (delta, cumulative)", s.mode));
     }
-    // 파일 안 위치로는 레코드를 가를 수 없다(F2)
-    if Compiled::new(s)?.key.is_none() && s.format == "json" {
+    // 파일 안 위치로는 레코드를 가를 수 없다(F2). SQLite는 커서가 경계 행을 다시 읽는다(F1).
+    if Compiled::new(s)?.key.is_none() && s.format != "jsonl" {
         return Err(crate::l10n!(
-            "key: required when format is json",
-            "key: format이 json이면 필요합니다"
+            "key: required when format is {}",
+            "key: format이 {}이면 필요합니다",
+            s.format
         ));
     }
     Ok(())
@@ -760,6 +777,17 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
     // 글로 다시 읽어야 오류에 틀린 키 이름이 붙는다(`from_value`는 경로를 잃는다).
     let text = serde_yaml::to_string(block).unwrap_or_default();
     let raw = serde_yaml::from_str::<YamlService>(&text).map_err(|e| e.to_string())?;
+    let bad_query = || crate::l10n!("query: expected a string or a list of strings", "query: 글자나 글자 목록이어야 합니다");
+    let query = match raw.query {
+        serde_yaml::Value::Null => Vec::new(),
+        serde_yaml::Value::String(q) => vec![q],
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .map(|q| q.as_str().map(str::to_string))
+            .collect::<Option<_>>()
+            .ok_or_else(bad_query)?,
+        _ => return Err(bad_query()),
+    };
     let name = name.to_string();
     let enabled = raw.enabled != Some(false);
     Ok((
@@ -774,6 +802,8 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             format: raw.format.unwrap_or_else(default_format),
             match_fields: raw.match_fields,
             mode: raw.mode.unwrap_or_else(default_mode),
+            query,
+            cursor: raw.cursor.unwrap_or_default(),
             key: raw.key,
             input_includes: raw.input_includes,
             fields: raw.fields,

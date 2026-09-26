@@ -62,5 +62,3 @@ impl TokenDelta {
         self.input_tokens + self.cache_read + self.cache_write + self.output_tokens
     }
 }
-
-pub(super) type Vector = [i64; 4];

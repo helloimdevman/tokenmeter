@@ -1,6 +1,7 @@
 //! 파일 찾기, 폴, JSON·JSONL 읽기.
 
-use super::delta::{TokenDelta, Vector};
+use super::delta::TokenDelta;
+use super::ledger::{Ledger, Vals};
 use super::now_secs;
 use super::probe::resolve_plan;
 use super::roots::expand_home;
@@ -15,7 +16,8 @@ use std::time::UNIX_EPOCH;
 
 pub(super) const TOKEN_FIELDS: [&str; 4] = ["input", "cache_read", "cache_write", "output"];
 const PRIME_WINDOW_SECS: f64 = 2.0 * 24.0 * 3600.0;
-pub(super) const SEEN_CAP: usize = 200_000;
+/// 서비스 하나의 키 장부 상한(스펙 F2).
+const LEDGER_CAP: usize = 500_000;
 
 pub struct ServiceReader {
     pub spec: ServiceSpec,
@@ -24,11 +26,15 @@ pub struct ServiceReader {
     pub(super) endpoint: HashMap<String, String>,
     offset: HashMap<String, u64>,
     mtime: HashMap<String, f64>,
-    lines: HashMap<String, u64>,
     pub(super) ctx: HashMap<String, HashMap<String, String>>,
-    pub(super) seen: HashMap<String, HashSet<String>>,
-    pub(super) seen_keys: HashSet<String>,
-    pub(super) base: HashMap<String, HashMap<String, Vector>>,
+    /// delta 키(없으면 레코드 해시)의 칸별 최댓값. 서비스에 하나(F2).
+    pub(super) ledger: Ledger,
+    /// cumulative 기준값: 파일 → 스트림 키 해시(키가 없으면 None) → 값.
+    pub(super) base: HashMap<String, HashMap<Option<u64>, Vals>>,
+    /// 파일마다 지난 `rebase_on` 값의 해시.
+    pub(super) roll: HashMap<String, u64>,
+    /// 이번 파일 읽기에서 `rebase_on`이 바뀌었다: 기준값만 잡고 내지 않는다.
+    pub(super) rolling: bool,
     pub(super) blind: HashSet<String>,
     pub(super) live_out: HashMap<String, i64>,
 }
@@ -45,11 +51,11 @@ impl ServiceReader {
             endpoint: HashMap::new(),
             offset: HashMap::new(),
             mtime: HashMap::new(),
-            lines: HashMap::new(),
             ctx: HashMap::new(),
-            seen: HashMap::new(),
-            seen_keys: HashSet::new(),
+            ledger: Ledger::new(now_secs, LEDGER_CAP),
             base: HashMap::new(),
+            roll: HashMap::new(),
+            rolling: false,
             blind: HashSet::new(),
             live_out: HashMap::new(),
         }
@@ -112,6 +118,7 @@ impl ServiceReader {
 
     pub fn read_file(&mut self, path: &Path, emit: bool) -> Vec<TokenDelta> {
         let mut out = Vec::new();
+        self.rolling = false;
         if self.spec.format == "json" {
             self.read_json(path, &mut out, emit);
         } else {
@@ -132,7 +139,7 @@ impl ServiceReader {
         let Ok(obj) = serde_json::from_str::<Value>(raw) else {
             return;
         };
-        self.handle(&obj, path, 0, out, emit);
+        self.handle(&obj, path, out, emit);
         self.mtime.insert(path_key(path), mtime_of(&stat));
     }
 
@@ -143,10 +150,6 @@ impl ServiceReader {
         let mut offset = self.offset.get(&key).copied().unwrap_or(0);
         if size < offset {
             offset = 0;
-            self.lines.remove(&key);
-            if self.x.key.is_none() {
-                self.seen.remove(&key);
-            }
         }
         if size == offset {
             self.mtime.insert(key, mtime_of(&stat));
@@ -166,10 +169,8 @@ impl ServiceReader {
             return;
         };
         let mut pos = offset;
-        let mut line_no = self.lines.get(&key).copied().unwrap_or(0);
         for chunk in buf[..end].split(|b| *b == b'\n') {
             pos += chunk.len() as u64 + 1;
-            line_no += 1;
             if chunk.is_empty() {
                 continue;
             }
@@ -179,11 +180,10 @@ impl ServiceReader {
                 continue;
             }
             if let Ok(obj) = serde_json::from_str::<Value>(text) {
-                self.handle(&obj, path, line_no, out, emit);
+                self.handle(&obj, path, out, emit);
             }
         }
         self.offset.insert(key.clone(), pos);
-        self.lines.insert(key.clone(), line_no);
         self.mtime.insert(key, mtime_of(&stat));
     }
 }

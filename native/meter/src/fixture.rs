@@ -39,7 +39,7 @@ const STEP_KEYS: [&str; 13] = [
     "model_label",
 ];
 
-/// 델타 하나가 더하는 칸(`calls`는 델타 수).
+/// 델타 하나가 더하는 칸(`calls`는 Σ `delta.calls`).
 const SUMS: [&str; 5] = ["calls", "input", "cache_read", "cache_write", "output"];
 
 /// `dir`의 fixture를 가짜 HOME에 펼치고 `id` 어댑터(`spec_text`가 있으면 그 YAML)로 읽어
@@ -201,7 +201,7 @@ fn totals(deltas: &[TokenDelta]) -> Value {
     let mut seen: [BTreeSet<String>; 5] = Default::default();
     for d in deltas {
         let v = [
-            1,
+            i64::from(d.calls),
             d.input_tokens,
             d.cache_read,
             d.cache_write,

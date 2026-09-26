@@ -6,7 +6,7 @@ match:
 # total_token_usage 는 세션 누적치. 이벤트가 중복돼도 안전하도록 누적 모드 사용.
 mode: cumulative
 key: null # 파일(=세션) 단위 누적
-input_includes_cache: true
+input_includes: [cache_read]
 fields:
   input: payload.info.total_token_usage.input_tokens
   cache_read: payload.info.total_token_usage.cached_input_tokens

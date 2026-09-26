@@ -1,4 +1,5 @@
 use super::expr::{Env, Pick};
+use super::ledger;
 use super::probe::{probe_file, resolve_endpoint, resolve_plan};
 use super::*;
 use serde_json::{json, Value};
@@ -152,52 +153,258 @@ fn dig_walks_objects_and_array_indexes() {
     }
 }
 
-#[test]
-fn claude_delta_dedups_uuid_filters_type_and_skips_broken_lines() {
-    let (_g, tmp) = crate::test_home("claude");
-    let root = tmp.join("projects");
-    let path = root.join("slug/sess-1.jsonl");
-    append(&path, &lines(&[claude_record("u-1")]));
-    let mut reader = ServiceReader::new(spec_at("claude-code", &root));
-    let got = reader.poll();
-    assert_eq!(got.len(), 1);
-    assert_eq!(vec4(&got[0]), (2, 60955, 2161, 813));
-    assert!(matches!(got[0].plan.as_str(), "subscription" | "api"), "{}", got[0].plan);
+/// 인라인 서비스 `t` 하나(로더 검증 없이). `body`는 흐름 매핑 안의 항목들.
+fn inline(root: &Path, body: &str) -> ServiceReader {
+    let text = format!("services: {{t: {{roots: [{root:?}], {body}}}}}");
+    let spec = specs_from_yaml(&text).pop().unwrap_or_else(|| panic!("인라인 스펙: {text}"));
+    ServiceReader::new(spec)
+}
 
-    append(&path, &lines(&[claude_record("u-1")]));
-    assert!(reader.poll().is_empty(), "같은 uuid 를 두 번 먹으면 안 된다");
-    let mut user = claude_record("u-2");
-    user["type"] = json!("user");
-    append(&path, &lines(&[user]));
-    assert!(reader.poll().is_empty(), "match(type=assistant) 밖은 무시한다");
-    append(&path, "{\"type\":\"assistant\",\"uuid\"\n");
-    append(&path, &lines(&[claude_record("u-3")]));
-    let got = reader.poll();
-    assert_eq!(got.len(), 1, "깨진 줄은 건너뛰고 다음 줄은 먹는다");
-    assert_eq!(vec4(&got[0]), (2, 60955, 2161, 813));
+fn sum4(got: &[TokenDelta]) -> (i64, i64, i64, i64) {
+    got.iter().fold((0, 0, 0, 0), |a, d| {
+        (a.0 + d.input_tokens, a.1 + d.cache_read, a.2 + d.cache_write, a.3 + d.output_tokens)
+    })
+}
+
+fn calls(got: &[TokenDelta]) -> u32 {
+    got.iter().map(|d| d.calls).sum()
+}
+
+const CLAUDE_KEYED: &str = r#"match: {type: assistant}, key: "message.id & requestId",
+    fields: {input: message.usage.input_tokens, cache_read: message.usage.cache_read_input_tokens,
+             cache_write: message.usage.cache_creation_input_tokens, output: message.usage.output_tokens},
+    context: {session: sessionId}"#;
+
+/// Claude 블록 줄: 같은 호출이면 `message.id`·`requestId`·usage가 같고 output만 는다(스펙 3.1).
+fn block_line(uuid: &str, id: &str, req: &str, out: i64) -> Value {
+    json!({"type": "assistant", "uuid": uuid, "requestId": req, "sessionId": "s-1",
+           "message": {"id": id, "usage": {"input_tokens": 2, "cache_read_input_tokens": 100,
+                                           "cache_creation_input_tokens": 10, "output_tokens": out}}})
 }
 
 #[test]
-fn prime_skips_history_and_forked_copies_are_not_recounted() {
-    let (_g, tmp) = crate::test_home("prime");
+fn delta_key_keeps_max_across_block_lines() {
+    let (_g, tmp) = crate::test_home("max-keep");
     let root = tmp.join("projects");
-    let old: Vec<Value> = (0..5).map(|i| claude_record(&format!("u-{i}"))).collect();
-    append(&root.join("slug/a.jsonl"), &lines(&old));
-    let mut reader = ServiceReader::new(spec_at("claude-code", &root));
-    reader.prime();
-    assert!(reader.poll().is_empty(), "기동 시 과거 로그를 먹으면 안 된다");
+    let path = root.join("slug/s.jsonl");
+    let mut user = block_line("u-9", "m-9", "r-9", 500);
+    user["type"] = json!("user");
+    append(&path, &lines(&[
+        block_line("u-1", "m-1", "r-1", 31),
+        block_line("u-2", "m-1", "r-1", 31),
+        user,
+        block_line("u-3", "m-1", "r-1", 300),
+    ]));
+    append(&path, "{\"type\":\"assistant\",\"uuid\"\n");
+    append(&path, &lines(&[block_line("u-4", "m-2", "r-2", 7)]));
+    let mut reader = inline(&root, CLAUDE_KEYED);
+    let got = reader.poll();
+    // 델타는 31, +269, 둘째 호출. 호출 수는 키가 처음 0 아닌 값을 낼 때만 센다.
+    let outs: Vec<i64> = got.iter().map(|d| d.output_tokens).collect();
+    assert_eq!(outs, [31, 269, 7], "user 줄은 match 밖, 깨진 줄은 건너뛴다");
+    assert_eq!(sum4(&got), (2 + 2, 100 + 100, 10 + 10, 300 + 7));
+    assert_eq!(calls(&got), 2);
+    append(&path, &lines(&[block_line("u-5", "m-1", "r-1", 300), block_line("u-6", "m-2", "r-2", 3)]));
+    assert!(reader.poll().is_empty(), "같거나 작은 복사본은 늘어난 것이 없다");
+}
 
-    let mut fresh = claude_record("u-new");
-    fresh["message"]["usage"] = json!({
-        "input_tokens": 7, "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0, "output_tokens": 11
-    });
+#[test]
+fn forked_copy_with_same_key_is_not_recounted() {
+    let (_g, tmp) = crate::test_home("fork");
+    let root = tmp.join("projects");
+    let old: Vec<Value> = (0..5).map(|i| block_line(&format!("u-{i}"), &format!("m-{i}"), "r", 40)).collect();
+    append(&root.join("slug/a.jsonl"), &lines(&old));
+    let mut reader = inline(&root, CLAUDE_KEYED);
+    reader.prime();
+    assert!(reader.poll().is_empty(), "기동 때 과거 로그를 내지 않는다");
     let mut fork = old.clone();
-    fork.push(fresh);
+    fork.push(block_line("u-new", "m-new", "r", 11));
     append(&root.join("slug/b.jsonl"), &lines(&fork));
     let got = reader.poll();
-    assert_eq!(got.len(), 1, "fork 로 복사된 레코드를 다시 먹으면 이중계상이다");
-    assert_eq!(vec4(&got[0]), (7, 0, 0, 11));
+    assert_eq!(got.len(), 1, "포크로 복사된 레코드를 다시 세면 이중 계상이다");
+    assert_eq!((vec4(&got[0]), got[0].calls), ((2, 100, 10, 11), 1));
+}
+
+#[test]
+fn b1_zero_first_copy_then_real_value_counts() {
+    let (_g, tmp) = crate::test_home("b1");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    let mut reader = inline(&root, "key: id, fields: {output: out}");
+    append(&path, &lines(&[json!({"id": "a", "out": 0})]));
+    assert!(reader.poll().is_empty(), "0인 첫 복사본은 내지 않는다");
+    append(&path, &lines(&[json!({"id": "a", "out": 50}), json!({"id": "b", "out": 0}), json!({"id": "b", "out": 40})]));
+    let got = reader.poll();
+    assert_eq!(got.iter().map(|d| d.output_tokens).collect::<Vec<_>>(), [50, 40], "0이 키를 태우지 않는다");
+    assert_eq!(calls(&got), 2);
+}
+
+#[test]
+fn b3_recent_keys_survive_many_old_keys() {
+    let (_g, tmp) = crate::test_home("b3");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    let mut reader = inline(&root, "key: id, fields: {output: out}");
+    reader.ledger = ledger::Ledger::new(now_secs, 3);
+    let rec = |id: &str| json!({"id": id, "out": 10});
+    append(&path, &lines(&["k0", "k1", "k2", "k3", "k4"].map(rec)));
+    assert_eq!(reader.poll().len(), 5);
+    append(&path, &lines(&[rec("k1")]));
+    assert!(reader.poll().is_empty());
+    reader.ledger.prune(); // 커밋 때만 버린다
+    append(&path, &lines(&["k1", "k3", "k4"].map(rec)));
+    assert!(reader.poll().is_empty(), "최근에 본 키 셋은 남는다");
+    append(&path, &lines(&[rec("k0")]));
+    assert_eq!(reader.poll().len(), 1, "오래 안 본 키부터 버린다");
+}
+
+#[test]
+fn keyless_delta_copy_in_new_file_counts_once() {
+    let (_g, tmp) = crate::test_home("keyless");
+    let root = tmp.join("d");
+    let mut reader = inline(&root, "fields: {output: out}");
+    let recs = [json!({"n": 1, "out": 5}), json!({"n": 2, "out": 6})];
+    append(&root.join("a.jsonl"), &lines(&recs));
+    let got = reader.poll();
+    assert_eq!((sum4(&got).3, calls(&got)), (11, 2));
+    let mut copy = recs.to_vec();
+    copy.push(json!({"out": 7, "n": 3}));
+    append(&root.join("b.jsonl"), &lines(&copy));
+    let got = reader.poll();
+    assert_eq!((sum4(&got).3, calls(&got)), (7, 1), "레코드 해시가 키라 새 파일의 복사본은 다시 세지 않는다");
+}
+
+#[test]
+fn cumulative_stream_in_second_file_uses_first_baseline() {
+    let (_g, tmp) = crate::test_home("cum-copy");
+    let root = tmp.join("d");
+    let mut reader = inline(&root, "mode: cumulative, key: sid, fields: {output: out}");
+    append(&root.join("a.jsonl"), &lines(&[json!({"sid": "s1", "out": 100})]));
+    let got = reader.poll();
+    assert_eq!((sum4(&got).3, calls(&got)), (100, 1), "처음 본 스트림은 지금처럼 전체");
+    append(&root.join("b.jsonl"), &lines(&[
+        json!({"sid": "s1", "out": 100}),
+        json!({"sid": "s1", "out": 130}),
+        json!({"sid": "s2", "out": 9}),
+    ]));
+    let got = reader.poll();
+    assert_eq!(got.iter().map(|d| d.output_tokens).collect::<Vec<_>>(), [30, 9], "s1은 a.jsonl의 기준값에서 잇는다");
+    assert_eq!(calls(&got), 1, "s1은 이미 호출로 셌다");
+}
+
+#[test]
+fn rebase_on_change_resets_baseline_only() {
+    let (_g, tmp) = crate::test_home("rebase");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    let mut reader = inline(&root, "mode: cumulative, key: sid, rebase_on: run, fields: {output: out}, context: {model: model}");
+    append(&path, &lines(&[json!({"run": "r1", "sid": "s", "out": 10, "model": "m1"})]));
+    assert_eq!(sum4(&reader.poll()).3, 10);
+    append(&path, &lines(&[json!({"run": "r1", "sid": "s", "out": 25})]));
+    assert_eq!(sum4(&reader.poll()).3, 15);
+    append(&path, &lines(&[
+        json!({"run": "r2", "sid": "s", "out": 4, "model": "m2"}),
+        json!({"run": "r2", "sid": "s", "out": 6}),
+    ]));
+    assert!(reader.poll().is_empty(), "바뀐 읽기에서는 기준값만 잡는다(겹친 +2는 잃는다)");
+    append(&path, &lines(&[json!({"run": "r2", "sid": "s", "out": 9})]));
+    let got = reader.poll();
+    assert_eq!((got.len(), got[0].output_tokens, got[0].model.as_str()), (1, 3, "m2"), "문맥은 그대로 배운다");
+}
+
+#[test]
+fn input_includes_subtracts_only_when_parts_fit() {
+    let (_g, tmp) = crate::test_home("includes");
+    let root = tmp.join("d");
+    let mut reader = inline(
+        &root,
+        "key: id, input_includes: [cache_read, cache_write], fields: {input: i, cache_read: cr, cache_write: cw, output: o}",
+    );
+    append(&root.join("s.jsonl"), &lines(&[
+        json!({"id": 1, "i": 100, "cr": 30, "cw": 20, "o": 1}),
+        json!({"id": 2, "i": 10, "cr": 30, "cw": 20, "o": 1}),
+        json!({"id": 3, "i": 50, "cr": 30, "cw": 20, "o": 1}),
+    ]));
+    let got: Vec<_> = reader.poll().iter().map(vec4).collect();
+    assert_eq!(got, [(50, 30, 20, 1), (10, 30, 20, 1), (0, 30, 20, 1)], "합이 input보다 크면(섞인 모양) 빼지 않는다");
+}
+
+#[test]
+fn field_final_value_is_not_negative() {
+    let (_g, tmp) = crate::test_home("negative");
+    let root = tmp.join("d");
+    let mut reader = inline(&root, "key: id, fields: {input: n, output: \"a - b\"}");
+    append(&root.join("s.jsonl"), &lines(&[
+        json!({"id": 1, "n": 5, "a": 3, "b": 10}),
+        json!({"id": 2, "n": 0, "a": 10, "b": 3}),
+    ]));
+    let got: Vec<_> = reader.poll().iter().map(vec4).collect();
+    assert_eq!(got, [(5, 0, 0, 0), (0, 0, 0, 7)]);
+}
+
+#[test]
+fn logged_cost_goes_through_the_ledger() {
+    let (_g, tmp) = crate::test_home("cost");
+    let root = tmp.join("d");
+    let mut reader = inline(&root, "key: id, cost_usd: cost, fields: {output: out}");
+    let rec = lines(&[json!({"id": "x", "out": 5, "cost": 0.5})]);
+    append(&root.join("a.jsonl"), &rec);
+    let got = reader.poll();
+    assert_eq!((got[0].output_tokens, got[0].cost_usd, got[0].calls), (5, Some(0.5), 1));
+    append(&root.join("a.jsonl"), &rec);
+    append(&root.join("b.jsonl"), &rec);
+    assert!(reader.poll().is_empty(), "같은 키를 두 번 읽어도 비용은 한 번");
+    append(&root.join("a.jsonl"), &lines(&[json!({"id": "x", "out": 5, "cost": 0.75})]));
+    let got = reader.poll();
+    assert_eq!((got.len(), got[0].output_tokens, got[0].cost_usd, got[0].calls), (1, 0, Some(0.25), 0));
+}
+
+#[test]
+fn cumulative_cost_and_duration_diff() {
+    let (_g, tmp) = crate::test_home("cum-cost");
+    let root = tmp.join("d");
+    let path = root.join("s.jsonl");
+    let mut reader = inline(
+        &root,
+        "mode: cumulative, key: sid, cost_usd: total_cost, duration_ms: api_ms, fields: {output: out}",
+    );
+    append(&path, &lines(&[json!({"sid": "s", "out": 10, "total_cost": 0.25, "api_ms": 1000})]));
+    let got = reader.poll();
+    assert_eq!((got[0].output_tokens, got[0].cost_usd, got[0].duration_ms, got[0].calls), (10, Some(0.25), 1000, 1));
+    append(&path, &lines(&[json!({"sid": "s", "out": 10, "total_cost": 0.75, "api_ms": 1500})]));
+    let got = reader.poll();
+    assert_eq!((got.len(), got[0].output_tokens, got[0].cost_usd, got[0].duration_ms), (1, 0, Some(0.5), 500));
+    append(&path, &lines(&[json!({"sid": "s", "out": 12, "total_cost": 0.75, "api_ms": 1800})]));
+    let got = reader.poll();
+    assert_eq!((got[0].output_tokens, got[0].cost_usd, got[0].duration_ms, got[0].calls), (2, None, 300, 0));
+}
+
+#[test]
+fn drop_only_when_tokens_and_cost_are_zero() {
+    let (_g, tmp) = crate::test_home("drop");
+    let root = tmp.join("d");
+    let mut reader = inline(&root, "key: id, cost_usd: cost, duration_ms: ms, fields: {output: out}");
+    append(&root.join("s.jsonl"), &lines(&[
+        json!({"id": "a", "out": 0, "cost": 0.3}),
+        json!({"id": "b", "out": 0, "cost": 0, "ms": 500}),
+        json!({"id": "c", "out": 0}),
+    ]));
+    let got = reader.poll();
+    assert_eq!(got.len(), 1, "시간만 있거나 모두 0이면 버린다");
+    assert_eq!((got[0].total(), got[0].cost_usd, got[0].calls), (0, Some(0.3), 1), "토큰 0, 비용 0.3은 남는다(crush)");
+}
+
+#[test]
+fn json_without_key_is_rejected() {
+    let (_g, root) = crate::test_home("json-key");
+    write_user_services(
+        &root,
+        "services:\n  j:\n    roots: [\"~/x\"]\n    format: json\n    fields: {output: n}\n  k:\n    roots: [\"~/x\"]\n    format: json\n    key: id\n    fields: {output: n}\n",
+    );
+    let names = loaded_names();
+    assert!(!names.contains(&"j".to_string()) && names.contains(&"k".to_string()));
+    let skipped = load_report().skipped;
+    assert!(skipped.iter().any(|(id, why)| id == "j" && why.starts_with("key")), "{skipped:?}");
 }
 
 #[test]
@@ -510,7 +717,7 @@ fn uses_legacy(text: &str) -> bool {
 #[test]
 fn builtin_adapters_use_current_syntax() {
     for (id, text) in ADAPTERS {
-        assert!(!uses_legacy(text), "adapters/{id}.yaml: 옛 형식(a.0.b, X: null, {{vendor}})");
+        assert!(!uses_legacy(text), "adapters/{id}.yaml: 옛 형식(a.0.b, X: null, {{vendor}}, input_includes_cache)");
     }
 }
 
@@ -546,13 +753,13 @@ fn every_path_site_takes_an_expression() {
         json!({"data": assistant, "message": {"id": "m1"}, "requestId": "r1", "sid": "s-1", "model": "top",
                "u": {"in": 4, "cached": 6, "a": 2, "b": 3}, "t": {"start": 1000, "end": 1250},
                "meta": r#"{"side": false}"#}),
-        json!({"data": assistant, "message": {"id": "m1"}, "requestId": "r1", "u": {"a": 50}}),
+        json!({"data": assistant, "message": {"id": "m1"}, "requestId": "r1", "u": {"a": 5}}),
         json!({"data": r#"{"role": "user"}"#, "message": {"id": "m9"}, "requestId": "r9", "u": {"a": 70}}),
         json!({"data": assistant, "message": {"id": "m2"}, "requestId": "r1", "x": {"model": "inner"}, "model": "top",
                "u": {"a": 1}, "meta": r#"{"side": true}"#}),
     ]));
     let got = reader.poll();
-    assert_eq!(got.len(), 2, "같은 `message.id & requestId`는 한 번, role user는 match 밖");
+    assert_eq!(got.len(), 2, "같은 `message.id & requestId`의 같은 값은 한 번, role user는 match 밖");
     assert_eq!(vec4(&got[0]), (4, 6, 0, 5), "output = u.a + u.b");
     assert_eq!((got[0].model.as_str(), got[0].session.as_str()), ("top", "s-1"), "x.model이 없으면 $.model");
     assert_eq!((got[0].ctx_tokens, got[0].duration_ms, got[0].subagent), (400, 250, false));
@@ -603,7 +810,8 @@ fn legacy_forms_only_from_user_override() {
     write_user_services(
         &root,
         &format!(
-            "services:\n  old:\n    roots: [{data:?}]\n    match: {{kind: done, gone: null}}\n    fields: {{output: usage.0.out}}\n    endpoint_probe:\n      path: {toml:?}\n      key: model_providers.{{vendor}}.base_url\n"
+            "services:\n  old:\n    roots: [{data:?}]\n    match: {{kind: done, gone: null}}\n    fields: {{output: usage.0.out}}\n    endpoint_probe:\n      path: {toml:?}\n      key: model_providers.{{vendor}}.base_url\n  old-cache:\n    roots: [{:?}]\n    input_includes_cache: true\n    fields: {{input: i, cache_read: c}}\n  codex:\n    input_includes_cache: false\n",
+            root.join("old-cache")
         ),
     );
     let spec = load_all_specs().into_iter().find(|s| s.name == "old").expect("옛 형식도 로딩된다");
@@ -616,17 +824,25 @@ fn legacy_forms_only_from_user_override() {
     let outs: Vec<i64> = reader.poll().iter().map(|d| d.output_tokens).collect();
     assert_eq!(outs, [7, 20], "a.0.b는 번호, X: null은 없거나 null");
     assert_eq!(reader.endpoint_for("", "acme"), "https://gw.acme.test/v1", "{{vendor}} → [$ctx.vendor]");
+    let specs = load_all_specs();
+    let mut cache = ServiceReader::new(specs.iter().find(|s| s.name == "old-cache").unwrap().clone());
+    append(&root.join("old-cache/s.jsonl"), &lines(&[json!({"i": 10, "c": 3})]));
+    assert_eq!(vec4(&cache.poll()[0]), (7, 3, 0, 0), "input_includes_cache: true → [cache_read]");
+    let codex = specs.iter().find(|s| s.name == "codex").unwrap();
+    assert!(codex.input_includes.is_empty(), "false는 기본 어댑터의 목록을 비운다");
 
     for legacy in [
         "fields: {output: usage.0.out}",
         "match: {gone: null}",
         "endpoint_probe:\n  key: model_providers.{vendor}.base_url",
         "context:\n  model: [a.model, a.1.model]",
+        "input_includes_cache: true",
+        "input_includes_cache: false",
     ] {
         assert!(uses_legacy(legacy), "adapters/에 넣으면 builtin_adapters_use_current_syntax가 막는다: {legacy}");
     }
     assert!(!uses_legacy(
-        "fields: {output: \"usage[0].out\"}\nmatch: {gone: {$exists: false}, $any: [{a: b}]}\nendpoint_probe:\n  key: model_providers[$ctx.vendor].base_url"
+        "fields: {output: \"usage[0].out\"}\nmatch: {gone: {$exists: false}, $any: [{a: b}]}\nendpoint_probe:\n  key: model_providers[$ctx.vendor].base_url\ninput_includes: [cache_read]"
     ));
 }
 

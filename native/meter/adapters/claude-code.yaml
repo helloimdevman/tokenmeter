@@ -5,7 +5,6 @@ match:
   type: assistant
 mode: delta
 key: uuid
-input_includes_cache: false
 fields:
   input: message.usage.input_tokens
   cache_read: message.usage.cache_read_input_tokens

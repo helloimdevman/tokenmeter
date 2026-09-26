@@ -32,8 +32,9 @@ pub struct ServiceSpec {
     pub mode: String,
     #[serde(default)]
     pub key: serde_yaml::Value,
+    /// input에 들어 있어서 뺄 칸 이름(F5).
     #[serde(default)]
-    pub input_includes_cache: bool,
+    pub input_includes: Vec<String>,
     #[serde(default)]
     pub fields: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
@@ -60,6 +61,10 @@ pub struct ServiceSpec {
     pub live_chars: serde_yaml::Value,
     #[serde(default)]
     pub duration_ms: serde_yaml::Value,
+    #[serde(default)]
+    pub cost_usd: serde_yaml::Value,
+    #[serde(default)]
+    pub rebase_on: serde_yaml::Value,
     #[serde(default)]
     pub install: InstallSpec,
 }
@@ -89,12 +94,16 @@ fn default_mode() -> String {
 pub struct Compiled {
     /// `TOKEN_FIELDS` 순서.
     pub fields: [Option<Pick>; 4],
+    /// `input_includes`의 `TOKEN_FIELDS` 번호.
+    pub input_includes: Vec<usize>,
     pub context: Vec<(String, Pick)>,
     pub key: Option<Pick>,
     pub conds: Vec<Cond>,
     pub ctx_tokens: Option<Pick>,
     pub ctx_window: Option<Pick>,
     pub duration_ms: Option<Pick>,
+    pub cost_usd: Option<Pick>,
+    pub rebase_on: Option<Pick>,
     pub subagent: Option<Pick>,
     pub live_chars: Option<Pick>,
     pub plan_key: Option<Pick>,
@@ -127,6 +136,18 @@ impl Compiled {
                 spec.fields.get(name).unwrap_or(&NONE),
             )?;
         }
+        let mut input_includes = Vec::new();
+        for name in &spec.input_includes {
+            match TOKEN_FIELDS[1..3].iter().position(|f| *f == name.as_str()) {
+                Some(i) => input_includes.push(i + 1),
+                None => {
+                    return Err(crate::l10n!(
+                        "input_includes: {name:?} is not cache_read or cache_write",
+                        "input_includes: {name:?}는 cache_read나 cache_write가 아닙니다"
+                    ))
+                }
+            }
+        }
         let mut context = Vec::new();
         for (name, v) in &spec.context {
             if let Some(p) = site(&format!("context.{name}"), v)? {
@@ -135,12 +156,15 @@ impl Compiled {
         }
         Ok(Self {
             fields,
+            input_includes,
             context,
             key: site("key", &spec.key)?,
             conds: cond::parse(&spec.match_fields, false).map_err(|e| format!("match: {e}"))?,
             ctx_tokens: site("ctx_tokens", &spec.ctx_tokens)?,
             ctx_window: site("ctx_window", &spec.ctx_window)?,
             duration_ms: site("duration_ms", &spec.duration_ms)?,
+            cost_usd: site("cost_usd", &spec.cost_usd)?,
+            rebase_on: site("rebase_on", &spec.rebase_on)?,
             subagent: site("subagent", &spec.subagent)?,
             live_chars: site("live_chars", &spec.live_chars)?,
             plan_key: probe_key("plan_probe", &spec.plan_probe)?,
@@ -150,7 +174,8 @@ impl Compiled {
 }
 
 /// 사용자 덮어쓰기 블록의 옛 형식을 새 형식으로(스펙 1절): 식 자리의 `a.0.b` → `a[0].b`,
-/// match의 `X: null` → `{$exists: false}`, 프로브 키의 `{vendor}` → `[$ctx.vendor]`.
+/// match의 `X: null` → `{$exists: false}`, 프로브 키의 `{vendor}` → `[$ctx.vendor]`,
+/// `input_includes_cache: true|false` → `input_includes: [cache_read]|[]`.
 /// 새 형식은 바꾸지 않는다. 기본 어댑터는 이것이 아무것도 바꾸지 않아야 한다(테스트).
 pub(super) fn upgrade_legacy(block: &mut serde_yaml::Value) {
     use serde_yaml::Value as Y;
@@ -210,6 +235,16 @@ pub(super) fn upgrade_legacy(block: &mut serde_yaml::Value) {
             _ => {}
         }
     }
+    if let Some(old) = block.remove("input_includes_cache") {
+        let parts = if old.as_bool() == Some(true) {
+            vec!["cache_read".into()]
+        } else {
+            vec![]
+        };
+        if !block.contains_key("input_includes") {
+            block.insert("input_includes".into(), Y::Sequence(parts));
+        }
+    }
 }
 
 pub(super) fn yaml_scalar(value: &serde_yaml::Value) -> String {
@@ -242,7 +277,7 @@ struct YamlService {
     #[serde(default)]
     key: serde_yaml::Value,
     #[serde(default)]
-    input_includes_cache: Option<bool>,
+    input_includes: Vec<String>,
     #[serde(default)]
     fields: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
@@ -270,6 +305,10 @@ struct YamlService {
     #[serde(default)]
     duration_ms: serde_yaml::Value,
     #[serde(default)]
+    cost_usd: serde_yaml::Value,
+    #[serde(default)]
+    rebase_on: serde_yaml::Value,
+    #[serde(default)]
     label: Option<String>,
     #[serde(default)]
     install: Option<InstallSpec>,
@@ -283,9 +322,9 @@ include!(concat!(env!("OUT_DIR"), "/adapters.rs"));
 /// 서비스 블록의 최상위 키(`YamlService` 필드). 모르는 키는 `LoadReport::warnings`로 간다.
 pub const KNOWN_SERVICE_KEYS: &[&str] = &[
     "enabled", "label", "roots", "patterns", "format", "match", "mode", "key",
-    "input_includes_cache", "fields", "context", "ctx_tokens", "ctx_window", "subagent",
+    "input_includes", "fields", "context", "ctx_tokens", "ctx_window", "subagent",
     "default_model", "vendor", "plan", "plan_probe", "endpoint", "endpoint_probe",
-    "live_chars", "duration_ms", "install",
+    "live_chars", "duration_ms", "cost_usd", "rebase_on", "install",
 ];
 
 /// 로딩에서 빠진 서비스(id, 이유)와 모르는 키 경고. 데몬 로그와 `doctor`가 보인다.
@@ -476,10 +515,16 @@ fn load_specs(raw: &serde_yaml::Value) -> (Vec<ServiceSpec>, LoadReport) {
             format!("format: unknown value {:?} (jsonl, json)", s.format)
         } else if !["delta", "cumulative"].contains(&s.mode.as_str()) {
             format!("mode: unknown value {:?} (delta, cumulative)", s.mode)
-        } else if let Err(why) = Compiled::new(s) {
-            why
         } else {
-            return true;
+            match Compiled::new(s) {
+                Err(why) => why,
+                // 파일 안 위치로는 레코드를 가를 수 없다(F2)
+                Ok(x) if s.format == "json" && x.key.is_none() => crate::l10n!(
+                    "key: required when format is json",
+                    "key: format이 json이면 필요합니다"
+                ),
+                Ok(_) => return true,
+            }
         };
         report.skipped.push((s.name.clone(), why));
         false
@@ -521,7 +566,7 @@ fn read_services(raw: &serde_yaml::Value, report: &mut LoadReport) -> Vec<Servic
             match_fields: raw.match_fields,
             mode: raw.mode.unwrap_or_else(default_mode),
             key: raw.key,
-            input_includes_cache: raw.input_includes_cache.unwrap_or(false),
+            input_includes: raw.input_includes,
             fields: raw.fields,
             context: raw.context,
             ctx_tokens: raw.ctx_tokens,
@@ -535,6 +580,8 @@ fn read_services(raw: &serde_yaml::Value, report: &mut LoadReport) -> Vec<Servic
             endpoint_probe: raw.endpoint_probe,
             live_chars: raw.live_chars,
             duration_ms: raw.duration_ms,
+            cost_usd: raw.cost_usd,
+            rebase_on: raw.rebase_on,
             install: raw.install.unwrap_or_default(),
         });
     }

@@ -11,7 +11,7 @@ match:
 # 턴이 끝나면 공식 outputTokens 와의 차만 더한다.
 mode: delta
 key: params._meta.eventId
-input_includes_cache: true
+input_includes: [cache_read]
 fields:
   input: params.update.usage.inputTokens
   cache_read: params.update.usage.cachedReadTokens

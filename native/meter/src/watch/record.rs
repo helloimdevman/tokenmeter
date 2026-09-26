@@ -1,10 +1,11 @@
-//! 레코드 하나의 처리 순서: 문맥, match, 토큰 벡터, 중복 제거, 델타.
+//! 레코드 하나의 처리 순서: 문맥, match, 필드, 토큰 의미(F5), 키와 모드(F2), 델타.
 
 use super::cond;
-use super::delta::{TokenDelta, Vector};
+use super::delta::TokenDelta;
 use super::expr::{Env, Pick};
+use super::ledger::{self, key_hash, record_hash, Vals};
 use super::probe::resolve_endpoint;
-use super::reader::{path_key, ServiceReader, SEEN_CAP};
+use super::reader::{path_key, ServiceReader};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -19,8 +20,12 @@ static LIVE_PROMPT: LazyLock<Pick> = LazyLock::new(|| {
 });
 
 /// 숫자 자리의 최종값. 없으면 0, 0 아래로 내리지 않는다.
+fn val(pick: Option<&Pick>, env: &Env) -> f64 {
+    pick.and_then(|p| p.num(env)).unwrap_or(0.0).max(0.0)
+}
+
 fn int(pick: Option<&Pick>, env: &Env) -> i64 {
-    pick.and_then(|p| p.num(env)).unwrap_or(0.0).max(0.0) as i64
+    val(pick, env) as i64
 }
 
 impl ServiceReader {
@@ -28,7 +33,6 @@ impl ServiceReader {
         &mut self,
         obj: &Value,
         path: &Path,
-        line_no: u64,
         out: &mut Vec<TokenDelta>,
         emit: bool,
     ) {
@@ -53,69 +57,45 @@ impl ServiceReader {
         if !cond::all(&self.x.conds, &env) {
             return;
         }
-        let vector: Vector = std::array::from_fn(|i| int(self.x.fields[i].as_ref(), &env));
-        let diff: Vector = if self.spec.mode == "cumulative" {
-            let record_key = self
-                .x
-                .key
-                .as_ref()
-                .and_then(|k| k.text(&env))
-                .unwrap_or_else(|| key.clone());
-            let bases = self.base.entry(key.clone()).or_default();
-            let previous = bases.get(&record_key).copied();
-            bases.insert(record_key, vector);
-            match previous {
-                None if self.blind.remove(&key) => return,
-                None => vector,
-                Some(prev) => {
-                    let d = [
-                        vector[0] - prev[0],
-                        vector[1] - prev[1],
-                        vector[2] - prev[2],
-                        vector[3] - prev[3],
-                    ];
-                    if d.iter().any(|v| *v < 0) {
-                        return;
-                    }
-                    d
-                }
-            }
-        } else {
-            if let Some(k) = &self.x.key {
-                if let Some(raw) = k.text(&env) {
-                    if !raw.is_empty() && !self.seen_keys.insert(raw) {
-                        return;
-                    }
-                    if self.seen_keys.len() > SEEN_CAP {
-                        let remove: Vec<String> =
-                            self.seen_keys.iter().take(SEEN_CAP / 2).cloned().collect();
-                        for key in remove {
-                            self.seen_keys.remove(&key);
-                        }
-                    }
-                } else {
-                    let seen = self.seen.entry(key.clone()).or_default();
-                    let mark = format!("{key}:{line_no}");
-                    if !seen.insert(mark) {
-                        return;
-                    }
-                }
-            } else {
-                let seen = self.seen.entry(key.clone()).or_default();
-                let mark = format!("{key}:{line_no}");
-                if !seen.insert(mark) {
-                    return;
-                }
-            }
-            vector
-        };
-        let mut input_tokens = diff[0];
-        let cache_read = diff[1];
-        let cache_write = diff[2];
-        let mut output_tokens = diff[3];
-        if self.spec.input_includes_cache {
-            input_tokens = (input_tokens - cache_read).max(0);
+        // 필드와 토큰 의미(F5): input에 든 칸은 그 합이 input 이하일 때만 뺀다.
+        let mut vals: Vals = [0.0; 6];
+        for (slot, pick) in vals.iter_mut().zip(&self.x.fields) {
+            *slot = val(pick.as_ref(), &env).trunc();
         }
+        vals[4] = val(self.x.cost_usd.as_ref(), &env);
+        vals[5] = val(self.x.duration_ms.as_ref(), &env);
+        let inside: f64 = self.x.input_includes.iter().map(|i| vals[*i]).sum();
+        if inside <= vals[0] {
+            vals[0] -= inside;
+        }
+        if let Some(p) = &self.x.rebase_on {
+            let h = key_hash(&p.text(&env).unwrap_or_default());
+            if self.roll.insert(key.clone(), h).is_some_and(|old| old != h) {
+                self.rolling = true;
+            }
+        }
+        // 키와 모드(F2)
+        let stream = self
+            .x
+            .key
+            .as_ref()
+            .and_then(|k| k.text(&env))
+            .map(|k| key_hash(&k));
+        let (d, calls, fresh) = if self.spec.mode == "cumulative" {
+            let Some((d, calls)) = self.cumulative(&key, stream, vals) else {
+                return;
+            };
+            (d, calls, true)
+        } else {
+            let k = stream.unwrap_or_else(|| record_hash(obj));
+            let fresh = !self.ledger.has(k);
+            let (d, calls) = self.ledger.grow(k, vals);
+            (d, calls, fresh)
+        };
+        let input_tokens = d[0] as i64;
+        let cache_read = d[1] as i64;
+        let cache_write = d[2] as i64;
+        let mut output_tokens = d[3] as i64;
         // 이 레코드의 값은 위에서 배웠으므로 파일 문맥만 보면 된다.
         let pick_ctx = |name: &str, fallback: &str| {
             ctx_map
@@ -140,8 +120,7 @@ impl ServiceReader {
         let session = pick_ctx("session", "");
         let effort = pick_ctx("effort", "");
         let endpoint = self.endpoint_for(&session, &vendor);
-        output_tokens = self.adjust_live_output(&env, &session, output_tokens);
-        let duration_ms = int(self.x.duration_ms.as_ref(), &env);
+        output_tokens = self.adjust_live_output(&env, &session, output_tokens, fresh);
         let subagent = self.x.subagent.as_ref().is_some_and(|p| p.truthy(&env));
         let (ctx_now, ctx_win) = if subagent {
             (0, 0)
@@ -152,7 +131,7 @@ impl ServiceReader {
                 .unwrap_or_else(|| crate::pricing::context_window(&model, current));
             (current, window)
         } else {
-            let current = vector[0] + vector[1] + vector[2];
+            let current = (vals[0] + vals[1] + vals[2]) as i64;
             (current, crate::pricing::context_window(&model, current))
         };
         // 칸이 늘어도(Task 1.11) 여기를 고치지 않게 기본값으로 끝낸다.
@@ -174,10 +153,13 @@ impl ServiceReader {
             ctx_tokens: ctx_now,
             ctx_window: ctx_win,
             subagent,
-            duration_ms,
+            duration_ms: d[5] as i64,
+            calls: u32::from(calls),
+            cost_usd: (d[4] > 0.0).then_some(d[4]),
             ..Default::default()
         };
-        if delta.total() <= 0 {
+        // 토큰 차이 합이 0이고 비용 차이도 0일 때만 버린다(F2).
+        if delta.total() <= 0 && delta.cost_usd.is_none() {
             return;
         }
         if emit {
@@ -218,12 +200,49 @@ impl ServiceReader {
         value
     }
 
-    fn adjust_live_output(&mut self, env: &Env, session: &str, output_tokens: i64) -> i64 {
+    /// cumulative(F2): 스트림(키, 없으면 파일)의 기준값과의 차이와 calls. None이면 낼 것이 없다.
+    fn cumulative(&mut self, file: &str, stream: Option<u64>, v: Vals) -> Option<(Vals, bool)> {
+        let mine = self.base.get(file).and_then(|b| b.get(&stream)).copied();
+        // 이 파일에 기준값이 없으면 같은 서비스 다른 파일의 같은 키(파일 사이 복사본)
+        // ponytail: 파일 수만큼 훑는다(파일·스트림마다 처음 한 번). 느려지면 키 → 파일 색인을 둔다.
+        let other = match (mine, stream) {
+            (None, Some(_)) => self
+                .base
+                .iter()
+                .filter(|(f, _)| f.as_str() != file)
+                .filter_map(|(_, b)| b.get(&stream).copied())
+                .max_by(|a, b| a[..4].iter().sum::<f64>().total_cmp(&b[..4].iter().sum())),
+            _ => None,
+        };
+        self.base
+            .entry(file.to_string())
+            .or_default()
+            .insert(stream, v);
+        if self.rolling {
+            return None;
+        }
+        if mine.is_none() && other.is_none() && self.blind.remove(file) {
+            return None;
+        }
+        // 기준값이 어디에도 없으면 지금처럼 0에서 시작한 스트림으로 본다(2.9가 문턱으로 가른다).
+        let mut base = mine;
+        ledger::diff(&mut base, other.or(Some([0.0; 6])), v)
+    }
+
+    /// `fresh`가 아니면(이미 본 키) 추정하지 않는다: 다시 읽힌 청크 줄을 두 번 세지 않는다.
+    fn adjust_live_output(
+        &mut self,
+        env: &Env,
+        session: &str,
+        output_tokens: i64,
+        fresh: bool,
+    ) -> i64 {
         let Some(text) = &self.x.live_chars else {
             return output_tokens;
         };
         let extra = text
             .text(env)
+            .filter(|_| fresh)
             .map(|t| t.chars().count().div_ceil(4).max(1) as i64)
             .unwrap_or(0);
         let prompt = LIVE_PROMPT.text(env).unwrap_or_default();

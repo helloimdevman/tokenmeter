@@ -1,0 +1,2 @@
+{"ts":"2026-08-04T09:10:11Z","model":"opencode/deepseek-v4","prompt":100,"completion":20,"reasoning":5,"cache_hit":30,"cache_miss":70,"total":120,"requests":1}
+{"ts":"2026-08-04T09:10:11Z","model":"deepseek/chat","prompt":100,"completion":20,"cache_hit":30,"cache_miss":10,"total":120}

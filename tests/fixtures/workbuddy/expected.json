@@ -1,0 +1,11 @@
+{
+  "source": "encoded-cwd/abc.jsonl, ds.jsonl: TokenTracker test/rollout-parser.test.js:8187-8292; .workbuddy-ai same-session.jsonl: :8506-8543 (moved to the 5.5 root, tokscale scanner.rs:2103-2113); sess-b1.jsonl: synthetic B1 check with the same line builder. MIT (c) 2026 xiufengsun",
+  "steps": [
+    {"calls": 4, "input": 31412, "cache_read": 34658, "cache_write": 1312, "output": 419,
+     "by_model": {
+       "auto": {"calls": 3, "input": 30412, "cache_read": 34658, "cache_write": 1312, "output": 319},
+       "hy3": {"calls": 1, "input": 1000, "cache_read": 0, "cache_write": 0, "output": 100}},
+     "sessions": ["same-session", "wb-b1", "wb-sess"], "vendor": "tencent"}
+  ],
+  "differs": "TokenTracker splits reasoning out of completion (ds.jsonl output 76 + reasoning 130); we keep it in output (206, same total). tokscale does not subtract cache_write from prompt_tokens (abc.jsonl input 1315 instead of 3) and bills workbuddy.db session_usage.used as input; TokenTracker and we do neither. Trace summaries (traces/trace_*.json, TokenTracker only) are not read."
+}

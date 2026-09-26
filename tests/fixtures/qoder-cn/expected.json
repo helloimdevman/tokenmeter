@@ -1,0 +1,11 @@
+{
+  "source": "TokenTracker test/qoder-new-parser.test.js:314-398 (JSONL, cwd changed to /work/proj) and test/qoder-parser.test.js:247-297 (SQLite row, columns of src/lib/rollout.js:5777-5797). MIT (c) 2026 xiufengsun",
+  "steps": [
+    {"calls": 4, "input": 125793, "cache_read": 5928, "cache_write": 200, "output": 3244,
+     "by_model": {
+       "qoder-custom-e60342d2-d1f7-4203-8fe4-7d0d29bbfaee/glm-5.3-flash": {"calls": 3, "input": 68913, "cache_read": 5928, "cache_write": 200, "output": 2471},
+       "quest-ultimate": {"calls": 1, "input": 56880, "cache_read": 0, "cache_write": 0, "output": 773}},
+     "sessions": ["cn-sess-1", "cn-session-1"]}
+  ],
+  "differs": "TokenTracker strips the BYOK prefix and reports the model as glm-5.3-flash; we keep the model as logged (tokens are the same: 68913/5928/200/2471). It parses the CN projects directory only when it differs from the international one; we read both and doctor warns about the overlapping root (plan change 7). Otherwise as qoder."
+}

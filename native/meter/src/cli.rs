@@ -11,8 +11,12 @@ use crate::overlay::snapshot_from;
 use crate::pricing;
 use crate::quota;
 use crate::share;
+use crate::watch::checkpoint::Store;
+use crate::watch::roots::{self, Vars};
+use crate::watch::time::local_date;
 use crate::watch::{
-    expand_home, load_all_specs, now_secs, ServiceReader, ServiceSpec, TokenDelta,
+    expand_home, is_static_builtin_root, load_all_specs, load_report, now_secs, root_templates, ServiceReader, ServiceSpec,
+    TokenDelta,
 };
 use crate::VERSION;
 use serde_json::{json, Value};
@@ -410,13 +414,15 @@ fn toggle_measure(on_flag: bool, services: &[String]) -> i32 {
             println!("  모르는 서비스: {}", unknown.join(", "));
             return 1;
         }
-        let book = data
-            .as_object_mut()
-            .unwrap()
-            .entry("services")
-            .or_insert(json!({}));
         for name in services {
-            book.as_object_mut()
+            if on_flag && data.pointer(&format!("/services/{name}")) == Some(&json!(false)) {
+                restart_measure(&mut data, name);
+            }
+            data.as_object_mut()
+                .unwrap()
+                .entry("services")
+                .or_insert(json!({}))
+                .as_object_mut()
                 .unwrap()
                 .insert(name.clone(), json!(on_flag));
         }
@@ -426,6 +432,9 @@ fn toggle_measure(on_flag: bool, services: &[String]) -> i32 {
             if on_flag { "켰습니" } else { "껐습니" }
         );
     } else {
+        if on_flag && data.get("enabled") == Some(&json!(false)) {
+            restart_measure(&mut data, "*");
+        }
         data.as_object_mut()
             .unwrap()
             .insert("enabled".into(), json!(on_flag));
@@ -441,6 +450,26 @@ fn toggle_measure(on_flag: bool, services: &[String]) -> i32 {
         println!("  데몬을 띄웠습니다.");
     }
     0
+}
+
+/// 꺼 두었던 측정을 다시 켠다(스펙 4.4): `measure_since = 지금`을 적고 읽기 상태를 지워
+/// 그 서비스(`*`면 전체)를 처음 실행으로 만든다. 꺼진 동안의 기록은 세지 않는다.
+fn restart_measure(data: &mut Value, id: &str) {
+    data.as_object_mut()
+        .unwrap()
+        .entry("measure_since")
+        .or_insert(json!({}))
+        .as_object_mut()
+        .unwrap()
+        .insert(id.into(), json!(now_secs()));
+    let dir = data_dir().join("readers");
+    if id == "*" {
+        let _ = fs::remove_dir_all(dir);
+    } else {
+        for ext in ["json", "next.json", "keys"] {
+            let _ = fs::remove_file(dir.join(format!("{id}.{ext}")));
+        }
+    }
 }
 
 fn cmd_meter(args: &Args) -> i32 {
@@ -533,7 +562,28 @@ fn cmd_doctor(args: &Args) -> i32 {
         println!("⚠ 검사할 서비스가 없습니다.");
         return 1;
     }
+    if let Some(since) = flag(args, "since") {
+        let Some(start) = day_start(since) else {
+            println!("{}", crate::l10n!("--since takes YYYY-MM-DD", "--since 는 YYYY-MM-DD 입니다"));
+            return 1;
+        };
+        let until = flag(args, "until").unwrap_or("9999-12-31");
+        if day_start(until).is_none() {
+            println!("{}", crate::l10n!("--until takes YYYY-MM-DD", "--until 은 YYYY-MM-DD 입니다"));
+            return 1;
+        }
+        let out: Vec<Value> = specs.iter().map(|s| doctor_since(s, since, start, until)).collect();
+        if on(args, "json") {
+            println!("{}", if out.len() == 1 { out[0].clone() } else { Value::Array(out) });
+        } else {
+            for v in out {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+            }
+        }
+        return 0;
+    }
     if on(args, "json") {
+        let report = load_report();
         println!(
             "{}",
             json!({
@@ -544,6 +594,14 @@ fn cmd_doctor(args: &Args) -> i32 {
                 "league": league::caption(),
                 "share": share::on(),
                 "services": specs.iter().map(doctor_service_json).collect::<Vec<_>>(),
+                // 이유 글에는 사용자 설정의 값(루트 등)이 들 수 있어 자리 이름만 낸다(1절 개인정보).
+                "skipped": report.skipped.iter().map(|(id, why)| {
+                    json!({"service": id, "site": why.split(':').next().unwrap_or_default()})
+                }).collect::<Vec<_>>(),
+                "warnings": report.warnings,
+                "overlaps": report.overlaps.iter().map(|[a, b]| json!([[a.0, a.1], [b.0, b.1]])).collect::<Vec<_>>(),
+                "roots_from_dropped": report.roots_from_dropped,
+                "oversized_state": Store { dir: data_dir().join("readers") }.oversized(),
             })
         );
         return 0;
@@ -571,52 +629,133 @@ fn short_path(path: &std::path::Path) -> String {
     text
 }
 
-/// 가장 최근 로그 파일들(최신순)과 그 안의 델타. json 은 파일 하나가 레코드 하나라 40개를 본다.
+/// 가장 최근 로그 파일들(최신순)과 그 안의 델타, 그리고 그 읽기의 수(레코드, match 탈락, 필드 적중).
 /// prime()+poll() 은 데몬 시작용이라 명령이 도는 사이 새로 붙은 줄만 세서 늘 0건이 된다.
-fn doctor_sample(spec: &ServiceSpec) -> (Vec<PathBuf>, Vec<TokenDelta>) {
+fn doctor_sample(spec: &ServiceSpec) -> (Vec<PathBuf>, Vec<TokenDelta>, ServiceReader) {
     let mut reader = ServiceReader::new(spec.clone());
     let mut files = reader.files();
     // 키를 한 번씩만 읽는다: 정렬 중에 mtime 이 바뀌면 sort_by_key 는 패닉할 수 있다.
     files.sort_by_cached_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)));
     let n = if spec.format == "json" { 40 } else { 1 };
     let deltas = files.iter().take(n).flat_map(|p| reader.read_file(p, true)).collect();
-    (files, deltas)
+    (files, deltas, reader)
+}
+
+/// 있는 루트를 공개해도 되는 이름으로: 기본 어댑터의 글자 그대로 루트는 `short_path`, 나머지
+/// (환경 변수·사용자 덮어쓰기)는 `<id>#<번호>`. `roots_from` 루트는 내지 않는다(1절).
+fn public_roots(spec: &ServiceSpec) -> Vec<String> {
+    let vars = Vars { root: None, ctx: &|_| None };
+    root_templates(spec)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, t)| {
+            let paths = roots::expand(t, &vars).ok().flatten()?;
+            let dir = paths.into_iter().find(|p| p.is_dir())?;
+            Some(if is_static_builtin_root(&spec.name, t) {
+                short_path(&dir)
+            } else {
+                format!("{}#{i}", spec.name)
+            })
+        })
+        .collect()
+}
+
+fn has_roots_from(spec: &ServiceSpec) -> bool {
+    !spec.roots_from.is_empty() || spec.sources.iter().any(|s| !s.roots_from.is_empty())
+}
+
+fn field_hits_json(reader: &ServiceReader) -> Value {
+    let round = |r: f64| (r * 1000.0).round() / 1000.0;
+    Value::Object(reader.field_hits().into_iter().map(|(k, r)| (k.to_string(), json!(round(r)))).collect())
 }
 
 fn doctor_service_json(spec: &ServiceSpec) -> Value {
-    let roots: Vec<_> = spec
-        .roots
-        .iter()
-        .map(|r| expand_home(r))
-        .filter(|p| p.exists())
-        .collect();
-    if roots.is_empty() {
-        return json!({"name": spec.name, "ok": false, "warning": "no-log-roots"});
+    let roots = public_roots(spec);
+    if roots.is_empty() && !has_roots_from(spec) {
+        return json!({"name": spec.name, "ok": false, "warning": "no-log-roots", "verified": spec.verified});
     }
-    let (files, deltas) = doctor_sample(spec);
+    let (files, deltas, reader) = doctor_sample(spec);
     if files.is_empty() {
-        return json!({"name": spec.name, "ok": false, "warning": "no-log-files"});
+        return json!({"name": spec.name, "ok": false, "warning": "no-log-files", "verified": spec.verified});
     }
     let tokens: i64 = deltas.iter().map(|d| d.total()).sum();
-    let models: Vec<String> = {
-        let mut m: Vec<String> = deltas.iter().map(|d| d.model.clone()).filter(|s| !s.is_empty()).collect();
-        m.sort();
-        m.dedup();
-        m
-    };
+    let models: std::collections::BTreeSet<&str> =
+        deltas.iter().filter(|d| !d.model.is_empty()).map(|d| pricing::public_model(&d.model)).collect();
     json!({
         "name": spec.name,
         "label": spec.label,
         "format": spec.format,
         "mode": spec.mode,
+        "verified": spec.verified,
         "log_files": files.len(),
         // 로그 파일명·폴더명에는 세션 id 와 인코딩된 홈 경로가 들어 있다 — 루트만 보인다
-        "sample": short_path(roots.iter().find(|r| files[0].starts_with(r)).unwrap_or(&roots[0])),
+        "roots": roots,
+        "records": reader.stats.records,
+        "dropped_by_match": reader.stats.dropped_by_match,
+        "fields": field_hits_json(&reader),
         "deltas": deltas.len(),
         "tokens": tokens,
         "models": models,
         "ok": !deltas.is_empty(),
     })
+}
+
+/// `YYYY-MM-DD`의 로컬 자정(유닉스 초).
+fn day_start(date: &str) -> Option<f64> {
+    let mut it = date.splitn(3, '-').map(|p| p.parse::<u32>().ok());
+    let (y, m, d) = (it.next()??, it.next()??, it.next()??);
+    if date.len() != 10 || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some(crate::history::mktime_local(y as i32, m, d, 0, 0, -1))
+}
+
+/// 기간 안에 바뀐 파일을 새 읽기 도구로 처음부터 읽어 레코드 시각의 로컬 날짜·공개 모델별로 모은다
+/// (스펙 13절). 시각이 없는 레코드는 오늘로 친다. 경로와 내용은 내지 않는다.
+fn doctor_since(spec: &ServiceSpec, since: &str, start: f64, until: &str) -> Value {
+    let mut reader = ServiceReader::with_opts(spec.clone(), crate::watch::ReadOpts::no_gate());
+    let deltas = reader.read_since(start);
+    let now = now_secs();
+    let mut days = serde_json::Map::new();
+    for d in deltas.iter().filter(|d| !d.speed_only) {
+        let date = local_date(if d.at > 0.0 { d.at } else { now });
+        if date.as_str() < since || date.as_str() > until {
+            continue;
+        }
+        let cost = match d.cost_usd {
+            Some(c) if c.is_finite() && c > 0.0 => c,
+            _ => pricing::cost_usd(&d.model, d.input_tokens, d.cache_read, d.cache_write, d.output_tokens),
+        };
+        let day = days.entry(date).or_insert_with(|| json!({}));
+        let model = pricing::public_model(&d.model);
+        for (k, v) in [
+            ("input", d.input_tokens),
+            ("cache_read", d.cache_read),
+            ("cache_write", d.cache_write),
+            ("output", d.output_tokens),
+        ] {
+            add_json(&mut day[k], v as f64);
+            add_json(&mut day["models"][model][k], v as f64);
+        }
+        add_json(&mut day["calls"], d.calls as f64);
+        add_json(&mut day["cost_usd"], cost);
+    }
+    let mut sorted: Vec<(String, Value)> = days.into_iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    json!({
+        "service": spec.name,
+        "verified": spec.verified,
+        "records": reader.stats.records,
+        "dropped_by_match": reader.stats.dropped_by_match,
+        "fields": field_hits_json(&reader),
+        "days": Value::Object(sorted.into_iter().collect()),
+    })
+}
+
+/// 숫자 칸에 더한다(없으면 0에서). 정수로 떨어지면 정수로 둔다.
+fn add_json(slot: &mut Value, v: f64) {
+    let sum = slot.as_f64().unwrap_or(0.0) + v;
+    *slot = if sum.fract() == 0.0 && sum.abs() < 9e15 { json!(sum as i64) } else { json!(sum) };
 }
 
 fn doctor_one(spec: &ServiceSpec) {
@@ -626,17 +765,19 @@ fn doctor_one(spec: &ServiceSpec) {
         spec.name,
         spec.format,
         spec.mode,
-        spec.key.as_deref().unwrap_or("-")
+        spec.key.as_str().unwrap_or("-")
     );
-    let roots: Vec<_> = spec.roots.iter().map(|r| expand_home(r)).filter(|p| p.exists()).collect();
-    if roots.is_empty() {
+    if !spec.verified {
+        println!("   {}", crate::l10n!("⚠ not verified against a real log", "⚠ 실제 로그로 검증되지 않았습니다"));
+    }
+    if public_roots(spec).is_empty() && !has_roots_from(spec) {
         println!(
             "   ⚠ 존재하는 로그 경로가 없습니다: {}",
             spec.roots.join(", ")
         );
         return;
     }
-    let (files, deltas) = doctor_sample(spec);
+    let (files, deltas, reader) = doctor_sample(spec);
     if files.is_empty() {
         println!("   ⚠ patterns 에 맞는 로그 파일이 없습니다");
         return;
@@ -648,6 +789,21 @@ fn doctor_one(spec: &ServiceSpec) {
         deltas.len(),
         num(tokens)
     );
+    let st = &reader.stats;
+    println!(
+        "   {}",
+        crate::l10n!(
+            "records   : {} read · {} dropped by match",
+            "레코드    : {}건 읽음 · match 에서 {}건 떨어짐",
+            st.records,
+            st.dropped_by_match
+        )
+    );
+    let hits: Vec<String> =
+        reader.field_hits().into_iter().map(|(k, r)| format!("{k} {:.0}%", r * 100.0)).collect();
+    if !hits.is_empty() {
+        println!("   {}", crate::l10n!("fields    : {}", "필드 적중 : {}", hits.join(" · ")));
+    }
     let models: std::collections::BTreeSet<_> = deltas.iter().map(|d| d.model.clone()).collect();
     println!(
         "   감지 모델 : {}   (기본값 {})",
@@ -856,6 +1012,12 @@ fn public_snapshot(state: &Value) -> Value {
         "plans": public_group(state.get("plans").unwrap_or(&Value::Null), false),
         "endpoints": public_endpoints(state.get("endpoints").unwrap_or(&Value::Null)),
         "sessions": sessions,
+        "perf": {
+            "poll_ms_p95": num_of(state.pointer("/perf/poll_ms_p95")),
+            "scan_ms": num_of(state.pointer("/perf/scan_ms")),
+            "watch_cpu": num_of(state.pointer("/perf/watch_cpu")),
+            "write_bytes": num_of(state.pointer("/perf/write_bytes")) as u64,
+        },
     })
 }
 
@@ -1278,11 +1440,12 @@ fn cmd_league(args: &Args) -> i32 {
     match args.rest.first().map(String::as_str) {
         Some("login") => league::login(),
         Some("logout") => league::logout(),
-        Some("open") => league::open_room(flag(args, "rule").unwrap_or("cost")),
+        Some("open") => league::open_room(""),
         Some("join") => league::join_room(args.rest.get(1).map(String::as_str).unwrap_or("")),
         Some("leave") => league::leave(args.rest.get(1).map(String::as_str)),
         Some("close") => league::close_room(args.rest.get(1).map(String::as_str)),
-        _ => league::soon(),
+        Some("match") => league::match_cmd(args.rest.get(1).map(String::as_str), flag(args, "minutes"), flag(args, "rule")),
+        _ => league::show(),
     }
 }
 
@@ -1325,6 +1488,9 @@ fn cmd_account(args: &Args) -> i32 {
         println!("  서버에 보낸 데이터가 없습니다. 공유를 껐습니다.");
         return 0;
     };
+    if crate::league::has_auth() {
+        println!("  You are logged in to Token League: this also deletes your league account, every linked device's data and your room memberships.");
+    }
     if !on(args, "yes") {
         print!("  서버에 있는 이 기기의 사용 데이터를 모두 지웁니다. 계속할까요? [y/N] ");
         let _ = std::io::stdout().flush();
@@ -1339,6 +1505,7 @@ fn cmd_account(args: &Args) -> i32 {
         Ok(()) | Err(crate::server::ApiError::Status(401, _)) => {
             crate::server::forget_device();
             crate::sync::forget();
+            crate::league::forget();
             println!("  서버의 사용 데이터를 지우고 공유를 껐습니다.");
             0
         }
@@ -1449,6 +1616,27 @@ mod tests {
         assert_eq!(snap["sessions"], json!([]));
         assert_eq!(snap["today"]["totals"]["input_tokens"], 0);
         assert_eq!(snap["today"]["date"], "2026-08-14");
+    }
+
+    #[test]
+    fn status_json_has_perf() {
+        let (_g, tmp) = crate::test_home("perf");
+        let mut meter = crate::engine::Meter::load_test(tmp.join("state.json"));
+        let t = now_secs();
+        meter.record_poll(t, 50.0, true);
+        for i in 1..=100 {
+            meter.record_poll(t + 2.0 * i as f64, if i == 100 { 9.0 } else { 1.0 }, false);
+        }
+        meter.commit(1).unwrap();
+        meter.commit(2).unwrap();
+        let mut state = crate::engine::Meter::load_test(tmp.join("state.json")).status();
+        state["perf"]["path"] = json!("/Users/alice/secret");
+        let perf = &public_snapshot(&state)["perf"];
+        assert_eq!((perf["poll_ms_p95"].as_f64(), perf["scan_ms"].as_f64()), (Some(1.0), Some(50.0)));
+        // 폴 ms 합 158(훑기 50 + 99 + 9) ÷ 200.009초
+        assert!((perf["watch_cpu"].as_f64().unwrap() - 0.079).abs() < 0.001, "{perf}");
+        assert!(perf["write_bytes"].as_u64().unwrap() > 0, "첫 커밋의 state.json 바이트");
+        assert_eq!(perf.as_object().unwrap().len(), 4, "허용 목록 밖 칸은 나가지 않는다");
     }
 
     #[test]

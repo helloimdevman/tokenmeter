@@ -1,0 +1,2 @@
+{"type":"session","id":"kimchi_ses_001","timestamp":"2026-08-01T00:00:00.000Z","cwd":"/tmp/kimchi-project"}
+{"type":"message","id":"msg_001","timestamp":"2026-08-01T00:00:01.000Z","message":{"role":"assistant","model":"kimi-k2.6","provider":"kimchi-dev","usage":{"input":9441,"output":131,"cacheRead":50,"cacheWrite":0,"totalTokens":9622}}}

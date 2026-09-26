@@ -29,7 +29,7 @@ pub fn base() -> String {
     setting_str(&["settings", "league", "server"]).trim_end_matches('/').to_string()
 }
 
-fn agent() -> &'static ureq::Agent {
+pub(crate) fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
         ureq::AgentBuilder::new()
@@ -123,6 +123,13 @@ pub fn put_usage(token: &str, upload: &UsageUpload, timeout: Duration) -> Result
 
 pub fn delete_account(token: &str) -> Result<(), ApiError> {
     call("DELETE", "/v1/account", Some(token), None, NORMAL).map(|_| ())
+}
+
+/// 기기 토큰으로 부르는 JSON API(리그). 204처럼 본문이 없으면 `()`로 받는다.
+pub fn json<T: serde::de::DeserializeOwned>(method: &str, path: &str, token: &str, body: Option<Value>) -> Result<T, ApiError> {
+    let raw = call(method, path, Some(token), body, NORMAL)?;
+    let raw = if raw.is_empty() { b"null".to_vec() } else { raw };
+    serde_json::from_slice(&raw).map_err(|_| ApiError::Status(200, "bad_response".into()))
 }
 
 #[cfg(test)]

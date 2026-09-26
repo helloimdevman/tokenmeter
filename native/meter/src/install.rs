@@ -297,6 +297,8 @@ export const TokenMeter = async ({{ directory }}) => {{
     }},
   }}
 }}
+
+export default {{ id: "tokenmeter", server: TokenMeter }}
 "#,
         hook = serde_json::to_string(&hook).unwrap_or_else(|_| "\"\"".into()),
         service = serde_json::to_string(service).unwrap_or_else(|_| "\"unknown\"".into()),
@@ -1193,6 +1195,13 @@ mod tests {
             assert!(!text.contains("hook.py") && !text.to_lowercase().contains("python"), "{text}");
         }
         assert!(source.contains("spawn(HOOK,") && !source.contains("const PY"));
+    }
+
+    #[test]
+    fn opencode_plugin_has_a_default_export() {
+        // OpenCode 1.18.30+는 이름 붙은 내보내기만 있는 플러그인 파일을 거부한다
+        let source = plugin_source("opencode");
+        assert!(source.contains("export default { id: \"tokenmeter\", server: TokenMeter }"), "{source}");
     }
 
     #[test]

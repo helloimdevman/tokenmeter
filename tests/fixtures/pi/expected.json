@@ -1,0 +1,13 @@
+{
+  "source": "ccusage rust/adapters/pi/src/loader.rs:433-495 (parent + two forks) and :1254-1310 (subagent-artifacts skipped, run-* kept) (MIT © ryoppippi); tokscale crates/tokscale-core/src/sessions/pi.rs:1198-1300 (fork copies share responseId, new turn survives, identical content with different responseIds, missing responseId falls back to entry id) (MIT © Junho Yeo); TokenTracker test/rollout-parser.test.js:10452-10481 (provider dots) (MIT © xiufengsun/TokenTracker); synthetic: fork whose parent file is gone (pi-mono session-manager.ts:1810-1858 copies entries with their id and timestamp after a new header). Changes: ccusage parentSession paths made relative (its loader resolves them against the child dir), the transcript rows use 999/99 so the exclusion shows in the totals, the run-0 row moved to 2026-01-03T01:00 so it is not a byte copy of root's third row, tokscale's identical-content file got its own session id session-demo-3, TokenTracker's header timestamp fixed at 14:00 (it writes new Date()).",
+  "steps": [{"calls": 13, "input": 1188, "cache_read": 1300, "cache_write": 1010, "output": 174, "cost_usd": 0.0123,
+             "by_model": {"gpt-5": {"calls": 6, "input": 670, "cache_read": 100, "cache_write": 1010, "output": 67},
+                          "gpt-6-astra": {"calls": 5, "input": 407, "cache_read": 1200, "cache_write": 0, "output": 83},
+                          "claude-sonnet-4-6": {"calls": 1, "input": 11, "cache_read": 0, "cache_write": 0, "output": 4},
+                          "dots-default": {"calls": 1, "input": 100, "cache_read": 0, "cache_write": 0, "output": 20}},
+             "sessions": ["child-a", "child-b", "orphan-fork", "root", "session-1", "session-a", "session-demo-1", "session-demo-2", "session-demo-3"],
+             "vendor": ["anthropic", "dots", "openai", "openai-codex"]}],
+  "ccusage": {"cmd": "pi", "env": {"PI_AGENT_DIR": "$HOME/.pi/agent"},
+              "totals": {"input": 1508, "cache_read": 1906, "cache_write": 1011, "output": 233}},
+  "differs": "ccusage drops a fork's copied prefix only when the parent file is in the store and the rows match up to the fork header time, and dedups only inside one file. So it also counts child-a's byte copy of root's 2026-01-04 row (+50/5/6/1), both tokscale fork files' copy of resp-demo-fork and entry-no-resp (+200/40/600), and the orphan fork's two copied rows (+70/14) whose parent file is gone. We key rows by responseId, else id & timestamp, else the record hash across all files (tokscale's key), and the replay gate drops rows older than the fork header − 60 s even without the parent."
+}

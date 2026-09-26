@@ -1,0 +1,4 @@
+{"id":"child-b","parentSession":"root.jsonl","timestamp":"2026-01-03T00:00:00.000Z","type":"session"}
+{"message":{"model":"gpt-5","role":"assistant","usage":{"cacheRead":20,"cacheWrite":3,"input":100,"output":10,"totalTokens":133}},"timestamp":"2026-01-02T10:00:00.000Z","type":"message"}
+{"message":{"model":"gpt-5","role":"assistant","usage":{"cacheRead":30,"cacheWrite":999,"input":200,"output":20,"totalTokens":1249}},"timestamp":"2026-01-03T00:00:00.000Z","type":"message"}
+{"message":{"model":"gpt-5","role":"assistant","usage":{"cacheRead":8,"cacheWrite":2,"input":70,"output":7,"totalTokens":87}},"timestamp":"2026-01-03T01:00:00.000Z","type":"message"}

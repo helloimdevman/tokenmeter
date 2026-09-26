@@ -1,0 +1,7 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/kimchi.rs:22-48 (MIT © Junho Yeo); synthetic: a fork of that session (pi-mono session-manager.ts:1810-1858 copies entries verbatim after a new header) with one new turn",
+  "steps": [{"calls": 2, "input": 9541, "cache_read": 50, "cache_write": 0, "output": 141,
+             "by_model": {"kimi-k2.6": {"calls": 2, "input": 9541, "cache_read": 50, "cache_write": 0, "output": 141}},
+             "sessions": ["kimchi_ses_001", "kimchi_ses_002"], "vendor": "kimchi-dev"}],
+  "differs": "tokscale keys Kimchi rows by session and entry id (kimchi:<session>:<entry>), so it counts the fork's copy of msg_001 again (+9441/50/131). We key across sessions like its pi lane."
+}

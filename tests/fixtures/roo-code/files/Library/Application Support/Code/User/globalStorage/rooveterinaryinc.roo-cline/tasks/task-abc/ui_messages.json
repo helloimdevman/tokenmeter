@@ -1,0 +1,14 @@
+[
+ {
+  "type": "say",
+  "say": "api_req_started",
+  "ts": "2026-02-18T12:00:00Z",
+  "text": "{\"cost\":0.12,\"tokensIn\":100,\"tokensOut\":50,\"cacheReads\":20,\"cacheWrites\":5,\"apiProtocol\":\"anthropic\"}"
+ },
+ {
+  "type": "say",
+  "say": "assistant_message",
+  "ts": "2026-02-18T12:00:01Z",
+  "text": "{}"
+ }
+]

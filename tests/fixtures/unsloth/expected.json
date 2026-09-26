@@ -1,0 +1,12 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/unsloth.rs:356-533 (MIT © 2025 Junho Yeo); TokenTracker test/unsloth-parser.test.js:49-76,102-188 (MIT © 2026 xiufengsun)",
+  "steps": [{"calls": 5, "input": 145, "cache_read": 30, "cache_write": 10, "output": 67,
+             "by_model": {
+               "claude-sonnet-4-6": {"calls": 1, "input": 60, "cache_read": 30, "cache_write": 10, "output": 40},
+               "local-model": {"calls": 1, "input": 10, "output": 2},
+               "thread-fallback": {"calls": 1, "input": 5, "output": 3},
+               "unsloth/local-api-model": {"calls": 1, "input": 20, "output": 7},
+               "api-model": {"calls": 1, "input": 50, "output": 15}},
+             "sessions": ["thread-1"]}],
+  "differs": "Both upstreams report reasoning (5) separately and output as completion − reasoning (35); we keep reasoning inside output (40), same total 140. API rows have no session here; tokscale uses the constant session unsloth:api."
+}

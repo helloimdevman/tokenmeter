@@ -1,0 +1,31 @@
+label: Qwen Code
+# projects/<cwd 이름>/chats/<세션>.jsonl과 백그라운드 서브에이전트 projects/<…>/subagents/<부모 세션>/agent-*.jsonl.
+# 와일드카드 루트는 쓸 수 없어 패턴으로 나눈다.
+# 에이전트 순서: QWEN_RUNTIME_DIR → (settings.json advanced.runtimeOutputDir, 읽지 않음) → QWEN_HOME → ~/.qwen
+roots: ["${QWEN_RUNTIME_DIR:-${QWEN_HOME:-~/.qwen}}/projects"]
+patterns: ["*/chats/*.jsonl", "*/subagents/**/*.jsonl"]
+# system/ui_telemetry 줄은 같은 호출의 사본이라 세지 않는다
+match:
+  type: assistant
+  usageMetadata: {$exists: true}
+mode: delta
+# 레코드마다 randomUUID. 없으면 레코드 해시
+key: uuid
+timestamp: timestamp
+# promptTokenCount는 캐시를 포함한다(OpenAI·Anthropic·Gemini 경로 모두)
+input_includes: [cache_read]
+fields:
+  input: usageMetadata.promptTokenCount
+  cache_read: usageMetadata.cachedContentTokenCount
+  # candidates는 추론을 포함한다(OpenAI 호환·qwen-oauth). total만 남은 줄은 total을 출력으로 본다.
+  # ponytail: 네이티브 gemini 인증의 따로 된 thoughts는 빠진다. 줄에 인증 방식이 없다.
+  output: [usageMetadata.candidatesTokenCount, "usageMetadata.totalTokenCount - usageMetadata.promptTokenCount", usageMetadata.totalTokenCount]
+ctx_tokens: usageMetadata.promptTokenCount
+ctx_window: contextWindowSize
+# 서브에이전트 줄의 sessionId는 부모 세션이다
+subagent: isSidechain
+context:
+  session: sessionId
+  cwd: cwd
+  model: model
+default_model: default

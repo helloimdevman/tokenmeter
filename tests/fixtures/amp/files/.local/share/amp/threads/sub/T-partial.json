@@ -1,0 +1,39 @@
+{
+ "id": "thread-partial",
+ "created": 1775304000000,
+ "usageLedger": {
+  "events": [
+   {
+    "timestamp": "2026-04-08T12:00:00Z",
+    "model": "claude-sonnet-4-0",
+    "credits": 0.75,
+    "tokens": {
+     "input": 100,
+     "output": 20
+    }
+   }
+  ]
+ },
+ "messages": [
+  {
+   "role": "assistant",
+   "messageId": 1,
+   "usage": {
+    "model": "claude-sonnet-4-0",
+    "inputTokens": 100,
+    "outputTokens": 20,
+    "credits": 0.75
+   }
+  },
+  {
+   "role": "assistant",
+   "messageId": 2,
+   "usage": {
+    "model": "claude-sonnet-4-0",
+    "inputTokens": 50,
+    "outputTokens": 10,
+    "credits": 0.4
+   }
+  }
+ ]
+}

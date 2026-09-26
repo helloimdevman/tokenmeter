@@ -1,0 +1,25 @@
+label: MiniMax Code
+# 데스크톱 앱과 CLI가 같이 쓰는 저장소. YYYY/MM/DD/<시각>-session_<id>/messages.jsonl만 사용량이다
+# (같은 디렉터리의 task-*.readable.v1.jsonl은 서브에이전트 기록이라 읽지 않는다).
+roots: ["~/.minimax/v2/sessions"]
+patterns: ["**/messages.jsonl"]
+# 레코드에 type 봉투가 없다. 옮겨 온 옛 세션은 토큰 0인 historical-transcript 줄로 다시 나온다(델타 0이라 버려짐).
+match:
+  message.role: assistant
+  message.usage: {$exists: true}
+mode: delta
+# 다시 불러온 세션이 같은 message_id를 다시 적는다: 파일 사이에서도 한 번만
+key: message_id
+timestamp: message.timestamp
+fields:
+  # input은 캐시를 뺀 값이다(132719 + 16692 + 439298 + 0 = totalTokens 588709)
+  input: message.usage.input
+  cache_read: message.usage.cacheRead
+  cache_write: message.usage.cacheWrite
+  output: message.usage.output
+# usage.cost는 늘 0이라 적지 않는다(가격표로 계산)
+context:
+  model: message.model
+  vendor: message.provider
+  session: $file.dir[-1]
+default_model: default

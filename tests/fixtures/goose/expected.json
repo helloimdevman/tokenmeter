@@ -1,0 +1,13 @@
+{
+  "source": "~/.local/share/goose: session-a from ccusage rust/adapters/goose/src/loader.rs:177-210 (MIT (c) 2025 ryoppippi), 20260920_3 and its child synthetic from the v16 schema (block/goose session_manager.rs:1025-1060, record_usage_metrics :2351-2436); ~/Library/Application Support/goose: TokenTracker test/goose-parser.test.js:91-126, :128-176 (first run), :200-219; ~/Library/Application Support/Block/goose: :179-198 (MIT (c) 2026 xiufengsun). Totals added by hand.",
+  "steps": [{"calls": 5, "input": 24900, "cache_read": 540000, "cache_write": 31000, "output": 21380, "cost_usd": 0.83,
+             "by_model": {
+               "claude-sonnet-4-20250514": {"input": 100, "output": 80},
+               "claude-sonnet-4-6": {"input": 20000, "cache_read": 540000, "cache_write": 31000, "output": 20100},
+               "claude-3-7-sonnet": {"input": 4000, "output": 1000},
+               "gpt-4o": {"input": 800, "output": 200}},
+             "sessions": ["20260920_3", "sess-1", "sess-grow", "session-a"]}],
+  "differs": "accumulated_input_tokens includes both cache buckets (goose token_usage.rs:88-101); no upstream reads the v14 cache columns, so ccusage reports input 595900 and cache 0 where we report 24900 + 540000 + 31000. total - input - output (older Goose's unfolded thinking) is folded into output: ccusage keeps it as a separate reasoning total (output 50 + extra 30 for session-a, 800 + 200 for sess-1), TokenTracker as reasoning_output_tokens. Rows without accumulated_* (old-sess, 400/100) are not counted: the single-turn columns are last-request snapshots, not a cumulative series; TokenTracker counts them. ccusage probes ~/.local/share/Block/goose rather than ~/Library/Application Support/Block/goose, so old-sess is not in its totals either way.",
+  "ccusage": {"cmd": "goose", "env": {},
+              "totals": {"input": 595900, "output": 21150, "cache_read": 0, "cache_write": 0}}
+}

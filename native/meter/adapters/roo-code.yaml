@@ -1,0 +1,66 @@
+label: Roo Code
+# VS Code 계열 앱마다 <앱>/User/globalStorage/rooveterinaryinc.roo-cline/tasks/<작업>/ui_messages.json.
+# 루트는 앱마다 하나(macOS, Linux, 원격 서버). .ui_messages.json.*.tmp 사본은 패턴이 거른다.
+roots:
+  - "~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/Code - Insiders/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/VSCodium/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/Cursor/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/Windsurf/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/Trae/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/Trae CN/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/CodeBuddy/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/Kiro/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/Antigravity/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/Library/Application Support/Positron/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "${XDG_CONFIG_HOME:-~/.config}/Code/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "${XDG_CONFIG_HOME:-~/.config}/Code - Insiders/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "${XDG_CONFIG_HOME:-~/.config}/VSCodium/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "${XDG_CONFIG_HOME:-~/.config}/Cursor/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "${XDG_CONFIG_HOME:-~/.config}/Windsurf/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "${XDG_CONFIG_HOME:-~/.config}/CodeBuddy/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/.vscode-server/data/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/.vscode-server-insiders/data/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/.cursor-server/data/User/globalStorage/rooveterinaryinc.roo-cline"
+  - "~/.windsurf-server/data/User/globalStorage/rooveterinaryinc.roo-cline"
+# 설정 roo-cline.customStoragePath가 있으면 작업은 <그 경로>/tasks/<작업>/에 있다.
+# ponytail: VS Code 본체의 settings.json만 본다. 다른 앱에서 쓰는 사람이 나오면 그 앱 줄을 더한다.
+roots_from:
+  - {file: "~/Library/Application Support/Code/User/settings.json", path: '["roo-cline.customStoragePath"]',
+     patterns: ["tasks/*/ui_messages.json"]}
+  - {file: "${XDG_CONFIG_HOME:-~/.config}/Code/User/settings.json", path: '["roo-cline.customStoragePath"]',
+     patterns: ["tasks/*/ui_messages.json"]}
+patterns: ["tasks/*/ui_messages.json"]
+# 파일은 ClineMessage 배열 하나이고 저장할 때마다 통째로 다시 쓰인다
+format: json
+each: "$"
+# api_req_started 행은 같은 ts로 제자리에서 고쳐 쓰인다(자리표시 → 스트리밍 → 최종): 작업과 ts가 키,
+# 칸마다 늘어난 만큼만 센다. 체크포인트 복원이 붙이는 api_req_deleted 합계 행은 이미 센 행이라 받지 않는다.
+match:
+  type: say
+  say: api_req_started
+mode: delta
+key: "$file.dir[-1] & ts"
+timestamp: ts
+# 3.29.5(PR #8954)부터 tokensIn은 두 캐시를 포함한다. 합이 tokensIn보다 크면(옛 배타 행) 빼지 않는다(F5).
+input_includes: [cache_read, cache_write]
+fields:
+  input: text@json.tokensIn
+  cache_read: text@json.cacheReads
+  cache_write: text@json.cacheWrites
+  # 추론은 tokensOut 안에 있다
+  output: text@json.tokensOut
+cost_usd: text@json.cost
+sidecars:
+  hist: history_item.json
+context:
+  session: $file.dir[-1]
+  # 3.49.0부터 작업마다 history_item.json
+  cwd: $side.hist.workspace
+  # Roo는 행마다 모델을 적지 않는다(Cline 행의 modelInfo만). 모델은 api_conversation_history.json의
+  # <model> 태그뿐이다. ponytail: 태그를 읽지 않아 default다. 사이드카 정규식이 생기면 그때 읽는다.
+  model: modelInfo.modelId
+  vendor: modelInfo.providerId
+default_model: default
+# 자기 키를 쓰는 확장이다. 로그에 요금제 신호가 없다.
+plan: api

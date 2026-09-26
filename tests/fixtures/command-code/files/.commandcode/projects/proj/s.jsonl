@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"s"}
+{"type":"message","id":"u1","parentId":"","timestamp":"2026-08-31T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"prompt"}]}}
+{"type":"message","id":"b1","parentId":"u1","timestamp":"2026-08-31T00:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]},"usage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"costUsd":0.42},"model":"model-x"}

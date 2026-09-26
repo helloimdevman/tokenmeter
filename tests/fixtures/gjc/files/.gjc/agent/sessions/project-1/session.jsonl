@@ -1,0 +1,2 @@
+{"type":"session","id":"gjc_ses_replay_idless","cwd":"/work/project-1"}
+{"type":"message","message":{"role":"assistant","model":"gpt-4o","provider":"openai","timestamp":1733011200000,"usage":{"input":10,"output":5,"cost":{"total":0.03}}}}

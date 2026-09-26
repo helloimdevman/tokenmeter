@@ -64,7 +64,7 @@ Claude Code / Codex / OpenCode 가 쓰는 토큰을 **자동으로** 재고,
 | **한도** | 로그인된 Claude·Codex·Grok의 요금제 사용률·리셋 시각·갱신 상태 |
 | **속도** | 서브에이전트를 제외한 메인 모델별 출력 처리량 |
 | **일별 히스토리** | 최근 7일 날짜별 토큰·비용. 진행 중인 오늘이 맨 위에 함께 놓입니다 |
-| **리그** | Token League 방은 다음 릴리스에서 다시 열림 |
+| **리그** | 포커스된 Token League 방 멤버의 실시간 tok/s. `tokenmeter league login` → `open`·`join` |
 
 세션 줄의 tok/s 는 미터 바늘과 같은 방식(임펄스 + 지수감쇠)으로 **그 세션의 메인 모델 출력만**
 잽니다. 서브에이전트가 같은 세션에서 동시에 일해도 메인 모델의 속도로 합산하지 않습니다.
@@ -112,7 +112,8 @@ npx skills add . -g -a claude-code                  # 로컬 체크아웃에서
 데몬  tokenmeter daemon  (네이티브 바이너리)
    ├─ 워처     native/meter watch          → 로그 파일을 증분 파싱해 TokenDelta 생성
    ├─ 계량기   native/meter engine         → <상태 디렉터리>/state.json 갱신 (단일 writer, 원자적 쓰기)
-   ├─ 동기화   native/meter sync           → PUT /v1/usage (share on일 때만, 활동 중 1분)
+   ├─ 동기화   native/meter sync           → PUT /v1/usage (share on이거나 리그 로그인일 때, 활동 중 1분)
+   ├─ 리그     native/meter league · live  → 방 목록(15분), 멤버끼리 iroh 실시간 연결(로그인하고 방에 있을 때)
    └─ 오버레이 native/meter overlay        → 상태를 읽어 미터/리그에 반영
 
 세션이 도는 동안   → 라이브 파일 mtime 갱신 (아래 '살아 있음' 참고)
@@ -162,7 +163,7 @@ npx skills add . -g -a claude-code                  # 로컬 체크아웃에서
 | ③ 입력 / 출력 / 캐시를 구분해서 보여준다 | 오버레이 미터의 `입력`·`출력`·`캐시` 칸과 색 구분(입력=초록, 출력=시안, 캐시=앰버), CLI `status` 표 | `tokenmeter status` |
 | ④ 항상 최전면에 전체 출력 처리량이 보인다 | 네이티브 오버레이 — 28칸 세그먼트 게이지, 출력 토큰 델타 tok/s 지수평균에 연동된 채움·피크 홀드·감속 관성 | `tokenmeter overlay` |
 | ⑦ 지나간 사용량을 되짚어 본다 | 엔진이 하루가 끝날 때 `days`에 남기고, 오버레이 패널이 일별·세션별로 보여줍니다 | 패널 탭·`S/M/L`·`⋯` / `tokenmeter status` |
-| ⑤ 다른 사람들과 겨룬다 | Token League 방은 다음 릴리스에서 다시 열림 | — |
+| ⑤ 다른 사람들과 겨룬다 | Token League 방: GitHub 로그인, 초대 링크, 멤버끼리 iroh 직접 연결(막히면 릴레이)로 tok/s | `tokenmeter league` |
 | ⑥ 벤더·요금제·모델·세션을 나눠 재서 비교한다 | 워처(축 판정) + 엔진(집계) | `tokenmeter doctor` / `status` |
 
 비용(USD)은 `native/meter/src/pricing.rs` 의 모델별 단가로 캐시 읽기/쓰기까지 나눠 계산합니다.
@@ -306,7 +307,12 @@ settings:
 | `status [--scope today\|total] [--sync]` | 누적·오늘·세션 토큰, **벤더/요금제/모델/클라이언트/프로젝트별 토큰·호출·세션·비용**, 리그 한 줄, 라이브 세션. `--sync` 는 레거시 자체 호스팅 랭킹 |
 | `status --json` | 내부 경로·세션 ID·라우팅 URL을 제외한 공개 상태 스냅샷 한 개를 출력 |
 | `daemon [--no-overlay]` | 네이티브 워처 + 오버레이 + 익명 사용 통계 전송(공유를 켰을 때만). 훅이 자동으로 띄웁니다 |
-| `league …` | Token League 방은 다음 릴리스에서 열린다. 지금은 안내만 출력하고 네트워크를 쓰지 않는다 |
+| `league` | 로그인·방·초대 링크. 네트워크를 쓰지 않는다 |
+| `league login` / `logout` | GitHub Device Flow 로그인(코드를 클립보드로, 터미널이 없으면 알림) / 이 기기 연결 해제 |
+| `league open` | 방을 열고 초대 링크(`https://tokenmeter.online/j/<id>`) 출력 |
+| `league join <id\|링크>` / `leave [id]` / `close [id]` | 참가 / 나가기 / 닫기(호스트만). id를 빼면 포커스된 방 |
+| `league match` | 포커스된 방의 최근 경기 순위. 확정 전에는 잠정(끝 기록이 없으면 지금 누적치) |
+| `league match start [--minutes 10..10080] [--rule output\|cost]` | 경기 열기(호스트만, 방마다 확정 전 경기는 하나). 참가자는 지금 멤버 |
 | `share on\|off\|status\|preview` | 익명 사용 통계. 설치 때 한 번 묻는다. `preview`는 다음 업로드 JSON |
 | `account delete [--yes]` | 이 기기가 서버에 보낸 데이터 삭제, 공유 끔 |
 | `start` / `stop` | 훅이 없는 환경에서 라이브 세션을 수동 등록/해제 |
@@ -457,7 +463,9 @@ settings:
 
 ## Token League와 사용 통계
 
-Token League 방은 TokenMeter 서버와 P2P 실시간 연결로 다시 만드는 중이라, 다음 릴리스에서 열린다. 그전까지 `tokenmeter league …`는 안내만 출력하고 네트워크를 쓰지 않는다.
+Token League 방은 TokenMeter 서버가 갖고, 실시간 tok/s는 멤버의 데몬끼리 iroh(QUIC)로 주고받는다. 로그인하면 데몬이 포커스된 방의 멤버에게 직접 연결하고, 막히면 `relay.tokenmeter.online`을 거친다. 로컬 파일: `league-auth.json`(uid·handle·로그인 시각), `league-key`(iroh 비밀키. 방을 나가거나 로그아웃하면 지우고 새로 만든다), `league.json`(방 목록·포커스), `league-cache.json`(오버레이가 읽는 멤버 행), 모두 0600. `settings.league.relay`를 적으면 서버의 릴레이 설정 대신 그 주소를 쓴다(시험·자체 서버용).
+
+경기 점수는 경기 시작·끝 뒤 각자의 첫 동기화 사이에 늘어난 누적치(그 사용자 모든 기기의 출력 토큰 또는 추정 비용)다. 호스트 데몬이 경기를 열면 P2P로 알려 멤버가 곧바로 동기화하고, 끝나면 모든 데몬이 10초 안에 한 번 더 보낸다. 서버는 끝나고 1시간 뒤 확정하고, 데몬은 확정되면 알림을 한 번 띄운다. 오차는 동기화 한 번 간격(보통 1분 이내)이다.
 
 익명 사용 통계는 `share`가 켜져 있을 때만 `settings.league.server`(기본 `https://api.tokenmeter.online`)로 간다. 활동 중에는 1분, 쉬는 중에는 15분마다 시간 칸을 덮어쓴다. 보내는 항목과 보내지 않는 항목은 `docs/protocol/README.md`에 있다. 로컬 파일: `device.json`(기기 토큰, 0600), `league-sync.json`(마지막 전송 위치). `settings.league.server`를 빈 문자열로 덮으면 통계도 리그도 네트워크를 쓰지 않는다.
 

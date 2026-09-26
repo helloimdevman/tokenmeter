@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"fork-sess"}
+{"type":"message","id":"u1","parentId":"","timestamp":"2026-08-31T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"prompt"}]}}
+{"type":"message","id":"u2","parentId":"u1","timestamp":"2026-08-31T00:00:02Z","message":{"role":"user","content":[{"type":"text","text":"prompt"}]}}
+{"type":"message","id":"a1","parentId":"u2","timestamp":"2026-08-31T00:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]},"usage":{"inputTokens":100,"outputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0,"costUsd":0.001},"model":"model-x"}

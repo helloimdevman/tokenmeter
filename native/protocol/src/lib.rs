@@ -15,6 +15,18 @@ pub const FUTURE_SECS: i64 = 3_600;
 pub const HOUR_STEP: i64 = 900;
 /// 공유가 꺼진 사용자의 합계 셀은 네 라벨이 모두 이 값이다.
 pub const ALL: &str = "*";
+/// 방 안 실시간 연결의 ALPN.
+pub const LIVE_ALPN: &[u8] = b"tokenleague/live/1";
+/// 실시간 한 줄의 최대 바이트('\n' 포함). 넘으면 받는 쪽이 연결을 끊는다.
+pub const MAX_LINE: usize = 1024;
+/// 한 사용자가 들어가 있을 수 있는 방 수.
+pub const MAX_ROOMS: i64 = 8;
+/// 한 방의 최대 인원.
+pub const MAX_MEMBERS: i64 = 20;
+/// 경기 길이(분): 10분에서 7일.
+pub const MATCH_MINUTES: std::ops::RangeInclusive<u32> = 10..=7 * 24 * 60;
+/// 경기 규칙: 출력 토큰 수 또는 추정 비용(클라이언트가 보낸 값).
+pub const RULES: [&str; 2] = ["output", "cost"];
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct ServerConfig {
@@ -75,6 +87,101 @@ pub struct Cell {
 pub struct ErrorBody {
     pub error: String,
     pub message: String,
+}
+
+/// `POST /v1/auth/github`. GitHub 토큰은 서버가 확인한 뒤 바로 폐기한다.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct AuthRequest {
+    pub github_token: String,
+    /// 이 기기의 iroh EndpointId(소문자 16진수 64자).
+    pub endpoint_id: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct AuthResponse {
+    pub user_id: i64,
+    pub login: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct RoomList {
+    pub rooms: Vec<Room>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct Room {
+    /// URL에 쓸 수 있는 12자(`[A-Za-z0-9_-]`).
+    pub id: String,
+    pub host_id: i64,
+    /// 들어온 순서.
+    pub members: Vec<Member>,
+    /// 진행 중이거나 24시간 안에 확정된 가장 최근 경기.
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<MatchInfo>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct Member {
+    pub user_id: i64,
+    pub login: String,
+    /// 로그인한 기기마다 하나.
+    pub endpoints: Vec<String>,
+}
+
+/// 멤버끼리 단방향 스트림에 보내는 한 줄(JSON + '\n'). 이름은 보내지 않는다:
+/// 받는 쪽이 연결 상대의 EndpointId를 멤버 목록에 맞춘다. 모르는 필드는 무시한다.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Default)]
+pub struct LiveLine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tps: Option<f64>,
+    /// 호스트가 경기를 열었다: 받은 멤버는 곧바로 동기화한다.
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub match_id: Option<i64>,
+}
+
+/// `POST /v1/rooms/{id}/matches`. 호스트만 연다.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct MatchRequest {
+    pub minutes: u32,
+    /// `output` 또는 `cost`.
+    pub rule: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct MatchInfo {
+    pub id: i64,
+    pub rule: String,
+    /// 유닉스 초.
+    pub starts_at: i64,
+    pub ends_at: i64,
+    /// 끝나고 1시간 뒤 서버가 확정한다. 그전 순위는 잠정이다.
+    pub finalized: bool,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct Standing {
+    pub user_id: i64,
+    pub login: String,
+    /// 규칙이 output이면 토큰 수, cost면 USD.
+    pub score: f64,
+    /// 시작 기록이 있는가. 없으면 0점이다.
+    pub started: bool,
+}
+
+/// `GET /v1/rooms/{id}/matches/latest`. 점수 높은 순.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct MatchResult {
+    #[serde(rename = "match")]
+    pub info: MatchInfo,
+    pub standings: Vec<Standing>,
+}
+
+pub fn endpoint_ok(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub fn room_id_ok(id: &str) -> bool {
+    id.len() == 12 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 impl Cell {
@@ -157,10 +264,8 @@ pub fn validate(up: &UsageUpload, now: i64) -> Result<(), String> {
     if up.hours.len() > MAX_HOURS {
         return Err(format!("more than {MAX_HOURS} hours"));
     }
-    if let Some(id) = &up.endpoint_id {
-        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-            return Err("bad endpoint_id".into());
-        }
+    if up.endpoint_id.as_deref().is_some_and(|id| !endpoint_ok(id)) {
+        return Err("bad endpoint_id".into());
     }
     let mut hours = HashSet::new();
     for hour in &up.hours {
@@ -196,6 +301,58 @@ pub fn validate(up: &UsageUpload, now: i64) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 0.1.x가 올린 경로 라벨(공개 호스트 18개와 클라우드 이름) → 0.2.0의 프로바이더 id.
+/// 바뀌는 행만 둔다. `self-hosted`, `unknown`은 그대로 간다.
+pub const LEGACY_ROUTE: &[(&str, &str)] = &[
+    ("api.anthropic.com", "anthropic"),
+    ("api.openai.com", "openai"),
+    ("chatgpt.com", "openai"),
+    ("generativelanguage.googleapis.com", "google"),
+    ("api.x.ai", "xai"),
+    ("cli-chat-proxy.grok.com", "xai"),
+    ("api.deepseek.com", "deepseek"),
+    ("api.mistral.ai", "mistral"),
+    ("api.groq.com", "groq"),
+    ("openrouter.ai", "openrouter"),
+    ("api.together.xyz", "togetherai"),
+    ("api.fireworks.ai", "fireworks-ai"),
+    ("api.moonshot.cn", "moonshotai-cn"),
+    ("api.cohere.com", "cohere"),
+    ("api.perplexity.ai", "perplexity"),
+    ("integrate.api.nvidia.com", "nvidia"),
+    ("api.studio.nebius.ai", "nebius"),
+    ("opencode.ai", "opencode"),
+    ("bedrock", "amazon-bedrock"),
+    ("vertex", "google-vertex"),
+    ("azure-openai", "azure"),
+];
+
+/// 0.1.x의 모델 계열 이름 → 내장 가격표의 id. 계열은 나눌 수 없어 가장 가까운 id를 붙인다.
+/// 바뀌는 행만 둔다(`claude-opus-5`, `gpt-5.6-luna`, `other` 들은 그대로 간다).
+pub const LEGACY_MODEL: &[(&str, &str)] = &[
+    ("claude-fable-5.1", "claude-fable-5-1"),
+    ("claude-opus-4.8", "claude-opus-4-8"),
+    ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+    ("claude-haiku-4.5", "claude-haiku-4-5"),
+    ("grok-4.6-build", "grok-4.6"),
+    ("deepseek", "other"),
+    ("grok", "other"),
+];
+
+fn legacy<'a>(table: &[(&str, &'static str)], s: &'a str) -> &'a str {
+    table.iter().find(|(old, _)| *old == s).map_or(s, |(_, new)| new)
+}
+
+/// 표에 없으면 그대로.
+pub fn legacy_route(s: &str) -> &str {
+    legacy(LEGACY_ROUTE, s)
+}
+
+/// 표에 없으면 그대로.
+pub fn legacy_model(s: &str) -> &str {
+    legacy(LEGACY_MODEL, s)
 }
 
 #[cfg(test)]
@@ -296,6 +453,110 @@ mod tests {
         assert_eq!(Label::Client.clean(""), "unknown");
     }
 
+    #[test]
+    fn ids_follow_the_rules() {
+        assert!(endpoint_ok(&"ae".repeat(32)));
+        for bad in ["", "AE".repeat(32).as_str(), "g".repeat(64).as_str(), "a".repeat(63).as_str()] {
+            assert!(!endpoint_ok(bad), "{bad:?}");
+        }
+        assert!(room_id_ok("aZ0_-aZ0_-aZ"));
+        for bad in ["", "short", "aZ0_-aZ0_-aZ0", "aZ0_-aZ0_-a/", "방방방방"] {
+            assert!(!room_id_ok(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn live_lines_ignore_what_they_do_not_know() {
+        let line: LiveLine = serde_json::from_str(r#"{"tps": 12.5, "later": 1}"#).unwrap();
+        assert_eq!((line.tps, line.match_id), (Some(12.5), None));
+        let line: LiveLine = serde_json::from_str(r#"{"match": 7}"#).unwrap();
+        assert_eq!((line.tps, line.match_id), (None, Some(7)), "경기 신호에는 tps가 없다(0으로 읽지 않는다)");
+        assert_eq!(serde_json::to_string(&LiveLine::default()).unwrap(), "{}");
+    }
+
+    /// 스펙 7.6의 두 표를 그대로 옮긴 것(그대로 가는 행 포함).
+    const SPEC_ROUTES: &[(&str, &str)] = &[
+        ("api.anthropic.com", "anthropic"),
+        ("api.openai.com", "openai"),
+        ("chatgpt.com", "openai"),
+        ("generativelanguage.googleapis.com", "google"),
+        ("api.x.ai", "xai"),
+        ("cli-chat-proxy.grok.com", "xai"),
+        ("api.deepseek.com", "deepseek"),
+        ("api.mistral.ai", "mistral"),
+        ("api.groq.com", "groq"),
+        ("openrouter.ai", "openrouter"),
+        ("azure-openai", "azure"),
+        ("api.together.xyz", "togetherai"),
+        ("api.fireworks.ai", "fireworks-ai"),
+        ("api.moonshot.cn", "moonshotai-cn"),
+        ("api.cohere.com", "cohere"),
+        ("api.perplexity.ai", "perplexity"),
+        ("integrate.api.nvidia.com", "nvidia"),
+        ("api.studio.nebius.ai", "nebius"),
+        ("opencode.ai", "opencode"),
+        ("bedrock", "amazon-bedrock"),
+        ("vertex", "google-vertex"),
+        ("self-hosted", "self-hosted"),
+        ("unknown", "unknown"),
+    ];
+    const SPEC_MODELS: &[(&str, &str)] = &[
+        ("claude-fable-5.1", "claude-fable-5-1"),
+        ("claude-fable-5", "claude-fable-5"),
+        ("claude-opus-5", "claude-opus-5"),
+        ("claude-opus-4.8", "claude-opus-4-8"),
+        ("claude-sonnet-5", "claude-sonnet-5"),
+        ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+        ("claude-haiku-4.5", "claude-haiku-4-5"),
+        ("other", "other"),
+        ("gpt-5.6-luna", "gpt-5.6-luna"),
+        ("gpt-5.6-terra", "gpt-5.6-terra"),
+        ("gpt-5.6-sol", "gpt-5.6-sol"),
+        ("gpt-5.4", "gpt-5.4"),
+        ("deepseek-flash", "deepseek-flash"),
+        ("grok-4.6-build", "grok-4.6"),
+        ("deepseek", "other"),
+        ("grok", "other"),
+    ];
+
+    #[test]
+    fn legacy_tables_match_the_spec() {
+        for &(old, new) in SPEC_ROUTES {
+            assert_eq!(legacy_route(old), new, "{old}");
+        }
+        for &(old, new) in SPEC_MODELS {
+            assert_eq!(legacy_model(old), new, "{old}");
+        }
+        // 표에는 바뀌는 행만 있고, 모두 스펙에 있다.
+        for (table, spec) in [(LEGACY_ROUTE, SPEC_ROUTES), (LEGACY_MODEL, SPEC_MODELS)] {
+            for row in table {
+                assert_ne!(row.0, row.1, "그대로 가는 행은 표에 두지 않는다: {row:?}");
+                assert!(spec.contains(row), "스펙에 없는 행: {row:?}");
+            }
+            assert_eq!(table.len(), spec.iter().filter(|(o, n)| o != n).count());
+        }
+    }
+
+    #[test]
+    fn legacy_targets_are_valid_labels() {
+        for (_, new) in LEGACY_ROUTE {
+            assert!(Label::Route.ok(new), "{new}");
+        }
+        for (_, new) in LEGACY_MODEL {
+            assert!(model_ok(new), "{new}");
+        }
+    }
+
+    #[test]
+    fn unknown_labels_pass_through() {
+        for s in ["openai", "amazon-bedrock", "local", "self-hosted", "unknown", "llm.corp.example", "", ALL] {
+            assert_eq!(legacy_route(s), s);
+        }
+        for s in ["claude-opus-4-8", "gpt-5", "other", "", ALL] {
+            assert_eq!(legacy_model(s), s);
+        }
+    }
+
     fn pretty<T: serde::Serialize>(v: &T) -> String {
         serde_json::to_string_pretty(v).unwrap() + "\n"
     }
@@ -309,6 +570,13 @@ mod tests {
             ("device-response", pretty(&schemars::schema_for!(DeviceResponse))),
             ("usage-upload", pretty(&schemars::schema_for!(UsageUpload))),
             ("error", pretty(&schemars::schema_for!(ErrorBody))),
+            ("auth-request", pretty(&schemars::schema_for!(AuthRequest))),
+            ("auth-response", pretty(&schemars::schema_for!(AuthResponse))),
+            ("room", pretty(&schemars::schema_for!(Room))),
+            ("rooms", pretty(&schemars::schema_for!(RoomList))),
+            ("live-line", pretty(&schemars::schema_for!(LiveLine))),
+            ("match-request", pretty(&schemars::schema_for!(MatchRequest))),
+            ("match-result", pretty(&schemars::schema_for!(MatchResult))),
         ];
         for (name, text) in schemas {
             let path = dir.join(format!("{name}.schema.json"));

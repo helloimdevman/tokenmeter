@@ -1,0 +1,30 @@
+label: Gajae-Code
+# <cwd>/*.jsonl과 패스마다의 자식 <cwd>/<session>/N-*.jsonl. XDG 배치는 agent/ 없이.
+# PI_CONFIG_DIR(tokscale이 읽음)은 pi 세션을 gjc로 붙이므로 읽지 않는다.
+roots: ["${GJC_CODING_AGENT_DIR:-~/.gjc/agent}/sessions", "$XDG_DATA_HOME/gjc/sessions"]
+patterns: ["**/*.jsonl"]
+match:
+  type: message
+  message.role: assistant
+  message.model: {$exists: true}
+mode: delta
+# 깊이 2 자식이 부모 줄을 그대로 다시 쓴다. id 없는 줄은 레코드 해시.
+key: [message.responseId, "id & timestamp"]
+# 줄 시각이 없는 레코드는 message.timestamp(밀리초)
+timestamp: [timestamp, message.timestamp]
+replay_gate: true
+fields:
+  # input은 캐시를 뺀 값, output은 추론을 포함한다(pi 형식)
+  input: message.usage.input
+  cache_read: message.usage.cacheRead
+  cache_write: message.usage.cacheWrite
+  output: message.usage.output
+# 기록된 비용. 0이면 가격표로 계산한다(스펙 F9. tokscale은 0을 그대로 믿는다)
+cost_usd: message.usage.cost.total
+context:
+  session: {path: id, when: {type: session}}
+  cwd: {path: cwd, when: {type: session}}
+  model: message.model
+  # message.source(9router 등)는 에이전트가 아니라 경로다
+  vendor: [message.source, message.provider]
+default_model: default

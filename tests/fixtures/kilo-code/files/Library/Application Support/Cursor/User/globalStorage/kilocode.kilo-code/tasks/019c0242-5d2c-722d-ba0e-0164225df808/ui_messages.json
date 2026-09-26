@@ -1,0 +1,26 @@
+[
+ {
+  "ts": 1769564400001,
+  "type": "say",
+  "say": "text",
+  "text": "ignored"
+ },
+ {
+  "ts": 1769564400002,
+  "type": "say",
+  "say": "api_req_started",
+  "text": "{\"apiProtocol\":\"openai\",\"tokensIn\":1000,\"tokensOut\":50,\"cacheReads\":200,\"cacheWrites\":0,\"cost\":0,\"inferenceProvider\":\"minimax\"}"
+ },
+ {
+  "ts": 1769564400003,
+  "type": "say",
+  "say": "api_req_deleted",
+  "text": "{\"tokensIn\":500,\"tokensOut\":25,\"cacheReads\":100,\"cacheWrites\":0,\"cost\":0}"
+ },
+ {
+  "ts": 1769564400004,
+  "type": "say",
+  "say": "api_req_started",
+  "text": "{\"tokensIn\":0,\"tokensOut\":0,\"cacheReads\":0,\"cacheWrites\":0,\"inferenceProvider\":\"minimax\"}"
+ }
+]

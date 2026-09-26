@@ -1,0 +1,39 @@
+{
+ "sessionId": "cline-cli-session",
+ "agent": "lead",
+ "messages": [
+  {
+   "role": "user",
+   "ts": 1785320464923,
+   "content": [
+    {
+     "type": "text",
+     "text": "Inspect this project."
+    }
+   ]
+  },
+  {
+   "id": "msg-1",
+   "role": "assistant",
+   "ts": 1785320475705,
+   "modelInfo": {
+    "id": "cline-free/glm-5.2",
+    "provider": "cline-pass"
+   },
+   "metrics": {
+    "inputTokens": 7507,
+    "outputTokens": 131,
+    "cacheReadTokens": 50,
+    "cacheWriteTokens": 0,
+    "cost": 0.0110232
+   }
+  },
+  {
+   "role": "assistant",
+   "metrics": {
+    "inputTokens": 0,
+    "outputTokens": 0
+   }
+  }
+ ]
+}

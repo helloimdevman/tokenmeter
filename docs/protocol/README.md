@@ -1,8 +1,8 @@
 # TokenMeter ↔ Token League server protocol
 
-The client sends usage only when you turn sharing on (`tokenmeter share on`).
-The server code is private; this folder is the public contract. The JSON Schemas here are
-generated from `native/protocol` and a test fails when they drift.
+The client talks to the server only when you turn sharing on (`tokenmeter share on`) or log in to
+Token League (`tokenmeter league login`). The server code is private; this folder is the public
+contract. The JSON Schemas here are generated from `native/protocol` and a test fails when they drift.
 
 ## Endpoints (v1)
 
@@ -12,10 +12,21 @@ generated from `native/protocol` and a test fails when they drift.
 | `POST /v1/devices` | none | `device-request` → 201 `device-response` |
 | `PUT /v1/usage` | `Bearer <device token>` | `usage-upload` → 204 |
 | `DELETE /v1/account` | `Bearer <device token>` | → 204 |
+| `POST /v1/auth/github` | `Bearer <device token>` | `auth-request` → `auth-response` |
+| `POST /v1/auth/logout` | `Bearer <device token>` | → 204 |
+| `GET /v1/rooms` | logged-in device | → `rooms` |
+| `POST /v1/rooms` | logged-in device | → 201 `room` |
+| `POST /v1/rooms/{id}/join` | logged-in device | → `room` |
+| `POST /v1/rooms/{id}/leave` | logged-in device | → 204 |
+| `DELETE /v1/rooms/{id}` | the room's host | → 204 |
+| `POST /v1/rooms/{id}/matches` | the room's host | `match-request` → 201 match info (the `match` object in `match-result`) |
+| `GET /v1/rooms/{id}/matches/latest` | a room member | → `match-result` (provisional until `finalized`) |
 
 Errors are `error.schema.json` (`{error, message}`) with codes `invalid` (400), `unauthorized` (401),
-`rate_limited` (429, with `Retry-After`), `upgrade_required` (426) and `internal` (500). The client sends
-`User-Agent: tokenmeter/<version>`; the server answers 426 to versions it no longer accepts.
+`forbidden` (403), `not_found` (404), `room_full`, `too_many_rooms` and `match_active` (409), `rate_limited` (429, with
+`Retry-After`), `upgrade_required` (426), `internal` (500) and `upstream` (502, GitHub did not answer).
+The client sends `User-Agent: tokenmeter/<version>`; the server answers 426 to versions it no longer
+accepts or cannot read.
 
 ## Limits
 
@@ -35,14 +46,55 @@ the same check on each hour before sending and drops the hours that fail.
 | Setting | Sent |
 |---|---|
 | sharing off | nothing |
-| sharing on | device token, platform and version, and per local hour: tool, route label, plan, model family, token counts, request count, estimated cost, timing sums |
+| sharing on | device token, platform and version, and per local hour: tool, route label, plan, model id, token counts, request count, estimated cost, timing sums |
+| Token League login | GitHub id and login, the rooms you are in, and an iroh endpoint id per device. With sharing off, one total cell (`*` labels) per hour from the hour you log in, used for matches |
 | never | prompts, code, file paths, project names, session ids, private endpoint hostnames, custom service or model names |
 
 - Hours that ended before you turned sharing on are never sent; the hour you turn it on in is sent
   whole. Turning it off and on again starts over from that hour.
-- Route labels are public API hosts (`api.anthropic.com`), `bedrock`, `vertex`, `azure-openai`,
-  `self-hosted` for every other address, or `unknown`.
-- Model names are built-in price families (`claude-opus-5`); anything else is `other`.
+- Route labels are public provider ids (`anthropic`, `openai`, `amazon-bedrock` …) from the built-in
+  route table, `local` for local runners (Ollama, LM Studio) and for `localhost`, `*.local`, loopback,
+  private, link-local and 100.64.0.0/10 addresses, `self-hosted` for every other address, or `unknown`.
+- Model names are ids from the built-in price table (`claude-opus-4-8`); anything else is `other`.
+- Plans include `local` for local runners (Ollama, LM Studio).
+- 0.1.x clients sent host names (`api.openai.com`) and model families (`claude-opus-4.8`); the server
+  maps them to the ids above (`LEGACY_ROUTE`, `LEGACY_MODEL` in `native/protocol`). `v` stays 1.
 - `t` is the Unix second at the start of your local hour (a multiple of 900).
 - An upload replaces whole hours, so sending the same body twice changes nothing.
 - `tokenmeter share preview` prints the next upload. `tokenmeter account delete` deletes this device's data on the server.
+
+## Login
+
+`tokenmeter league login` runs the GitHub device flow for the TokenMeter OAuth app (no scopes). The
+client sends the GitHub token once to `POST /v1/auth/github`; the server checks it with GitHub,
+revokes it and never stores it. The client never writes it to disk.
+
+## Live rates (peer to peer)
+
+Room members' meters connect to each other with [iroh](https://github.com/n0-computer/iroh) QUIC,
+ALPN `tokenleague/live/1`, directly when the network allows it and through
+`relay.tokenmeter.online` otherwise. The relay admits only endpoint ids of logged-in devices. Each
+side sends on a connection it opened: one unidirectional stream of JSON lines
+(`live-line.schema.json`, at most 1 KB each, e.g. `{"tps": 123.4}`). Lines carry no names: the
+receiver matches the connection's authenticated endpoint id to the room's member list and stamps the
+time itself.
+
+While a meter is in a room, anyone who knows its endpoint id (current or past members of its rooms)
+receives its public IP address and local addresses when connecting, whether or not a direct path
+opens: iroh sends address candidates as soon as a connection is set up, before the member check.
+Leaving a room or logging out makes a new key. Only a relay-only mode (planned with public rooms)
+would hide addresses. On macOS with the firewall on, you may be asked to allow incoming connections;
+Deny keeps live rates working through the relay.
+
+## Matches
+
+A room's host starts a match for 10 minutes to 7 days, ruled by output tokens or estimated cost.
+Every member at the start plays, and members see each player's score (output tokens or estimated
+cost added). A room has at most one match that is not final yet; starting another before then
+answers 409 `match_active`. A player's score is how much their total (all their devices) grew
+between their first sync after the start and their first sync after the end; the
+server finalizes a match an hour after it ends, using the total at that moment for anyone who has not
+synced since the end. Players who never synced after the start score 0. Rooms in `GET /v1/rooms`
+carry their latest match (`match`). When a match starts, the host's meter sends `{"match": <id>}` on
+its live connections so members sync right away; every meter also syncs within 10 seconds after the
+end. Costs are the client's estimates.

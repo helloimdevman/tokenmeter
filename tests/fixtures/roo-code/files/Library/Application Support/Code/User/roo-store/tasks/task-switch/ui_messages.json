@@ -1,0 +1,22 @@
+[
+ {
+  "type": "say",
+  "say": "api_req_started",
+  "ts": "2026-02-18T12:00:00Z",
+  "text": "{\"cost\":0.1,\"tokensIn\":10,\"tokensOut\":1,\"apiProtocol\":\"openai\"}",
+  "modelInfo": {
+   "providerId": "openai",
+   "modelId": "gpt-5.1"
+  }
+ },
+ {
+  "type": "say",
+  "say": "api_req_started",
+  "ts": "2026-02-18T12:05:00Z",
+  "text": "{\"cost\":0.2,\"tokensIn\":20,\"tokensOut\":2}",
+  "modelInfo": {
+   "providerId": "anthropic",
+   "modelId": "claude-sonnet-5"
+  }
+ }
+]

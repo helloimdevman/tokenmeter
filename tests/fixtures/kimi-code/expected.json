@@ -1,0 +1,9 @@
+{
+  "source": "ccusage rust/adapters/kimi/src/loader.rs:89-112 (MIT © ryoppippi); workspaces.json shape from tokscale crates/tokscale-core/src/sessions/kimi.rs:1235-1260 (MIT © Junho Yeo) with a synthetic root",
+  "steps": [{"calls": 2, "input": 8064, "cache_read": 34848, "cache_write": 100, "output": 276,
+             "by_model": {"kimi-code/kimi-for-coding": {"input": 8064, "cache_read": 34848, "cache_write": 100, "output": 276}},
+             "sessions": ["session-b"], "project": "work/kimi-proj", "vendor": "moonshot"}],
+  "ccusage": {"cmd": "kimi", "env": {"KIMI_DATA_DIR": "$HOME/.kimi-code"},
+              "totals": {"input": 3064, "cache_read": 14848, "cache_write": 0, "output": 76}},
+  "differs": "ccusage skips usageScope session as a cumulative total and tokscale counts only turn. kimi-code 2.1.1 writes usage.record once per request and session scope is a compaction request (spec 6.1), so we count it: +5000/20000/100/200."
+}

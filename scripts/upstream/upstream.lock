@@ -1,0 +1,7 @@
+# name	source	pin
+ccusage	https://github.com/ccusage/ccusage.git	2d8dea89266ffe9bd39025c555346022cbc48705
+tokscale	https://github.com/junhoyeo/tokscale.git	1d9a9395418efc6952944b794097935d7d6fa1e8
+TokenTracker	https://github.com/xiufengsun/TokenTracker.git	755fbd98c934d3a56b159166dfde3fa8774292b4
+ccusage-npm	ccusage	20.0.24
+tokscale-npm	tokscale	4.17.0
+# ccusage-npm: 2d8dea8은 package.json 20.0.25지만 npm에는 20.0.24까지만 있다(2026-09-26). 올라오면 bump.sh로 올린다.

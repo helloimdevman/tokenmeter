@@ -1,0 +1,45 @@
+label: Octofriend
+# Octofriend는 XDG_DATA_HOME을 보지 않고 이 경로를 박아 둔다(source/db/setup.ts)
+roots: ["~/.local/share/octofriend"]
+patterns: ["sqlite.db"]
+format: sqlite
+# assistant IR 행 하나가 요청 하나이고 덧붙기만 한다
+mode: delta
+key: id
+cursor: id
+# model_json의 auth.command는 임의의 명령줄일 수 있어 model·baseUrl·type만 뽑는다. 0006 이전에는 model_json이 없다.
+query:
+  - |
+    SELECT li.id, t.name AS session, t.cwd, tn.created_at, json_extract(li.json, '$.ir.usage') AS usage,
+           CASE WHEN json_valid(hi.model_json) THEN json_extract(hi.model_json, '$.model.model') END AS model,
+           CASE WHEN json_valid(hi.model_json) THEN json_extract(hi.model_json, '$.model.baseUrl') END AS base_url,
+           CASE WHEN json_valid(hi.model_json) THEN json_extract(hi.model_json, '$.model.type') END AS api_type
+    FROM llm_irs li
+    JOIN history_items hi ON hi.llm_ir_id = li.id
+    JOIN tree_nodes tn ON tn.history_item_id = hi.id
+    JOIN trees t ON t.id = tn.tree_id
+    WHERE li.id >= ?1 AND json_valid(li.json) AND json_extract(li.json, '$.ir.role') = 'assistant'
+  - |
+    SELECT li.id, t.name AS session, t.cwd, tn.created_at, json_extract(li.json, '$.ir.usage') AS usage
+    FROM llm_irs li
+    JOIN history_items hi ON hi.llm_ir_id = li.id
+    JOIN tree_nodes tn ON tn.history_item_id = hi.id
+    JOIN trees t ON t.id = tn.tree_id
+    WHERE li.id >= ?1 AND json_valid(li.json) AND json_extract(li.json, '$.ir.role') = 'assistant'
+timestamp: created_at
+fields:
+  input: usage@json.input.total
+  cache_read: usage@json.input.cached
+  output: usage@json.output             # 추론은 output 안
+context:
+  session: session
+  cwd: cwd
+  model: model
+  endpoint: base_url                    # Synthetic(api.synthetic.new) 같은 경로는 여기서 온다
+default_model: default
+sources:
+  # anthropic 컴파일러는 캐시를 뺀 input_tokens를 total에 넣는다
+  - match: {api_type: anthropic}
+  # 그 밖(chat completions, responses)은 total이 캐시를 포함한다
+  - match: {api_type: {$not: anthropic}}
+    input_includes: [cache_read]

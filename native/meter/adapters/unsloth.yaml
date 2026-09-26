@@ -1,0 +1,49 @@
+label: Unsloth Studio
+roots: ["${UNSLOTH_STUDIO_HOME:-~/.unsloth/studio}"]
+patterns: ["studio.db"]
+format: sqlite
+# 행은 제자리에서 마무리되고 갱신 시각 열이 없다: 커서 없이 바뀔 때마다 전체를 읽고
+# 키 장부가 늘어난 만큼만 낸다. 키는 두 표가 부딪히지 않게 표 이름을 붙인다.
+# ponytail: 전체 쿼리. Studio DB는 작다. 1만 행을 넘으면 doctor가 경고한다.
+mode: delta
+key: uid
+sources:
+  # 앱 안 채팅: 사용량은 assistant 행의 metadata_json(content_json·attachments_json은 읽지 않는다)
+  - query:
+      - |
+        SELECT 'chat:' || m.id AS uid, m.thread_id, m.created_at, m.metadata_json,
+          t.model_id AS thread_model
+        FROM chat_messages m LEFT JOIN chat_threads t ON t.id = m.thread_id
+        WHERE m.role = 'assistant'
+      - |
+        SELECT 'chat:' || id AS uid, thread_id, created_at, metadata_json
+        FROM chat_messages WHERE role = 'assistant'
+    # promptTokens는 두 캐시를 포함하고, completionTokens는 추론을 포함한다
+    input_includes: [cache_read, cache_write]
+    fields:
+      input: metadata_json@json.contextUsage.promptTokens
+      cache_read: metadata_json@json.contextUsage.cachedTokens
+      cache_write: metadata_json@json.contextUsage.cacheWriteTokens
+      output: metadata_json@json.contextUsage.completionTokens
+    timestamp: created_at
+    context:
+      session: thread_id
+      model:
+        - metadata_json@json.responseDetails.responseModelId
+        - metadata_json@json.contextUsage.modelId
+        - thread_model
+      # anthropic, openai, local … 경로 표의 맨 id(local 힌트는 경로 표)
+      vendor: metadata_json@json.responseDetails.providerType
+  # 밖에서 부른 OpenAI 호환 API(내용 없는 표, subject는 읽지 않는다). 늘 로컬 추론이다.
+  - query: |
+      SELECT 'api:' || id AS uid, model, prompt_tokens, completion_tokens, created_at,
+        'local' AS vendor
+      FROM api_usage_events
+    fields:
+      input: prompt_tokens
+      output: completion_tokens
+    timestamp: created_at
+    context:
+      model: model
+      vendor: vendor
+default_model: unknown

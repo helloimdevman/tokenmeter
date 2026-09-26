@@ -1,0 +1,21 @@
+label: Reasonix
+# 요청마다 한 줄씩 덧붙이는 하루 파일 stats/YYYY-MM-DD.jsonl. 세션 사이드카(.telemetry.json)는
+# 재개하면 작은 값으로 덮어써지므로 읽지 않는다.
+roots: ["${REASONIX_STATE_HOME:-${REASONIX_HOME:-~/.reasonix}}/stats"]
+patterns: ["*.jsonl"]
+# 턴 표시 줄({"turn": true})에는 model이 없다
+match:
+  model: {$exists: true}
+mode: delta
+# 키 없음: 레코드 해시. 다른 하루 파일에 복사된 같은 줄은 한 번만 센다(세션 id도 없다)
+timestamp: ts
+fields:
+  # cache_miss(= prompt − cache_hit)가 있으면 그것, 없는 옛 줄(0이면 적지 않음)은 prompt − cache_hit
+  input: [cache_miss, "prompt - cache_hit", prompt]
+  cache_read: cache_hit
+  # completion은 reasoning을 포함한다
+  output: completion
+ctx_tokens: prompt
+context:
+  model: model
+default_model: default

@@ -1,0 +1,8 @@
+{
+  "source": "TokenTracker test/rollout-parser.test.js:10565-10612 (child_usage_attributed ignored) (MIT © xiufengsun/TokenTracker); tokscale crates/tokscale-core/src/lib.rs:18459-18568 (fork with an aggregated parent, the original, one RLM child in session-artifacts: 3 messages, input 150, output 70) (MIT © Junho Yeo). Changes: the fork header moved from 00:00:00 to 00:10:00 (a fork is made after the rows it copies; tokscale's test gives both headers the same instant), parentSession paths made relative, TokenTracker's header timestamp fixed at 08:00 (it writes new Date()).",
+  "steps": [{"calls": 4, "input": 270, "cache_read": 70, "cache_write": 20, "output": 100,
+             "by_model": {"claude-sonnet-4-6": {"calls": 1, "input": 120, "cache_read": 50, "cache_write": 10, "output": 30},
+                          "claude-opus-5": {"calls": 3, "input": 150, "cache_read": 20, "cache_write": 10, "output": 70}},
+             "sessions": ["child", "original", "session-1"], "vendor": "anthropic"}],
+  "differs": "tokscale reconciles a fork's aggregated parent copy against child_usage_attributed rows; we drop the copy by the replay gate (it is older than the fork header − 60 s) and count the original and each child once, which gives the same 150/70. A fork whose header is not later than the copied rows would keep the per-key max (150/70) and count the children again (+50/20); pi-mono writes the fork header at fork time (session-manager.ts:1810-1858)."
+}

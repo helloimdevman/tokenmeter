@@ -1,0 +1,2 @@
+{"type":"session","id":"session-b","timestamp":"2026-09-06T12:00:00.000Z","cwd":"/tmp/demo"}
+{"type":"message","id":"entry-no-resp","parentId":"session-b","timestamp":"2026-09-06T12:00:00.000Z","message":{"role":"assistant","provider":"openai-codex","model":"gpt-6-astra","usage":{"input":100,"output":20,"cacheRead":300,"cacheWrite":0,"totalTokens":420}}}

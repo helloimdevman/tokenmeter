@@ -1,0 +1,5 @@
+{
+  "source": "TokenTracker test/claude-science-parser.test.js (MIT (c) 2026 xiufengsun): REAL_FRAMES :111-116, frame-1 uncached input 107687 and the 30-token child :171-248, aux :305-336 (input 107687 + 259081, output 56725 + 35707), legacy schema :338-372, and total == input + output per frame :254-303. Totals added by hand: uncached input = input - cache_read - cache_write per frame.",
+  "steps": [{"calls": 7, "input": 898347, "cache_read": 32004096, "cache_write": 1236992, "output": 401534,
+             "sessions": ["frame-1", "frame-aux", "legacy-1", "real-1", "real-2", "real-3"]}]
+}

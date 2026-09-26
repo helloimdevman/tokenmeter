@@ -1,0 +1,27 @@
+label: Junie
+# sessions/<세션>/events.jsonl. 형식은 tokscale 파서와 합성 fixture에서만 왔다.
+verified: false
+roots: ["~/.junie/sessions"]
+patterns: ["*/events.jsonl"]
+# modelUsage[]의 원소마다 한 호출
+each: event.agentEvent.modelUsage
+match:
+  $.event.agentEvent.kind: LlmResponseMetadataEvent
+  # 상태 스냅샷은 사용량 이벤트를 품고 있어 두 번 센다
+  $.kind: {$not: [AgentStateUpdatedEvent, AgentCurrentStatusUpdatedEvent, AgentPatchCreatedEvent]}
+# 같은 이벤트를 다시 붙이면 같은 키. timestampMs만으로는 세션 사이에 부딪힌다.
+mode: delta
+key: "$file.dir[-1] & $.timestampMs & $index"
+timestamp: $.timestampMs
+# 추론(reasoningTokens)은 output 안으로 본다(tokscale은 더한다, 실제 로그로 확인 못 함)
+fields:
+  input: [inputTokens, input]
+  cache_read: [cacheInputTokens, cacheReadInputTokens, cacheRead]
+  cache_write: [cacheCreateTokens, cacheCreationInputTokens, cacheWrite]
+  output: [outputTokens, output]
+cost_usd: cost
+duration_ms: time
+context:
+  session: $file.dir[-1]
+  model: model
+default_model: unknown

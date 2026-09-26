@@ -1,0 +1,20 @@
+[
+ {
+  "type": "say",
+  "say": "api_req_started",
+  "ts": 1779372000000,
+  "text": "{\"tokensIn\":1000,\"tokensOut\":250,\"cacheReads\":500,\"cacheWrites\":50,\"apiProtocol\":\"anthropic\",\"cost\":0.012}"
+ },
+ {
+  "type": "say",
+  "say": "api_req_started",
+  "ts": 1779372000001,
+  "text": "{\"tokensIn\":0,\"tokensOut\":0,\"cacheReads\":0,\"cacheWrites\":0}"
+ },
+ {
+  "type": "say",
+  "say": "api_req_deleted",
+  "ts": 1779374100000,
+  "text": "{\"tokensIn\":800,\"tokensOut\":100,\"cacheReads\":0,\"cacheWrites\":0,\"apiProtocol\":\"anthropic\"}"
+ }
+]

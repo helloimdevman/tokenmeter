@@ -1,0 +1,6 @@
+{
+  "source": "synthetic: 0.1.0 fixture",
+  "steps": [{"calls": 1, "input": 122167, "cache_read": 1052672, "cache_write": 0, "output": 12855,
+             "by_model": {"grok-4.6-build": {"input": 122167, "cache_read": 1052672, "cache_write": 0, "output": 12855}},
+             "sessions": ["sess-grok-1"], "project": "", "vendor": "xai"}]
+}

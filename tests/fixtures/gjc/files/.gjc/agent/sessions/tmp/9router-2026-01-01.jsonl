@@ -1,0 +1,2 @@
+{"type":"session","id":"9router-2026-01-01","cwd":"/tmp"}
+{"type":"message","id":"msg_src","message":{"role":"assistant","model":"m","provider":"p","source":"9router","timestamp":1700000001000,"usage":{"input":10,"output":5,"cost":{"total":0.02}}}}

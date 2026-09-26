@@ -1,5 +1,20 @@
 //! 오버레이 문구. lang=en 이면 한글 키를 영어로 바꾼다.
 
+/// 사용자 문구를 한국어로 낼까. ponytail: 오버레이에 저장된 `lang`을 보지 않는다. 한국어가 기본이고
+/// TOKENMETER_LANG=en* 일 때만 영어. Task 10.1이 lang()으로 바꾼다
+/// (저장값 → TOKENMETER_LANG → LC_* → macOS 선호 언어 → en).
+pub fn ko() -> bool {
+    !std::env::var("TOKENMETER_LANG").map(|v| v.to_ascii_lowercase().starts_with("en")).unwrap_or(false)
+}
+
+/// 새 사용자 문구는 `l10n!("English", "한국어")` 짝으로 쓴다. 인자는 `format!`과 같다.
+#[macro_export]
+macro_rules! l10n {
+    ($en:literal, $ko:literal $(, $($arg:tt)*)?) => {
+        if $crate::i18n::ko() { format!($ko $(, $($arg)*)?) } else { format!($en $(, $($arg)*)?) }
+    };
+}
+
 pub fn normalize(name: &str) -> &'static str {
     if name.eq_ignore_ascii_case("en") { "en" } else { "ko" }
 }
@@ -246,6 +261,20 @@ mod tests {
         assert_eq!(tr("en", "설정"), "Settings");
         assert_eq!(tr("en", "TokenMeter 접기"), "Fold TokenMeter");
         assert_eq!(normalize("EN"), "en");
+    }
+
+    #[test]
+    fn l10n_picks_by_language() {
+        let (_g, _t) = crate::test_home("l10n");
+        std::env::set_var("TOKENMETER_LANG", "en");
+        assert_eq!(crate::l10n!("{n} services", "서비스 {n}개", n = 3), "3 services");
+        assert_eq!(crate::l10n!("Off", "꺼짐"), "Off");
+        std::env::remove_var("TOKENMETER_LANG");
+        assert_eq!(crate::l10n!("Off", "꺼짐"), "꺼짐", "0.1.x처럼 한국어가 기본(10.1이 바꿈)");
+        assert_eq!(crate::l10n!("{n} services", "서비스 {n}개", n = 3), "서비스 3개");
+        let n = 2;
+        assert_eq!(crate::l10n!("{n} a", "{n} 가"), "2 가", "인자 없어도 format!처럼 변수를 잡는다");
+        assert_eq!(crate::l10n!("{{x}}", "{{x}}",), "{x}");
     }
 }
 

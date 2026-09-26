@@ -1,0 +1,26 @@
+label: Muse Code
+# sessions/YYYY/MM/DD/<세션>/session.jsonl, 서브에이전트는 그 아래 subagent/<자식>/session.jsonl(제 세션)
+roots: ["~/.local/share/muse/sessions"]
+patterns: ["**/session.jsonl"]
+# model_completed만 센다. 부모의 workflow_child_lifecycle 합계는 자식 파일과 겹친다.
+match:
+  payload_type: runtime.session
+  payload.event.kind: model_completed
+mode: delta
+key: "stream.id & sequence"
+# recorded_at은 마이크로초(호출 끝)
+timestamp: recorded_at
+# input_tokens는 캐시 읽기를 포함하고 output_tokens는 추론을 포함한다
+input_includes: [cache_read]
+fields:
+  input: payload.event.usage.input_tokens
+  cache_read: [payload.event.usage.cache_read_tokens, payload.event.usage.cached_tokens]
+  cache_write: payload.event.usage.cache_write_tokens
+  output: payload.event.usage.output_tokens
+duration_ms: payload.event.duration_ms
+context:
+  session: stream.id
+  cwd: {path: payload.record.workspace_root, when: {payload_type: runtime.session.metadata}}
+  model: payload.event.model
+default_model: default
+vendor: meta

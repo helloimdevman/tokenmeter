@@ -1,0 +1,25 @@
+label: Crush
+# 프로젝트마다 DB 하나. 전역 레지스트리(macOS도 ~/.local/share)가 DB 위치를 가리킨다.
+roots_from:
+  - file: "${CRUSH_GLOBAL_DATA:-${XDG_DATA_HOME:-~/.local/share}/crush}/projects.json"
+    each: projects
+    path: data_dir
+    base: path
+    patterns: ["crush.db"]
+format: sqlite
+# 토큰 열은 마지막 단계의 스냅샷이라 쓸 수 없다. 루트 세션의 cost만 믿는다(누적, 자식 세션
+# 비용이 끝날 때 더해져 있다). 그래서 루트만 읽고 토큰 0, 비용만 있는 델타를 낸다.
+query: |
+  SELECT id, cost, updated_at, created_at FROM sessions
+  WHERE parent_session_id IS NULL AND updated_at >= ?1
+cursor: updated_at
+mode: cumulative
+# id는 프로젝트 DB 안에서만 유일하다. 키에 DB 경로를 넣어야 다른 DB의 같은 id를
+# 파일 사이 복사본으로 보지 않는다(F2 cumulative).
+key: "$file.path & id"
+cost_usd: cost
+timestamp: [updated_at, created_at]
+context:
+  session: id
+# 세션에 모델이 하나가 아니다(메시지마다 다름). 라벨은 other.
+default_model: session-total

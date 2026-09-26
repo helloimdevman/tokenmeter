@@ -1,0 +1,9 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/omp.rs:45-71 (full usage record), :73-89 (subagent file stands alone), :124-145 (truncated trailing line) (MIT © Junho Yeo); TokenTracker test/rollout-parser.test.js:10139-10167 (subagent and advisor placement, .log artefact skipped) (MIT © xiufengsun/TokenTracker); synthetic: a leading title line (omp.md §2), the advisor row, and an XDG-root row with orchestration tokens (omp catalog types.ts:143-200: totalTokens = four buckets + orchestration, reasoningTokens is a subset of output). The live-file row id b2 renamed c2 so it does not share id & timestamp with the first fixture.",
+  "steps": [{"calls": 5, "input": 176, "cache_read": 15, "cache_write": 0, "output": 81,
+             "by_model": {"z-ai/glm-5.2:free": {"input": 17, "output": 10},
+                          "claude-opus-5": {"calls": 3, "input": 19, "output": 43},
+                          "gpt-5": {"input": 140, "cache_read": 15, "cache_write": 0, "output": 28}},
+             "sessions": ["01a00742-c3eb-7000-92ab-e3294db5e528-AdvisorReview", "01a00742-c3eb-7000-92ab-e3294db5e528-TelegramBrokerMap", "01a01fc8-e982-7000-b3c1-4cca8048e34a", "omp_ses_live", "omp_ses_orch"]}],
+  "differs": "tokscale and TokenTracker ignore usage.orchestration, so they see 100/10/20 for the synthetic row instead of 140/15/28 (omp bills those tokens outside the four buckets). TokenTracker also adds reasoningTokens on top of output; it is a subset (types.ts:167-175), so we do not."
+}

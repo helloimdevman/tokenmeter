@@ -1,0 +1,60 @@
+{
+ "sessionId": "11111111-2222-3333-4444-555555555555",
+ "created": "2026-01-15T12:00:00.000Z",
+ "modified": "2026-01-15T12:10:00.000Z",
+ "agentState": {
+  "modelId": "grok-4-5"
+ },
+ "chatHistory": [
+  {
+   "completed": true,
+   "finishedAt": "2026-01-15T12:01:00.000Z",
+   "sequenceId": 1,
+   "exchange": {
+    "model_id": "grok-4-5",
+    "request_id": "req-1",
+    "response_nodes": [
+     {
+      "type": 1
+     },
+     {
+      "type": 10,
+      "token_usage": {
+       "input_tokens": 1000,
+       "output_tokens": 50,
+       "cache_read_input_tokens": 200,
+       "cache_creation_input_tokens": 0
+      }
+     }
+    ]
+   }
+  },
+  {
+   "completed": true,
+   "finishedAt": "2026-01-15T12:05:00.000Z",
+   "sequenceId": 2,
+   "exchange": {
+    "model_id": "claude-opus-4-8",
+    "request_id": "req-2",
+    "response_nodes": [
+     {
+      "token_usage": {
+       "input_tokens": 400,
+       "output_tokens": 100,
+       "cache_read_input_tokens": 800,
+       "cache_creation_input_tokens": 25
+      }
+     }
+    ]
+   }
+  },
+  {
+   "completed": false,
+   "finishedAt": "2026-01-15T12:09:00.000Z",
+   "exchange": {
+    "model_id": "grok-4-5",
+    "response_nodes": []
+   }
+  }
+ ]
+}

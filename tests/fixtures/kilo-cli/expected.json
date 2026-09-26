@@ -1,0 +1,16 @@
+{
+  "source": "msg_kilo_001/002: TokenTracker test/kilo-parser.test.js:41-90 (MIT, cwd changed); msg-1: ccusage rust/adapters/kilo/src/loader.rs:129-162 (MIT © 2025 ryoppippi); user row synthetic",
+  "steps": [
+    {"calls": 3, "input": 1600, "cache_read": 310, "cache_write": 20, "output": 140, "cost_usd": 0.02,
+     "by_model": {"inclusionai/ring-2.6-1t:free": {"input": 1000, "cache_read": 200, "cache_write": 0, "output": 60},
+                  "kilo-auto/free": {"input": 500, "cache_read": 100, "cache_write": 0, "output": 25},
+                  "claude-sonnet-4-20250514": {"input": 100, "cache_read": 10, "cache_write": 20, "output": 55}},
+     "sessions": ["sess_kilo_a", "session-a"],
+     "project": "work/kilo",
+     "vendor": ["anthropic", "kilo"],
+     "plan": "api"}
+  ],
+  "differs": "ccusage output 125: it keeps reasoning (10 + 5) out of output as extraTotalTokens. We add reasoning to output (spec F5); totals agree with TokenTracker 1260 + 625 and ccusage 185.",
+  "ccusage": {"cmd": "kilo", "env": {"KILO_DATA_DIR": "$HOME/.local/share/kilo"},
+              "totals": {"input": 1600, "output": 125, "cache_read": 310, "cache_write": 20}}
+}

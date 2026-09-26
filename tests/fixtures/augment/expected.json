@@ -1,0 +1,74 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/augment.rs:251-338 (11111111-…), :341-376 (session-from-name), :379-421 (s1), :424-463 (s1b), :473-504 (s2), :507-551 (s3) (MIT © Junho Yeo); step-2 synthetic: s3's aborted turn finishes with completed true and its final usage",
+  "steps": [
+    {
+      "calls": 6,
+      "input": 1761,
+      "cache_read": 1125,
+      "cache_write": 30,
+      "output": 207,
+      "by_model": {
+        "grok-4-5": {
+          "input": 1351,
+          "cache_read": 325,
+          "cache_write": 5,
+          "output": 102
+        },
+        "claude-opus-4-8": {
+          "input": 400,
+          "cache_read": 800,
+          "cache_write": 25,
+          "output": 100
+        },
+        "gpt-5-4": {
+          "input": 10,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 5
+        }
+      },
+      "sessions": [
+        "11111111-2222-3333-4444-555555555555",
+        "s1",
+        "s1b",
+        "s2",
+        "session-from-name"
+      ]
+    },
+    {
+      "calls": 7,
+      "input": 2761,
+      "cache_read": 1125,
+      "cache_write": 30,
+      "output": 267,
+      "by_model": {
+        "grok-4-5": {
+          "input": 2351,
+          "cache_read": 325,
+          "cache_write": 5,
+          "output": 162
+        },
+        "claude-opus-4-8": {
+          "input": 400,
+          "cache_read": 800,
+          "cache_write": 25,
+          "output": 100
+        },
+        "gpt-5-4": {
+          "input": 10,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 5
+        }
+      },
+      "sessions": [
+        "11111111-2222-3333-4444-555555555555",
+        "s1",
+        "s1b",
+        "s2",
+        "s3",
+        "session-from-name"
+      ]
+    }
+  ]
+}

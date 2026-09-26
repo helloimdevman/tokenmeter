@@ -1,0 +1,13 @@
+{
+ "id": "T-thread-total",
+ "messages": [
+  {
+   "role": "assistant",
+   "usage": {
+    "model": "claude-haiku-4-5-20251001",
+    "totalTokens": 345,
+    "timestamp": "2026-01-19T11:42:10.652Z"
+   }
+  }
+ ]
+}

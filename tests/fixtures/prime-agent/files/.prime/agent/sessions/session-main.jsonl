@@ -1,0 +1,3 @@
+{"type":"session","id":"session-1","timestamp":"2026-08-18T08:00:00.000Z"}
+{"type":"message","id":"prime-msg-1","parentId":"parent-1","timestamp":"2026-08-18T08:10:00.000Z","message":{"role":"assistant","provider":"anthropic","model":"claude-sonnet-4-6","usage":{"input":120,"output":30,"cacheRead":50,"cacheWrite":10,"reasoningTokens":0,"totalTokens":210},"timestamp":1787040600000}}
+{"type":"child_usage_attributed","targetId":"prime-msg-1","childUsage":{"input":999,"output":999,"totalTokens":1998}}

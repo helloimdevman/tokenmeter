@@ -1,0 +1,22 @@
+{
+  "source": "synthetic: OpenCode DB layout from tokscale sessions/opencode_schema.rs:340-420 and ccusage rust/adapters/opencode/src/loader.rs:1161-1272; rows db-msg-1 and msg-v2-assistant from ccusage loader.rs:1377-1475 (MIT © 2025 ryoppippi); msg_1.json is the 0.1.0 fixture",
+  "steps": [
+    {"calls": 5, "input": 3715, "cache_read": 25368, "cache_write": 48, "output": 341, "cost_usd": 0.07,
+     "by_model": {"claude-sonnet-4-20250514": {"input": 130, "cache_read": 12, "cache_write": 24, "output": 95},
+                  "gpt-5": {"input": 200, "cache_read": 0, "cache_write": 0, "output": 20},
+                  "gpt-test": {"input": 120, "cache_read": 12, "cache_write": 24, "output": 70},
+                  "nemotron-3-ultra-free": {"input": 3265, "cache_read": 25344, "cache_write": 0, "output": 156}},
+     "sessions": ["ses_1", "ses_a", "ses_f", "v2-session"],
+     "project": ["work/app", "work/dev", "work/v2"],
+     "vendor": ["anthropic", "openai", "opencode"],
+     "plan": ["api", "subscription"]},
+    {"calls": 6, "input": 3755, "cache_read": 25868, "cache_write": 48, "output": 411, "cost_usd": 0.09,
+     "by_model": {"claude-sonnet-4-20250514": {"input": 170, "cache_read": 512, "cache_write": 24, "output": 165},
+                  "gpt-5": {"input": 200, "output": 20},
+                  "gpt-test": {"input": 120, "output": 70},
+                  "nemotron-3-ultra-free": {"input": 3265, "output": 156}}}
+  ],
+  "differs": "ccusage input 3875, output 353, cache 25880/72: it counts the v1 fork copy db-msg-4 (120/60/12/24; ccusage only drops v2 forks via session_v2.fork_boundary) and keeps reasoning out of output (extraTotalTokens 118 = 30+10+10+68). We drop copies older than their session (tokscale owns_turn) and add reasoning to output (spec 3.3).",
+  "ccusage": {"cmd": "opencode", "env": {"OPENCODE_DATA_DIR": "$HOME/.local/share/opencode"},
+              "totals": {"input": 3875, "output": 353, "cache_read": 25880, "cache_write": 72}}
+}

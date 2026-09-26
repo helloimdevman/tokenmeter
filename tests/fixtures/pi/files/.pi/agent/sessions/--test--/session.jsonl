@@ -1,0 +1,2 @@
+{"type":"session","id":"session-1","timestamp":"2026-04-05T14:00:00.000Z"}
+{"type":"message","id":"dots-1","parentId":"parent-1","timestamp":"2026-04-05T14:10:00.000Z","message":{"role":"assistant","provider":"dots","model":"dots-default","usage":{"input":100,"output":20,"cacheRead":0,"cacheWrite":0,"reasoningTokens":0,"totalTokens":120},"timestamp":1775398200000}}

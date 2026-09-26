@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-08-30T11:00:00.000Z","uuid":"m-cache","sessionId":"sess-cache","cwd":"/tmp/proj","message":{"id":"m-cache","role":"assistant","model":"qmodel_38max","content":[{"type":"tool_use","name":"Read"}],"usage":{"credits":0,"billable":true,"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":123,"output_tokens":0}}}

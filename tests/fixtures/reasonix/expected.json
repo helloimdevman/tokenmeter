@@ -1,0 +1,8 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/reasonix.rs:234-263, :265-278, :296-310, :312-325 (MIT © Junho Yeo); synthetic: the first record copied into a second day file",
+  "steps": [{"calls": 3, "input": 150, "cache_read": 90, "cache_write": 0, "output": 60,
+             "by_model": {"opencode/deepseek-v4": {"input": 70, "cache_read": 30, "cache_write": 0, "output": 20},
+                          "deepseek/chat": {"input": 80, "cache_read": 60, "cache_write": 0, "output": 40}},
+             "sessions": []}],
+  "differs": "tokscale splits completion into output 15 + reasoning 5 (same total) and keys rows by file path and line, so the line copied into 2026-08-05.jsonl would count twice there (input 220). We hash the record, so the copy counts once. Explicit cache_miss 10 wins over prompt − cache_hit 70 in both."
+}

@@ -1,0 +1,25 @@
+[
+ {
+  "type": "say",
+  "say": "api_req_started",
+  "ts": "2026-02-18T12:00:00Z",
+  "text": "{\"cost\":0.05,\"tokensIn\":40,\"tokensOut\":15,\"cacheReads\":7,\"cacheWrites\":3,\"apiProtocol\":\"anthropic\"}"
+ },
+ {
+  "type": "say",
+  "say": "assistant_message",
+  "ts": "2026-02-18T12:00:00Z",
+  "text": "{\"cost\":0.2,\"tokensIn\":10,\"tokensOut\":1,\"cacheReads\":0,\"cacheWrites\":0,\"apiProtocol\":\"anthropic\"}"
+ },
+ {
+  "type": "say",
+  "say": "api_req_started",
+  "ts": 1789023000000,
+  "text": "{\"tokensIn\":1000,\"tokensOut\":20,\"cacheWrites\":600,\"cacheReads\":400,\"cost\":0.004}",
+  "modelInfo": {
+   "providerId": "openai",
+   "modelId": "gpt-5.1",
+   "mode": "act"
+  }
+ }
+]

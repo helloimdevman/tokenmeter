@@ -1,0 +1,42 @@
+label: Xiaomi MiMo AI
+# 데스크톱 앱은 MiMo Code 엔진을 품고 같은 mimocode*.db에 쓴다. session.version이 desktop-…인
+# 세션만 여기서 센다(mimo-code는 반대 조건, 행마다 한 서비스에만 들어간다. tokscale sessions/micode.rs:11-38)
+roots:
+  - "${XDG_DATA_HOME:-~/.local/share}/mimocode"
+  - "~/Library/Application Support/orca/mimocode-hooks/shared/data"
+# 같은 루트를 mimo-code와 나눠 쓴다(행은 session.version 조건으로 갈린다) → 겹침 경고 없음
+shares_roots: [mimo-code]
+patterns: ["mimocode.db", "mimocode-*.db"]
+format: sqlite
+cursor: updated
+# 거르기는 mimo-code와 같다(mimo·xiaomi 프로바이더만, 포크 복사본 빼기, 초 → 밀리초). 세션 표 없이는 데스크톱을 가릴 수 없다
+query: |
+  WITH m AS (
+    SELECT id, session_id, time_updated, data,
+           json_extract(data,'$.time.created') * (CASE WHEN json_extract(data,'$.time.created') <= 1e12 THEN 1000 ELSE 1 END) AS created_ms,
+           json_extract(data,'$.time.completed') * (CASE WHEN json_extract(data,'$.time.completed') <= 1e12 THEN 1000 ELSE 1 END) AS completed_ms
+    FROM message
+    WHERE time_updated >= ?1 AND json_valid(data)
+      AND lower(COALESCE(json_extract(data,'$.providerID'), json_extract(data,'$.model.providerID'), '')) IN ('mimo','xiaomi'))
+  SELECT m.id, m.session_id, m.time_updated AS updated, m.data, m.created_ms, m.completed_ms, s.directory
+  FROM m JOIN session s ON s.id = m.session_id
+  WHERE lower(trim(COALESCE(s.version,''))) LIKE 'desktop-%'
+    AND (s.time_created IS NULL
+         OR m.created_ms >= s.time_created * (CASE WHEN s.time_created <= 1e12 THEN 1000 ELSE 1 END))
+mode: delta
+key: [data@json.id, "$file.path & id"]
+match: { data@json.role: assistant, data@json.tokens: { $exists: true } }
+timestamp: created_ms
+fields:
+  input: data@json.tokens.input
+  cache_read: data@json.tokens.cache.read
+  cache_write: data@json.tokens.cache.write
+  output: "data@json.tokens.output + data@json.tokens.reasoning"
+cost_usd: data@json.cost
+duration_ms: "completed_ms - created_ms"
+context:
+  session: session_id
+  cwd: [directory, data@json.path.root, data@json.path.cwd]
+  model: [data@json.modelID, data@json.model.id]
+  vendor: [data@json.providerID, data@json.model.providerID]
+default_model: mimo-auto

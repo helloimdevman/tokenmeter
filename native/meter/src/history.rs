@@ -1,4 +1,4 @@
-//! hours.jsonl / rates.jsonl → 그래프 막대. overlay 가 칠한다.
+//! hours.jsonl + state의 `recent`·`hour` / rates.jsonl → 그래프 막대. overlay 가 칠한다.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -162,6 +162,15 @@ pub fn mktime_local(year: i32, month: u32, day: u32, hour: u32, minute: u32, isd
     unsafe { mktime(&mut tm) as f64 }
 }
 
+/// 시각 `ts`의 로컬 시간 칸 키 "YYYY-MM-DDTHH"와 그 정각의 유닉스 초.
+pub fn hour_slot(ts: f64) -> (String, i64) {
+    let c = civil_of(ts);
+    (
+        format!("{:04}-{:02}-{:02}T{:02}", c.year, c.month, c.day, c.hour),
+        mktime_local(c.year, c.month, c.day, c.hour, 0, c.isdst) as i64,
+    )
+}
+
 fn add_days(c: Civil, delta: i32) -> Civil {
     let ts = mktime_local(c.year, c.month, c.day, 12, 0, -1) + f64::from(delta) * 86400.0;
     civil_of(ts)
@@ -265,16 +274,34 @@ fn parse_rate(rec: &Value) -> Option<RateBucket> {
     Some((h, m))
 }
 
+/// 시간 칸마다 한 줄: hours.jsonl(같은 `h`는 마지막 줄) 위에 state의 `recent`, 그 위에 `hour`.
 pub fn load_hours(state: Option<&Value>) -> Vec<HourBucket> {
-    let mut rows = load_jsonl(hours_path(), hours_cache(), parse_hour);
+    let mut rows: Vec<HourBucket> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut put = |h: &str, p: &serde_json::Map<String, Value>| match index.get(h) {
+        Some(&i) => rows[i].1 = p.clone(),
+        None => {
+            index.insert(h.to_string(), rows.len());
+            rows.push((h.to_string(), p.clone()));
+        }
+    };
+    for (h, p) in load_jsonl(hours_path(), hours_cache(), parse_hour) {
+        put(&h, &p);
+    }
+    let recent = state.and_then(|s| s.get("recent")).and_then(Value::as_object);
+    let mut keys: Vec<&String> = recent.into_iter().flat_map(|book| book.keys()).collect();
+    keys.sort();
+    for h in keys {
+        if let Some(p) = recent.and_then(|book| book[h].get("p")).and_then(Value::as_object) {
+            put(h, p);
+        }
+    }
     if let Some(node) = state.and_then(|s| s.get("hour")) {
         if let (Some(h), Some(p)) = (
             node.get("h").and_then(Value::as_str),
             node.get("p").and_then(Value::as_object),
         ) {
-            if rows.last().map(|(k, _)| k.as_str()) != Some(h) {
-                rows.push((h.to_string(), p.clone()));
-            }
+            put(h, p);
         }
     }
     rows
@@ -795,6 +822,32 @@ mod tests {
             2
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_hours_prefers_state_and_last_line_per_hour() {
+        let (_g, _tmp) = crate::test_home("hist-merge");
+        let stamp = mktime_local(2026, 8, 11, 15, 0, -1);
+        let lines = [
+            json!({"h": "2026-08-11T09", "p": {"a": [1, 1.0, 1]}}),
+            json!({"h": "2026-08-11T10", "p": {"a": [3, 3.0, 1]}}),
+            json!({"h": "2026-08-11T09", "p": {"a": [2, 2.0, 1]}}),
+        ];
+        fs::write(hours_path(), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let state = json!({
+            "recent": {
+                "2026-08-11T12": {"t": 0, "w": 1, "p": {"a": [5, 5.0, 1]}},
+                "2026-08-11T10": {"t": 0, "w": 1, "p": {"a": [4, 4.0, 1]}},
+            },
+            "hour": {"h": "2026-08-11T15", "p": {"a": [6, 6.0, 1]}},
+        });
+        let rows = load_hours(Some(&state));
+        let keys: Vec<&str> = rows.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(keys, ["2026-08-11T09", "2026-08-11T10", "2026-08-11T12", "2026-08-11T15"], "칸마다 한 줄");
+        let s = series(&rows, "today", None, stamp);
+        let totals: Vec<f64> = [9, 10, 12, 15].iter().map(|&h| s.bars[h].total).collect();
+        assert_eq!(totals, [2.0, 4.0, 5.0, 6.0], "파일은 마지막 줄, 겹치면 state 쪽");
+        assert_eq!(s.total, 17.0, "같은 칸을 두 번 더하지 않는다");
     }
 
     #[test]

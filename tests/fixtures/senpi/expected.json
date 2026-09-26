@@ -1,0 +1,7 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/senpi.rs:41-72 (v3 record with cost), :74-100 (reasoning not added), :233-251 (compaction and custom_message skipped), :253-270 (row without model dropped, neighbour kept) (MIT © Junho Yeo)",
+  "steps": [{"calls": 5, "input": 13, "cache_read": 40625, "cache_write": 38573, "output": 103, "cost_usd": 0.0236225,
+             "by_model": {"claude-opus-5": {"calls": 5, "input": 13, "cache_read": 40625, "cache_write": 38573, "output": 103}},
+             "sessions": ["019fae75-f35c-7b20-8d6f-e6dea8f7d9f5", "senpi_ses_compaction", "senpi_ses_nomodel", "senpi_ses_reasoning"],
+             "vendor": "anthropic"}]
+}

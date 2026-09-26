@@ -1,0 +1,38 @@
+label: Devin CLI
+roots: ["${XDG_DATA_HOME:-~/.local/share}/devin/cli"]
+patterns: ["sessions.db"]
+format: sqlite
+# 행 하나가 요청 하나다. 재생·포크·압축이 같은 request_id 행을 다른 세션에까지 복사하므로 DB 전체의 request_id가 키다.
+mode: delta
+key: meta@json.request_id
+# 대기 행은 metrics 없이 들어가 제자리에서 고쳐 쓰이고, 갱신 시각 열이 없다: 커서 없이 바뀔 때마다 전체.
+# ponytail: 행 수만큼 JSON을 푼다. 느려지면 row_id 커서 + 대기 행만 다시 읽기.
+# 메시지 본문은 SQLite 밖으로 꺼내지 않는다(metadata만 뽑는다).
+query:
+  - |
+    SELECT m.row_id, m.session_id, json_extract(m.chat_message, '$.metadata') AS meta,
+           s.working_directory, NULLIF(s.model, 'adaptive') AS session_model
+    FROM message_nodes m LEFT JOIN sessions s ON s.id = m.session_id
+    WHERE json_valid(m.chat_message) AND json_extract(m.chat_message, '$.role') = 'assistant'
+    ORDER BY m.row_id
+  - |
+    SELECT row_id, session_id, json_extract(chat_message, '$.metadata') AS meta
+    FROM message_nodes
+    WHERE json_valid(chat_message) AND json_extract(chat_message, '$.role') = 'assistant'
+    ORDER BY row_id
+match:
+  meta@json.request_id: {$exists: true}
+  meta@json.metrics: {$exists: true}
+# 행의 created_at은 복사본이 들어간 시각이다. 생성 시각을 쓴다.
+timestamp: [meta@json.started_generation_at, meta@json.created_at]
+fields:
+  input: meta@json.metrics.input_tokens            # 캐시 제외
+  cache_read: meta@json.metrics.cache_read_tokens
+  cache_write: meta@json.metrics.cache_creation_tokens
+  output: meta@json.metrics.output_tokens
+duration_ms: meta@json.metrics.total_time_ms
+context:
+  session: session_id
+  cwd: working_directory
+  model: [meta@json.generation_model, session_model]
+default_model: default

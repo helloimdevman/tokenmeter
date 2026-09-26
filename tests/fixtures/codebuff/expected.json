@@ -1,0 +1,82 @@
+{
+  "source": "ccusage rust/adapters/codebuff/src/loader.rs:106-162 (project-a, project-b) (MIT © ryoppippi); tokscale crates/tokscale-core/src/sessions/codebuff.rs:442-531 (proj-c: metadata.usage, snake case codebuff.usage, runState), :563-605 (proj) (MIT © Junho Yeo); step-2 synthetic: proj chat rewritten with one more ai message",
+  "steps": [
+    {
+      "calls": 6,
+      "input": 3850,
+      "cache_read": 720,
+      "cache_write": 70,
+      "output": 1425,
+      "by_model": {
+        "claude-sonnet-4-20250514": {
+          "input": 1110,
+          "cache_read": 210,
+          "cache_write": 70,
+          "output": 455
+        },
+        "openai/gpt-5": {
+          "input": 2090,
+          "cache_read": 410,
+          "cache_write": 0,
+          "output": 850
+        },
+        "unknown": {
+          "input": 650,
+          "cache_read": 100,
+          "cache_write": 0,
+          "output": 120
+        }
+      },
+      "sessions": [
+        "manicode-dev|project-b|2026-01-02T03-04-05.000Z",
+        "manicode-staging|proj-c|2025-12-14T10-00-00.000Z",
+        "manicode|project-a|2026-01-02T03-04-05.000Z",
+        "manicode|proj|2025-12-20T12-00-00.000Z"
+      ]
+    },
+    {
+      "calls": 7,
+      "input": 3853,
+      "cache_read": 720,
+      "cache_write": 70,
+      "output": 1427,
+      "by_model": {
+        "claude-sonnet-4-20250514": {
+          "input": 1113,
+          "cache_read": 210,
+          "cache_write": 70,
+          "output": 457
+        },
+        "openai/gpt-5": {
+          "input": 2090,
+          "cache_read": 410,
+          "cache_write": 0,
+          "output": 850
+        },
+        "unknown": {
+          "input": 650,
+          "cache_read": 100,
+          "cache_write": 0,
+          "output": 120
+        }
+      },
+      "sessions": [
+        "manicode-dev|project-b|2026-01-02T03-04-05.000Z",
+        "manicode-staging|proj-c|2025-12-14T10-00-00.000Z",
+        "manicode|project-a|2026-01-02T03-04-05.000Z",
+        "manicode|proj|2025-12-20T12-00-00.000Z"
+      ]
+    }
+  ],
+  "ccusage": {
+    "cmd": "codebuff",
+    "env": {},
+    "totals": {
+      "input": 3963,
+      "cache_read": 720,
+      "cache_write": 70,
+      "output": 1427
+    }
+  },
+  "differs": "OpenAI-shaped usage (prompt_tokens / promptTokens) includes prompt_tokens_details.cached_tokens in the prompt count. ccusage and tokscale keep it in input and also count it as cache_read (project-b: 100 vs our 90; proj-c snake case: 750 vs our 650); we subtract it so cached tokens are counted once. Totals differ by 110 input."
+}

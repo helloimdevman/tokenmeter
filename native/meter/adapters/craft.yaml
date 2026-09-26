@@ -1,0 +1,33 @@
+label: Craft Agents
+# Pi 백엔드가 Craft 세션마다 쓰는 pi 기록 <workspace>/sessions/<sid>/.pi-sessions/*.jsonl.
+# Claude 백엔드는 ~/.claude/projects에 쓰고(claude-code가 셈) 여기에 쓰지 않는다. 세션 줄
+# sessions/<sid>/session.jsonl의 tokenUsage는 마지막 호출 스냅샷이라 읽지 않는다(craft.md §3).
+roots: ["${CRAFT_CONFIG_DIR:-~/.craft-agent}/workspaces"]
+patterns: ["**/sessions/*/.pi-sessions/*.jsonl"]
+# config.json에 적힌 옮긴 작업 공간
+roots_from:
+  - {file: "${CRAFT_CONFIG_DIR:-~/.craft-agent}/config.json", each: workspaces, path: rootPath,
+     patterns: ["sessions/*/.pi-sessions/*.jsonl"]}
+match:
+  type: message
+  message.role: assistant
+  message.model: {$exists: true}
+mode: delta
+# 포크 복사본은 원래 id·시각을 그대로 갖는다(pi 형식, pi.md §3·§7)
+key: [message.responseId, "id & timestamp"]
+timestamp: timestamp
+replay_gate: true
+fields:
+  # input은 캐시를 뺀 값, output은 추론을 포함한다(pi 형식)
+  input: message.usage.input
+  cache_read: message.usage.cacheRead
+  cache_write: message.usage.cacheWrite
+  output: message.usage.output
+cost_usd: message.usage.cost.total
+context:
+  # Craft 세션 id는 경로에만 있다
+  session: $file.dir[-2]
+  cwd: {path: cwd, when: {type: session}}
+  model: message.model
+  vendor: message.provider
+default_model: default

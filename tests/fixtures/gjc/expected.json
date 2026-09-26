@@ -1,0 +1,11 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/gjc.rs:233-253 (assistant row), :256-262 (service_tier_change skipped), :358-366 (embedded cost 1.25), :527-535 (source 9router), crates/tokscale-core/src/lib.rs:17326-17372 (depth-2 replay of an id-less row counted once, cost 0.03), scanner.rs:7928-7973 (XDG root without agent/) (MIT © Junho Yeo)",
+  "steps": [{"calls": 4, "input": 130, "cache_read": 10, "cache_write": 5, "output": 65, "cost_usd": 1.6,
+             "by_model": {"claude-sonnet-4": {"input": 100, "cache_read": 10, "cache_write": 5, "output": 50},
+                          "m": {"input": 10, "output": 5},
+                          "gpt-4o": {"input": 10, "output": 5},
+                          "some-model": {"input": 10, "output": 5}},
+             "sessions": ["9router-2026-01-01", "gjc_ses_001", "gjc_ses_007", "gjc_ses_replay_idless"],
+             "vendor": ["9router", "anthropic", "openai"]}],
+  "differs": "tokscale reports 9router rows as their own client; we keep them under gjc and carry 9router as the vendor (route). tokscale keeps an explicit cost 0 as 0; we price such rows from the table (spec F9), which does not arise in this fixture."
+}

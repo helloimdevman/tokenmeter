@@ -1,0 +1,13 @@
+{
+  "source": "TokenTracker test/mimo-parser.test.js:76-130 (MIT; msg_c1 moved to a desktop session, cwd changed); tokscale sessions/micode.rs:777-830, 924-1010, 1144-1193 (MIT; time_* columns and session times added); msg_u synthetic",
+  "steps": [
+    {"calls": 6, "input": 3340, "cache_read": 400, "cache_write": 50, "output": 1355, "cost_usd": 0.13,
+     "by_model": {"mimo-auto": {"input": 500, "cache_read": 100, "cache_write": 0, "output": 25},
+                  "mimo-v2.5-pro-ultraspeed": {"input": 30, "cache_read": 0, "cache_write": 0, "output": 10},
+                  "mimo-v2.5-pro": {"input": 2810, "cache_read": 300, "cache_write": 50, "output": 1320}},
+     "sessions": ["fork_session", "root_session", "ses_cli", "ses_mimo"],
+     "project": "work/mimo",
+     "vendor": ["mimo", "xiaomi"]}
+  ],
+  "differs": "tokscale counts the anthropic rows msg_c1..c3 (it has no mirror filter) and puts msg_desktop under micode-desktop; TokenTracker counts msg_desktop under mimo. We follow TokenTracker's provider filter and tokscale's desktop split."
+}

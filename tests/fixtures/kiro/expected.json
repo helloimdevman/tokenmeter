@@ -1,0 +1,6 @@
+{
+  "source": "TokenTracker test/kiro-dual-install.test.js:75-123 (MIT (c) 2026 xiufengsun): two installs whose AUTOINCREMENT ids both start at 1, input 100 + 200 + 1000 + 2000 + 3000 = 6300, output 630.",
+  "steps": [{"calls": 5, "input": 6300, "cache_read": 0, "cache_write": 0, "output": 630,
+             "by_model": {"agent": {"input": 6300, "output": 630}}}],
+  "differs": "The model column is usually the routing label agent; TokenTracker replaces it with a model from the .chat timeline (nearest window within 10 min), which we do not read. tokscale estimates chars/4 from .chat and execution snapshots instead of reading dev_data, so its totals are much lower. Rows are one request each: tokens_prompt is the whole prompt with no cache split."
+}

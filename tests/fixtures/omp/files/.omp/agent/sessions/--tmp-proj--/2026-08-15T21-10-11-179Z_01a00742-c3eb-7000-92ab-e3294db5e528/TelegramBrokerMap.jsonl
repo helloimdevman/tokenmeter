@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"01a00742-c3eb-7000-92ab-e3294db5e528-TelegramBrokerMap","timestamp":"2026-08-15T21:10:11.179Z","cwd":"/tmp/proj"}
+{"type":"message","id":"s1","parentId":null,"timestamp":"2026-08-15T21:10:20.000Z","message":{"role":"assistant","model":"claude-opus-5","provider":"anthropic","usage":{"input":12,"output":34,"cacheRead":0,"cacheWrite":0,"totalTokens":46}}}

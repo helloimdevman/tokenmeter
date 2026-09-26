@@ -3,7 +3,7 @@
 use crate::pricing::{cache_savings, cost_usd};
 use crate::watch::TokenDelta;
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,12 +14,49 @@ use tokenmeter_protocol::Label;
 const DAYS_KEPT: usize = 60;
 const HOURS_KEPT: usize = 24 * DAYS_KEPT;
 const RATES_KEPT: usize = 4 * 24 * DAYS_KEPT;
+/// 밀린 기록 창(스펙 4.4·4.6). 레코드 시각은 이보다 이르면 이 창의 끝 칸으로, `recent`는 이만큼만 둔다.
+const BACKLOG_SECS: f64 = 7.0 * 86_400.0;
+/// 레코드 시각이 지금보다 이만큼 이르면 밀린 기록이다. 라이브 속도·주의 상태를 건드리지 않는다.
+const LIVE_SECS: f64 = 120.0;
+/// `perf` 칸이 보는 최근 폴 수(스펙 14절).
+const PERF_POLLS: usize = 300;
+
+/// 데몬 watch 스레드의 폴 비용과 커밋 쓰기 바이트(스펙 14절 예산 확인).
+#[derive(Default)]
+pub struct Perf {
+    /// 최근 폴의 (시작 시각, ms, 전체 훑기였나).
+    polls: VecDeque<(f64, f64, bool)>,
+    scan_ms: f64,
+    write_bytes: u64,
+}
+
+impl Perf {
+    /// `poll_ms_p95`는 뜨거운 폴만, `scan_ms`는 마지막 전체 훑기,
+    /// `watch_cpu`는 창 안 폴 ms 합 ÷ 경과 시간(%), `write_bytes`는 이 데몬이 커밋으로 쓴 바이트 누계.
+    fn json(&self) -> Value {
+        let mut hot: Vec<f64> = self.polls.iter().filter(|p| !p.2).map(|p| p.1).collect();
+        hot.sort_by(f64::total_cmp);
+        let p95 = hot.get((hot.len() * 95).div_ceil(100).saturating_sub(1)).copied().unwrap_or(0.0);
+        let span = match (self.polls.front(), self.polls.back()) {
+            (Some(a), Some(b)) => b.0 + b.1 / 1000.0 - a.0,
+            _ => 0.0,
+        };
+        let busy: f64 = self.polls.iter().map(|p| p.1).sum();
+        let cpu = if span > 0.0 { busy / 1000.0 / span * 100.0 } else { 0.0 };
+        let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+        json!({"poll_ms_p95": r3(p95), "scan_ms": r3(self.scan_ms), "watch_cpu": r3(cpu), "write_bytes": self.write_bytes})
+    }
+}
 
 pub struct Meter {
     pub state: Value,
     session_history: usize,
     state_path: Option<PathBuf>,
     clock: Clock,
+    /// 마지막 커밋 때의 state. 리그 업로드는 이것으로 만든다(스펙 4.7).
+    committed: Value,
+    dirty: bool,
+    perf: Perf,
 }
 
 impl Default for Meter {
@@ -31,11 +68,15 @@ impl Default for Meter {
 impl Meter {
     pub fn new() -> Self {
         let clock = current_clock();
+        let state = default_state(&clock);
         Self {
-            state: default_state(&clock),
+            committed: state.clone(),
+            state,
             session_history: 500,
             state_path: None,
             clock,
+            dirty: false,
+            perf: Perf::default(),
         }
     }
 
@@ -46,14 +87,19 @@ impl Meter {
     fn load_from(path: PathBuf) -> Self {
         let clock = current_clock();
         let mut state = default_state(&clock);
+        let mut adopt = true;
         if let Some(Value::Object(mut saved)) = fs::read_to_string(&path)
             .ok()
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         {
+            adopt = !saved.contains_key("recent");
             saved.remove("live");
             let mut saved = Value::Object(saved);
             migrate_legacy(&mut saved);
             deep_merge(&mut state, saved);
+        }
+        if adopt {
+            adopt_hours(&mut state);
         }
         if let Some(obj) = state.as_object_mut() {
             obj.insert("version".into(), json!(2));
@@ -65,10 +111,13 @@ impl Meter {
             );
         }
         Self {
+            committed: state.clone(),
             state,
             session_history: 500,
             state_path: Some(path),
             clock,
+            dirty: false,
+            perf: Perf::default(),
         }
     }
 
@@ -85,20 +134,56 @@ impl Meter {
         self.resolve_project(&mut delta);
         let now = crate::watch::now_secs();
         self.refresh_clock(now);
-        let cost = cost_usd(
-            &delta.model,
-            delta.input_tokens,
-            delta.cache_read,
-            delta.cache_write,
-            delta.output_tokens,
-        );
-        let saved = cache_savings(&delta.model, delta.cache_read);
+        let local = delta.plan == "local";
+        let cost = match delta.cost_usd {
+            _ if local => 0.0,
+            Some(logged) if logged.is_finite() && logged > 0.0 => logged,
+            _ => cost_usd(
+                &delta.model,
+                delta.input_tokens,
+                delta.cache_read,
+                delta.cache_write,
+                delta.output_tokens,
+            ),
+        };
+        let saved = if local { 0.0 } else { cache_savings(&delta.model, delta.cache_read) };
         self.roll_today();
         self.roll_hour();
         self.roll_rate();
-        self.bucket_hour(&delta, cost);
+        self.dirty = true;
+        // 레코드 시각의 칸(스펙 4.6). 7일보다 이르면 7일 전 칸, 지금 칸보다 늦으면 지금 칸.
+        let at = if delta.at > 0.0 { delta.at.clamp(now - BACKLOG_SECS, now) } else { now };
+        let past = (at < now)
+            .then(|| crate::history::hour_slot(at))
+            .filter(|(key, _)| *key < self.clock.hour);
+        if delta.speed_only {
+            // 토큰은 다른 줄에서 이미 셌다. 기록된 API 시간 표본만 경로 셀에(스펙 10절).
+            let timed = (delta.duration_ms > 0).then(|| delta.duration_ms as f64 / 1000.0);
+            self.bucket_route(past.as_ref(), &delta, 0.0, timed);
+            return;
+        }
+        self.bucket_hour(past.as_ref(), &delta, cost);
 
-        for path in ["/total/totals", "/session/totals", "/today/totals"] {
+        let day = past
+            .as_ref()
+            .map(|(key, _)| key[..10].to_string())
+            .filter(|day| *day < self.clock.day);
+        let day_book = match day {
+            Some(day) => {
+                self.state
+                    .as_object_mut()
+                    .expect("state object")
+                    .entry("days")
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .expect("days object")
+                    .entry(day.as_str())
+                    .or_insert_with(|| Value::Object(totals()));
+                format!("/days/{day}")
+            }
+            None => "/today/totals".into(),
+        };
+        for path in ["/total/totals", "/session/totals", day_book.as_str()] {
             if let Some(book) = self.state.pointer_mut(path).and_then(Value::as_object_mut) {
                 accumulate(book, &delta, cost, saved);
             }
@@ -120,19 +205,20 @@ impl Meter {
                 .as_object_mut()
                 .expect("totals object");
             accumulate(book, &delta, cost, saved);
-            node.insert("last_seen".into(), json!(now));
+            node.insert("last_seen".into(), json!(number(node.get("last_seen")).max(at)));
             if *group == "models" && !delta.vendor.is_empty() {
                 node.insert("vendor".into(), json!(delta.vendor));
             }
         }
 
-        let timed = self.track_session(&delta, cost, saved, now, &axes);
-        self.bucket_route(&delta, cost, timed);
+        let timed = self.track_session(&delta, cost, saved, now, at, &axes);
+        self.bucket_route(past.as_ref(), &delta, cost, timed);
         if let Some(total) = self.state.get_mut("total").and_then(Value::as_object_mut) {
             total.insert("last_seen".into(), json!(now));
         }
-        touch_live(&delta);
-        let _ = self.save();
+        if at >= now - LIVE_SECS {
+            touch_live(&delta);
+        }
     }
 
     fn track_session(
@@ -141,6 +227,7 @@ impl Meter {
         cost: f64,
         saved: f64,
         now: f64,
+        at: f64,
         axes: &[(&str, String)],
     ) -> Option<f64> {
         if delta.session.is_empty() {
@@ -162,6 +249,7 @@ impl Meter {
 
         let mut new_tags = Vec::new();
         let mut rate: Option<(String, f64)> = None;
+        let mut logged = None;
         {
             let sessions = self
                 .state
@@ -175,7 +263,7 @@ impl Meter {
                 json!({
                     "service": delta.service, "project": delta.project, "cwd": delta.cwd,
                     "vendor": delta.vendor, "plan": nonempty(&delta.plan, "unknown"),
-                    "endpoint": delta.endpoint, "started_at": now, "seen": [], "totals": totals(),
+                    "endpoint": delta.endpoint, "started_at": at, "seen": [], "totals": totals(),
                 })
             });
             let rec = rec.as_object_mut().expect("session object");
@@ -206,7 +294,10 @@ impl Meter {
                     json!(int(rec.get("ctx_win")).max(delta.ctx_window)),
                 );
             }
-            if delta.output_tokens > 0 && !delta.subagent {
+            if delta.output_tokens > 0 && !delta.subagent && at < now - LIVE_SECS {
+                // 밀린 기록: 로그의 API 시간만 그 칸에. 라이브 속도·out_at·도착 간격 표본은 그대로.
+                logged = (delta.duration_ms > 0).then(|| delta.duration_ms as f64 / 1000.0);
+            } else if delta.output_tokens > 0 && !delta.subagent {
                 let stream = format!(
                     "{}/{}",
                     provider_of(&delta.endpoint, &delta.vendor),
@@ -228,7 +319,7 @@ impl Meter {
                 rec.insert("out_model".into(), json!(stream.clone()));
                 rate = (gap > 0.0).then_some((stream, gap));
             }
-            rec.insert("last_seen".into(), json!(now));
+            rec.insert("last_seen".into(), json!(number(rec.get("last_seen")).max(at)));
             let book = rec
                 .entry("totals")
                 .or_insert_with(|| Value::Object(totals()))
@@ -262,7 +353,7 @@ impl Meter {
             };
             add_int(group_node(&mut self.state, group, name), "sessions", 1);
         }
-        let timed = rate.as_ref().map(|(_, gap)| *gap);
+        let timed = rate.as_ref().map(|(_, gap)| *gap).or(logged);
         if let Some((stream, gap)) = rate {
             self.state.as_object_mut().expect("state object").insert(
                 "out_sec".into(),
@@ -380,37 +471,121 @@ impl Meter {
             .insert("today".into(), json!({"date": today, "totals": totals()}));
     }
 
+    /// 끝난 칸은 `recent`로 옮기고(스펙 4.6), 7일 지난 칸을 봉인한다.
     fn roll_hour(&mut self) {
         let hour = self.clock.hour.clone();
         if hour.is_empty() || self.state.pointer("/hour/h").and_then(Value::as_str) == Some(&hour) {
             return;
         }
+        let w = self.next_seq();
         let old = self.state.get("hour").cloned().unwrap_or_else(|| json!({}));
-        if old
+        let part = |key: &str| old.get(key).and_then(Value::as_object).cloned().unwrap_or_default();
+        let (p, r) = (part("p"), part("r"));
+        if let Some(h) = old
             .get("h")
             .and_then(Value::as_str)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-            && old
-                .get("p")
-                .and_then(Value::as_object)
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
+            .filter(|h| !h.is_empty() && !(p.is_empty() && r.is_empty()))
         {
-            append_limited(&data_dir().join("hours.jsonl"), &old, HOURS_KEPT);
+            let t = old.get("t").and_then(Value::as_i64).unwrap_or_else(|| key_start(h));
+            let cell = self
+                .state
+                .as_object_mut()
+                .expect("state object")
+                .entry("recent")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("recent book")
+                .entry(h)
+                .or_insert_with(|| json!({"t": t, "p": {}, "r": {}}))
+                .as_object_mut()
+                .expect("recent hour");
+            // 서쪽으로 시간대를 옮기면 같은 키가 이미 있다. 덮지 않고 더한다.
+            for (key, from) in [("p", &p), ("r", &r)] {
+                let into = cell.entry(key).or_insert_with(|| json!({}));
+                if let Some(into) = into.as_object_mut() {
+                    add_cells(into, from);
+                }
+            }
+            cell.insert("w".into(), json!(w));
         }
+        self.seal(crate::watch::now_secs());
         self.state
             .as_object_mut()
             .expect("state object")
-            .insert("hour".into(), json!({"h": hour, "p": {}, "r": {}}));
+            .insert("hour".into(), json!({"h": hour, "t": key_start(&hour), "p": {}, "r": {}}));
     }
 
-    fn bucket_hour(&mut self, delta: &TokenDelta, cost: f64) {
+    /// 7일이 지난 `recent` 칸을 hours.jsonl에 붙이고 뺀다. 커밋 밖이라, 붙인 뒤 커밋 전에 죽으면
+    /// 다음에 같은 칸을 또 봉인한다. hours.jsonl의 그 칸 마지막 줄과 같으면 붙이지 않는다.
+    fn seal(&mut self, now: f64) {
+        let cutoff = (now - BACKLOG_SECS) as i64 - 3600;
+        let Some(recent) = self.state.get_mut("recent").and_then(Value::as_object_mut) else {
+            return;
+        };
+        let mut old: Vec<String> = recent
+            .iter()
+            .filter(|(_, cell)| int(cell.get("t")) <= cutoff)
+            .map(|(key, _)| key.clone())
+            .collect();
+        if old.is_empty() {
+            return;
+        }
+        old.sort();
+        let path = data_dir().join("hours.jsonl");
+        let last: HashMap<String, Value> = sealed_hours(&path)
+            .into_iter()
+            .map(|line| (line["h"].as_str().unwrap_or_default().to_string(), line))
+            .collect();
+        let part = |line: &Value, key: &str| {
+            line.get(key)
+                .filter(|v| v.as_object().map_or(true, |m| !m.is_empty()))
+                .cloned()
+        };
+        let mut lines = Vec::new();
+        for key in old {
+            let Some(Value::Object(mut line)) = recent.remove(&key) else {
+                continue;
+            };
+            line.remove("w");
+            line.insert("h".into(), json!(key));
+            let line = Value::Object(line);
+            let same = last
+                .get(&key)
+                .is_some_and(|had| ["p", "r"].iter().all(|k| part(had, k) == part(&line, k)));
+            if !same {
+                lines.push(line);
+            }
+        }
+        append_limited(&path, &lines, HOURS_KEPT);
+    }
+
+    /// 델타가 들어갈 시간 칸: 지금 칸(`hour`) 또는 `recent`의 지난 칸. 지난 칸은 다음 커밋 번호를 `w`로 단다.
+    fn hour_book(&mut self, past: Option<&(String, i64)>) -> &mut Map<String, Value> {
+        let w = self.next_seq();
+        let state = self.state.as_object_mut().expect("state object");
+        let Some((key, t)) = past else {
+            return state.get_mut("hour").and_then(Value::as_object_mut).expect("hour book");
+        };
+        let book = state
+            .entry("recent")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .expect("recent book")
+            .entry(key.as_str())
+            .or_insert_with(|| json!({"t": t, "p": {}, "r": {}}))
+            .as_object_mut()
+            .expect("recent hour");
+        book.insert("w".into(), json!(w));
+        book
+    }
+
+    fn bucket_hour(&mut self, past: Option<&(String, i64)>, delta: &TokenDelta, cost: f64) {
         let name = nonempty(&delta.project, "(unknown)");
         let cell = self
-            .state
-            .pointer_mut("/hour/p")
-            .and_then(Value::as_object_mut)
+            .hour_book(past)
+            .entry("p")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
             .expect("hour book")
             .entry(name)
             .or_insert_with(|| json!([0, 0.0, 0]))
@@ -418,17 +593,13 @@ impl Meter {
             .expect("hour cell");
         cell[0] = json!(int(cell.first()) + delta.total());
         cell[1] = json!(number(cell.get(1)) + cost);
-        cell[2] = json!(int(cell.get(2)) + 1);
+        cell[2] = json!(int(cell.get(2)) + i64::from(delta.calls));
     }
 
     /// 리그 동기화용 시간 칸: (도구, 경로, 요금제, 모델)마다 한 셀. 라벨은 모두 올려도 되는 값이다.
-    fn bucket_route(&mut self, delta: &TokenDelta, cost: f64, timed: Option<f64>) {
-        let hour = self
-            .state
-            .get_mut("hour")
-            .and_then(Value::as_object_mut)
-            .expect("hour book");
-        let book = hour
+    fn bucket_route(&mut self, past: Option<&(String, i64)>, delta: &TokenDelta, cost: f64, timed: Option<f64>) {
+        let book = self
+            .hour_book(past)
             .entry("r")
             .or_insert_with(|| json!({}))
             .as_object_mut()
@@ -438,11 +609,19 @@ impl Meter {
             .or_insert_with(|| json!([0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0]))
             .as_array_mut()
             .expect("route cell");
-        let counts = [delta.input_tokens, delta.output_tokens, delta.cache_read, delta.cache_write, 1];
-        for (i, n) in counts.into_iter().enumerate() {
-            cell[i] = json!(int(cell.get(i)) + n);
+        if !delta.speed_only {
+            let counts = [
+                delta.input_tokens,
+                delta.output_tokens,
+                delta.cache_read,
+                delta.cache_write,
+                i64::from(delta.calls),
+            ];
+            for (i, n) in counts.into_iter().enumerate() {
+                cell[i] = json!(int(cell.get(i)) + n);
+            }
+            cell[5] = json!(number(cell.get(5)) + cost);
         }
-        cell[5] = json!(number(cell.get(5)) + cost);
         if let Some(secs) = timed {
             let at = if delta.duration_ms > 0 { 6 } else { 8 };
             cell[at] = json!(int(cell.get(at)) + delta.output_tokens);
@@ -467,7 +646,7 @@ impl Meter {
                 .map(|v| !v.is_empty())
                 .unwrap_or(false)
         {
-            append_limited(&data_dir().join("rates.jsonl"), &old, RATES_KEPT);
+            append_limited(&data_dir().join("rates.jsonl"), &[old], RATES_KEPT);
         }
         self.state
             .as_object_mut()
@@ -475,7 +654,49 @@ impl Meter {
             .insert("rate".into(), json!({"h": slot, "m": {}}));
     }
 
-    pub fn save(&mut self) -> std::io::Result<()> {
+    /// state.json을 커밋 번호 `seq`로 쓴다(압축 JSON, 임시 파일 → 이름 바꾸기, 스펙 4.2).
+    /// 성공하면 커밋 스냅샷을 갱신한다. `ingest`는 쓰지 않고 데몬이 주기적으로 부른다.
+    pub fn commit(&mut self, seq: u64) -> std::io::Result<()> {
+        let perf = self.perf.json();
+        let obj = self.state.as_object_mut().expect("state object");
+        obj.insert("seq".into(), json!(seq));
+        obj.insert("perf".into(), perf);
+        self.save()?;
+        self.committed = self.state.clone();
+        self.dirty = false;
+        Ok(())
+    }
+
+    pub fn next_seq(&self) -> u64 {
+        self.state.get("seq").and_then(Value::as_u64).unwrap_or(0) + 1
+    }
+
+    /// 데몬 폴 하나의 비용(`at` 시작 유닉스 초, `ms` 걸린 시간).
+    pub fn record_poll(&mut self, at: f64, ms: f64, full: bool) {
+        if full {
+            self.perf.scan_ms = ms;
+        }
+        self.perf.polls.push_back((at, ms, full));
+        while self.perf.polls.len() > PERF_POLLS {
+            self.perf.polls.pop_front();
+        }
+    }
+
+    /// state.json 밖에서 커밋이 쓴 바이트(`readers/`).
+    pub fn add_write_bytes(&mut self, n: u64) {
+        self.perf.write_bytes += n;
+    }
+
+    pub fn committed(&self) -> &Value {
+        &self.committed
+    }
+
+    /// 마지막 커밋 뒤 바뀐 것이 있다.
+    pub fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn save(&mut self) -> std::io::Result<()> {
         let Some(path) = self.state_path.clone() else {
             return Ok(());
         };
@@ -487,7 +708,9 @@ impl Meter {
             .expect("state object")
             .insert("updated_at".into(), json!(crate::watch::now_secs()));
         let tmp = path.with_file_name(format!("state.json.{}.tmp", std::process::id()));
-        fs::write(&tmp, serde_json::to_string_pretty(&self.state)?)?;
+        let text = serde_json::to_string(&self.state)?;
+        self.perf.write_bytes += text.len() as u64;
+        fs::write(&tmp, text)?;
         match fs::rename(&tmp, &path) {
             Ok(()) => Ok(()),
             Err(err) => {
@@ -523,6 +746,8 @@ impl Meter {
     }
 
     pub fn reset_stats(&mut self) {
+        // 커밋 번호는 이어 간다. 리그 커서가 새 칸을 지난 번호로 보지 않게.
+        let seq = self.next_seq();
         let clock = current_clock();
         let now = crate::watch::now_secs();
         self.state = default_state(&clock);
@@ -531,7 +756,7 @@ impl Meter {
         }
         let _ = fs::remove_file(data_dir().join("hours.jsonl"));
         let _ = fs::remove_file(data_dir().join("rates.jsonl"));
-        let _ = self.save();
+        let _ = self.commit(seq);
     }
 
     pub fn add_live(
@@ -640,7 +865,7 @@ fn default_state(clock: &Clock) -> Value {
         "total": {"started_at": now, "last_seen": 0.0, "sessions": 0, "totals": totals()},
         "session": {"started_at": now, "totals": totals()},
         "today": {"date": clock.day, "totals": totals()},
-        "days": {}, "hour": {"h": clock.hour, "p": {}, "r": {}},
+        "days": {}, "hour": {"h": clock.hour, "p": {}, "r": {}}, "recent": {},
         "rate": {"h": clock.slot, "m": {}}, "sessions": {},
         "projects": {}, "services": {}, "models": {}, "vendors": {}, "plans": {}, "endpoints": {},
         "updated_at": now,
@@ -654,7 +879,66 @@ fn accumulate(book: &mut Map<String, Value>, delta: &TokenDelta, cost: f64, save
     add_int(book, "output_tokens", delta.output_tokens);
     add_number(book, "cost_usd", cost);
     add_number(book, "cache_saved_usd", saved);
-    add_int(book, "calls", 1);
+    add_int(book, "calls", i64::from(delta.calls));
+}
+
+/// 칸(`[토큰, 비용, 호출]`, 경로 셀)을 자리마다 더한다. 정수끼리는 정수로.
+fn add_cells(into: &mut Map<String, Value>, from: &Map<String, Value>) {
+    for (name, cell) in from {
+        let Some(have) = into.get_mut(name).and_then(Value::as_array_mut) else {
+            into.insert(name.clone(), cell.clone());
+            continue;
+        };
+        for (i, v) in cell.as_array().into_iter().flatten().enumerate() {
+            let sum = match (have.get(i).and_then(Value::as_i64), v.as_i64()) {
+                (Some(a), Some(b)) => json!(a + b),
+                _ => json!(number(have.get(i)) + number(Some(v))),
+            };
+            if i < have.len() {
+                have[i] = sum;
+            } else {
+                have.push(sum);
+            }
+        }
+    }
+}
+
+/// 로컬 시각 칸 키 "YYYY-MM-DDTHH"가 시작하는 유닉스 초. 읽지 못하면 0.
+fn key_start(key: &str) -> i64 {
+    crate::history::slot_start(&format!("{key}:00")) as i64
+}
+
+/// hours.jsonl의 줄(`h`가 있는 것만, 파일 순서).
+fn sealed_hours(path: &Path) -> Vec<Value> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line.get("h").and_then(Value::as_str).is_some_and(|h| !h.is_empty()))
+        .collect()
+}
+
+/// `recent`가 없는 0.1.x 상태: 7일 안의 hours.jsonl 줄을 `recent`로 옮긴다(w = 0, 스펙 4.6).
+/// 파일은 고치지 않는다. CLI도 load만 하고 커밋하지 않으며, 봉인은 같은 줄을 다시 붙이지 않는다.
+fn adopt_hours(state: &mut Value) {
+    let cutoff = (crate::watch::now_secs() - BACKLOG_SECS) as i64 - 3600;
+    let current = state
+        .pointer("/hour/h")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let Some(recent) = state.get_mut("recent").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for line in sealed_hours(&data_dir().join("hours.jsonl")) {
+        let h = line["h"].as_str().unwrap_or_default().to_string();
+        let t = key_start(&h);
+        if h == current || t <= cutoff {
+            continue;
+        }
+        let part = |key: &str| line.get(key).cloned().unwrap_or_else(|| json!({}));
+        recent.insert(h, json!({"t": t, "w": 0, "p": part("p"), "r": part("r")}));
+    }
 }
 
 fn group_node<'a>(state: &'a mut Value, group: &str, name: &str) -> &'a mut Map<String, Value> {
@@ -708,8 +992,9 @@ fn nonempty(value: &str, fallback: &str) -> String {
     }
 }
 
+/// 경로 칸의 라벨(client, route, plan, model).
 /// 사용자가 추가한 서비스, 사설 호스트, 사내 모델 이름은 고정된 말로 바뀐다.
-fn route_key(delta: &TokenDelta) -> String {
+pub fn route_labels(delta: &TokenDelta) -> [String; 4] {
     let client = if crate::watch::is_builtin_service(&delta.service) {
         delta.service.as_str()
     } else {
@@ -718,16 +1003,19 @@ fn route_key(delta: &TokenDelta) -> String {
     // 요금제는 기본 서비스가 내는 값만 그대로 둔다. services.yaml에 사용자가 적은 계약명은 새지 않게 other로.
     let plan = match delta.plan.as_str() {
         "" => "unknown",
-        p @ ("subscription" | "api" | "unknown") => p,
+        p @ ("subscription" | "api" | "local" | "unknown") => p,
         _ => "other",
     };
-    format!(
-        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+    [
         Label::Client.clean(client),
         Label::Route.clean(&crate::board::public_label(&delta.endpoint)),
-        plan,
-        crate::pricing::public_model(&delta.model)
-    )
+        plan.to_string(),
+        crate::pricing::public_model(&delta.model).to_string(),
+    ]
+}
+
+fn route_key(delta: &TokenDelta) -> String {
+    route_labels(delta).join("\u{1f}")
 }
 
 fn tokens_of(value: &Value) -> i64 {
@@ -872,15 +1160,17 @@ fn current_clock() -> Clock {
     }
 }
 
-fn append_limited(path: &Path, value: &Value, cap: usize) {
-    let Ok(line) = serde_json::to_string(value) else {
+fn append_limited(path: &Path, values: &[Value], cap: usize) {
+    if values.is_empty() {
         return;
-    };
+    }
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{line}");
+        for value in values {
+            let _ = writeln!(file, "{value}");
+        }
     }
     let Ok(text) = fs::read_to_string(path) else {
         return;
@@ -948,13 +1238,18 @@ mod tests {
         assert_eq!(state["services"]["claude-code"]["totals"]["output_tokens"], 1000);
         assert_eq!(state["models"]["claude-opus-5"]["totals"]["cache_read"], 1000);
         assert!(state.get("live_count").is_some());
+        meter.commit(meter.next_seq()).unwrap();
         assert_eq!(
             Meter::load_test(path).state["total"]["totals"]["input_tokens"],
             101_000,
             "원자적으로 저장되고 다시 열면 그대로 읽힌다"
         );
 
+        meter.ingest(TokenDelta { at: crate::watch::now_secs() - 3.0 * 3600.0, ..out(5, "p") });
+        assert_eq!(meter.state["recent"].as_object().unwrap().len(), 1);
         meter.reset_stats();
+        assert_eq!(meter.state["recent"], json!({}), "리셋은 지난 칸도 비운다");
+        assert_eq!((meter.state["seq"].clone(), meter.dirty()), (json!(2), false), "커밋 번호는 이어 간다");
         assert_eq!(meter.state["total"]["totals"]["input_tokens"], 0);
         assert_eq!(meter.state["today"]["totals"]["cost_usd"], 0.0);
         assert_eq!((meter.state["projects"].clone(), meter.state["models"].clone()), (json!({}), json!({})));
@@ -1036,30 +1331,220 @@ mod tests {
     }
 
     #[test]
-    fn hour_rollover_appends_hours_jsonl_and_reset_removes_it() {
+    fn hour_rollover_goes_to_recent_and_reset_removes_it() {
         let (_g, _tmp) = crate::test_home("hours");
         let hours = data_dir().join("hours.jsonl");
         let mut meter = Meter::new();
         meter.ingest(out(100, "a"));
         assert_eq!(meter.state["hour"]["p"]["a"][0], 100);
-        assert!(!hours.exists(), "진행 중인 시간은 아직 파일로 안 나간다");
 
-        meter.state["hour"]["h"] = json!("2020-01-01T00");
+        let now = crate::watch::now_secs();
+        let (two, t) = crate::history::hour_slot(now - 2.0 * 3600.0);
+        meter.state["hour"]["h"] = json!(two);
         meter.ingest(out(7, "b"));
-        let text = fs::read_to_string(&hours).unwrap();
-        let done: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        assert_eq!(done.len(), 1);
-        assert_eq!(done[0]["h"], "2020-01-01T00");
-        assert_eq!((done[0]["p"]["a"][0].clone(), done[0]["p"]["a"][2].clone()), (json!(100), json!(1)));
+        let done = &meter.state["recent"][two.as_str()];
+        assert_eq!((done["p"]["a"][0].clone(), done["p"]["a"][2].clone()), (json!(100), json!(1)));
+        assert_eq!((done["t"].clone(), done["w"].clone()), (json!(t), json!(1)), "칸의 시각과 바뀐 커밋 번호");
+        assert!(!hours.exists(), "끝난 칸은 7일 동안 recent에 있다");
         assert_eq!(keys(&meter.state["hour"]["p"]), ["b"], "새 시간은 새 버킷");
 
-        meter.state["hour"] = json!({"h": "2020-01-01T01", "p": {}});
+        let (one, _) = crate::history::hour_slot(now - 3600.0);
+        meter.state["hour"] = json!({"h": one, "p": {}});
         meter.ingest(out(1, "c"));
-        assert_eq!(fs::read_to_string(&hours).unwrap().lines().count(), 1, "토큰 없는 시간은 남기지 않는다");
+        assert!(meter.state["recent"].get(&one).is_none(), "토큰 없는 시간은 남기지 않는다");
 
+        fs::write(&hours, "{\"h\":\"2020-01-01T00\",\"p\":{}}\n").unwrap();
         meter.reset_stats();
         assert_eq!(meter.state["hour"]["p"], json!({}));
         assert!(!hours.exists(), "리셋은 시간 기록도 지운다");
+    }
+
+    #[test]
+    fn roll_hour_moves_to_recent_and_seals_once() {
+        let (_g, tmp) = crate::test_home("seal");
+        let path = tmp.join("state.json");
+        let hours = data_dir().join("hours.jsonl");
+        let now = crate::watch::now_secs();
+        let slot = |ago: f64| crate::history::hour_slot(now - ago);
+        let (k2, _) = slot(2.0 * 3600.0);
+        let ((k6, t6), (k8, t8), (k9, t9)) = (slot(6.0 * 86_400.0), slot(8.0 * 86_400.0), slot(9.0 * 86_400.0));
+        let cell = |n: i64| json!({"x": [n, 0.5, 1]});
+        // k9는 전에 붙인 줄이 있지만 그 뒤 값이 바뀌었다(0.1.x에서 옮긴 칸에 밀린 기록이 더해짐).
+        fs::write(&hours, format!("{}\n", json!({"h": k9, "p": cell(1)}))).unwrap();
+        let mut meter = Meter::load_test(path.clone());
+        meter.state["recent"] = json!({
+            k6.as_str(): {"t": t6, "w": 1, "p": cell(6), "r": {}},
+            k8.as_str(): {"t": t8, "w": 1, "p": cell(8), "r": {}},
+            k9.as_str(): {"t": t9, "w": 1, "p": cell(9), "r": {}},
+        });
+        meter.state["hour"] = json!({"h": k2, "p": {"a": [100, 1.0, 1]}, "r": {}});
+        meter.commit(1).unwrap();
+
+        meter.ingest(out(7, "b"));
+        assert_eq!(keys(&meter.state["recent"]), [k6.clone(), k2.clone()]);
+        assert_eq!(meter.state["recent"][k2.as_str()]["p"]["a"][0], 100, "끝난 칸은 recent로");
+        assert_eq!(meter.state["recent"][k2.as_str()]["w"], 2);
+        let sealed = || -> Vec<(String, i64)> {
+            fs::read_to_string(&hours)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap())
+                .map(|l| (l["h"].as_str().unwrap().to_string(), int(l.pointer("/p/x/0"))))
+                .collect()
+        };
+        let want = vec![(k9.clone(), 1), (k9.clone(), 9), (k8.clone(), 8)];
+        assert_eq!(sealed(), want, "7일 지난 칸만, 바뀐 칸은 다시(읽을 때 마지막 줄)");
+
+        // 봉인하고 커밋하기 전에 죽었다: 커밋된 recent에는 k8·k9가 아직 있다.
+        let mut again = Meter::load_test(path);
+        again.ingest(out(7, "b"));
+        assert_eq!(sealed(), want, "같은 칸을 두 번 붙이지 않는다");
+        assert!(again.state["recent"].get(&k8).is_none() && again.state["recent"].get(&k2).is_some());
+    }
+
+    #[test]
+    fn first_load_moves_recent_hours_jsonl_lines() {
+        let (_g, tmp) = crate::test_home("adopt");
+        let path = tmp.join("state.json");
+        let hours = data_dir().join("hours.jsonl");
+        let now = crate::watch::now_secs();
+        let slot = |ago: f64| crate::history::hour_slot(now - ago);
+        let ((k3, t3), (k2d, _), (k10d, _)) = (slot(3.0 * 3600.0), slot(2.0 * 86_400.0), slot(10.0 * 86_400.0));
+        let lines = [
+            json!({"h": k10d, "p": {"x": [1, 0.1, 1]}}),
+            json!({"h": k3, "p": {"x": [1, 0.1, 1]}, "r": {"c": [1, 1, 0, 0, 1, 0.1, 0, 0, 0, 0]}}),
+            json!({"h": k2d, "p": {"x": [2, 0.2, 1]}}),
+            json!({"h": k3, "p": {"x": [3, 0.3, 1]}, "r": {"c": [3, 3, 0, 0, 1, 0.3, 0, 0, 0, 0]}}),
+        ];
+        fs::write(&hours, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        fs::write(&path, json!({"version": 2, "total": {"totals": {"output_tokens": 9}}}).to_string()).unwrap();
+
+        let meter = Meter::load_test(path.clone());
+        let recent = &meter.state["recent"];
+        assert_eq!(keys(recent), [k2d.clone(), k3.clone()], "7일 안의 줄만");
+        assert_eq!(recent[k3.as_str()]["p"]["x"][0], 3, "같은 칸은 마지막 줄");
+        assert_eq!(recent[k3.as_str()]["r"]["c"][1], 3);
+        assert_eq!((recent[k3.as_str()]["w"].clone(), recent[k3.as_str()]["t"].clone()), (json!(0), json!(t3)));
+        assert_eq!(recent[k2d.as_str()]["r"], json!({}));
+        assert_eq!(fs::read_to_string(&hours).unwrap().lines().count(), 4, "파일은 고치지 않는다");
+
+        fs::write(&path, json!({"recent": {}}).to_string()).unwrap();
+        assert_eq!(Meter::load_test(path).state["recent"], json!({}), "recent가 있으면(비어도) 다시 옮기지 않는다");
+    }
+
+    #[test]
+    fn ingest_does_not_write_until_commit() {
+        let (_g, tmp) = crate::test_home("no-write");
+        let path = tmp.join("state.json");
+        let mut meter = Meter::load_test(path.clone());
+        assert!(!meter.dirty());
+        meter.ingest(out(10, "p"));
+        meter.ingest(TokenDelta { speed_only: true, duration_ms: 1000, ..out(10, "p") });
+        assert!(!path.exists() && meter.dirty(), "델타마다 쓰지 않는다");
+        assert_eq!(meter.committed()["total"]["totals"]["output_tokens"], 0, "커밋 스냅샷은 그대로");
+        meter.commit(meter.next_seq()).unwrap();
+        assert!(path.exists() && !meter.dirty());
+    }
+
+    #[test]
+    fn commit_writes_compact_json_with_seq() {
+        let (_g, tmp) = crate::test_home("commit");
+        let path = tmp.join("state.json");
+        let mut meter = Meter::load_test(path.clone());
+        assert_eq!(meter.next_seq(), 1);
+        meter.ingest(out(10, "p"));
+        meter.commit(7).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains('\n') && !text.contains(": "), "들여쓰기 없는 압축 JSON");
+        let saved: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((saved["seq"].clone(), meter.next_seq()), (json!(7), 8));
+        assert_eq!(meter.committed(), &meter.state);
+        meter.ingest(out(5, "p"));
+        assert_eq!(meter.committed()["total"]["totals"]["output_tokens"], 10, "다음 커밋까지 스냅샷은 그대로");
+        assert_eq!(Meter::load_test(path).next_seq(), 8, "다시 떠도 번호를 잇는다");
+        assert!(!tmp.read_dir().unwrap().any(|e| e.unwrap().path().extension().is_some_and(|x| x == "tmp")), "임시 파일은 남지 않는다");
+    }
+
+    #[test]
+    fn past_record_goes_to_its_hour_and_day() {
+        let (_g, _tmp) = crate::test_home("past");
+        let mut meter = Meter::new();
+        meter.commit(4).unwrap();
+        let now = crate::watch::now_secs();
+        let at = now - 3.0 * 3600.0;
+        let (key, t) = crate::history::hour_slot(at);
+        meter.ingest(TokenDelta { at, input_tokens: 10, ..out(100, "p") });
+        let cell = &meter.state["recent"][key.as_str()];
+        assert_eq!((cell["t"].clone(), cell["w"].clone()), (json!(t), json!(5)), "칸의 시각과 다음 커밋 번호");
+        assert_eq!(cell["p"]["p"][0], 110);
+        assert_eq!(cell["r"].as_object().unwrap().len(), 1);
+        assert_eq!((meter.state["hour"]["p"].clone(), meter.state["hour"]["r"].clone()), (json!({}), json!({})), "지금 칸은 그대로");
+        let day = &key[..10];
+        let book = if meter.state["today"]["date"] == day { &meter.state["today"]["totals"] } else { &meter.state["days"][day] };
+        assert_eq!(book["output_tokens"], 100);
+
+        let yesterday = now - 30.0 * 3600.0;
+        let (key, _) = crate::history::hour_slot(yesterday);
+        meter.ingest(TokenDelta { at: yesterday, ..out(7, "p") });
+        assert_eq!(meter.state["days"][&key[..10]]["output_tokens"], 7, "지난 날은 days에");
+        assert_eq!(meter.state["days"][&key[..10]]["calls"], 1);
+        assert_eq!(meter.state["total"]["totals"]["output_tokens"], 107);
+        assert_ne!(meter.state["today"]["totals"]["output_tokens"], 107, "오늘에는 더하지 않는다");
+    }
+
+    #[test]
+    fn at_is_clamped_to_seven_days() {
+        let (_g, _tmp) = crate::test_home("clamp");
+        let mut meter = Meter::new();
+        let before = crate::watch::now_secs();
+        meter.ingest(TokenDelta { at: before - 8.0 * 86_400.0, ..out(5, "p") });
+        let after = crate::watch::now_secs();
+        let recent = meter.state["recent"].as_object().unwrap();
+        assert_eq!(recent.len(), 1);
+        let (key, cell) = recent.iter().next().unwrap();
+        let t = number(cell.get("t"));
+        assert!(t > before - BACKLOG_SECS - 3600.0 && t <= after - BACKLOG_SECS, "7일 전 칸: {key} {t}");
+        assert_eq!(meter.state["days"][&key[..10]]["output_tokens"], 5);
+    }
+
+    #[test]
+    fn backlog_delta_does_not_touch_live_rate() {
+        let (_g, _tmp) = crate::test_home("backlog");
+        let mut meter = Meter::new();
+        let base = TokenDelta {
+            service: "claude-code".into(),
+            session: "s1".into(),
+            endpoint: "https://api.anthropic.com".into(),
+            ..out(100, "p")
+        };
+        let live = meter.add_live("claude-code", "s1", "p", "/tmp/p", "", "UserPromptSubmit");
+        meter.ingest(base.clone());
+        meter.state["sessions"]["claude-code/s1"]["out_at"] = json!(crate::watch::now_secs() - 10.0);
+        meter.ingest(base.clone());
+        assert_eq!(meter.state["rate"]["m"].as_object().unwrap().len(), 1, "도착 간격 표본이 있다");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::options().write(true).open(&live).unwrap().set_modified(old).unwrap();
+        let before = meter.state.clone();
+
+        let at = crate::watch::now_secs() - 3.0 * 3600.0;
+        meter.ingest(TokenDelta { at, output_tokens: 500, duration_ms: 4000, ..base.clone() });
+        let (rec, was) = (&meter.state["sessions"]["claude-code/s1"], &before["sessions"]["claude-code/s1"]);
+        assert_eq!(rec["totals"]["output_tokens"], 700, "세션 합계는 더한다");
+        for key in ["last_seen", "out_at", "out_model"] {
+            assert_eq!(rec[key], was[key], "{key}");
+        }
+        assert_eq!((meter.state["rate"].clone(), meter.state["out_sec"].clone()), (before["rate"].clone(), before["out_sec"].clone()), "라이브 속도 표본은 그대로");
+        let age = live.metadata().unwrap().modified().unwrap().elapsed().unwrap().as_secs();
+        assert!(age >= 3500, "라이브 파일(주의 상태)을 건드리지 않는다: {age}s");
+        assert_eq!(meter.state["hour"], before["hour"], "지금 칸은 그대로");
+        let (key, _) = crate::history::hour_slot(at);
+        let cells = meter.state["recent"][key.as_str()]["r"].as_object().unwrap();
+        let cell = cells.values().next().unwrap();
+        assert_eq!((cell[1].clone(), cell[6].clone(), cell[7].clone(), cell[9].clone()), (json!(500), json!(500), json!(4000), json!(0)), "로그의 API 시간은 그 칸의 api_*에");
+
+        meter.ingest(TokenDelta { at, session: "s2".into(), ..base });
+        assert_eq!(meter.state["sessions"]["claude-code/s2"]["last_seen"], json!(at), "처음 본 세션은 레코드 시각");
+        assert_eq!(meter.state["sessions"]["claude-code/s2"]["started_at"], json!(at));
     }
 
     #[test]
@@ -1310,6 +1795,95 @@ mod tests {
     }
 
     #[test]
+    fn logged_cost_wins_over_table_and_local_plan_is_free() {
+        let (_g, _tmp) = crate::test_home("logged-cost");
+        let table = cost_usd("claude-opus-5", 0, 1000, 0, 1000);
+        assert!(table > 0.0);
+        let book = |cost: Option<f64>, plan: &str| {
+            let mut meter = Meter::new();
+            meter.ingest(TokenDelta {
+                cache_read: 1000,
+                cost_usd: cost,
+                plan: plan.into(),
+                ..out(1000, "p")
+            });
+            meter.state["total"]["totals"].clone()
+        };
+        let cost = |cost: Option<f64>, plan: &str| number(book(cost, plan).get("cost_usd"));
+        assert_eq!(cost(Some(0.5), "api"), 0.5, "로그의 비용이 가격표를 이긴다");
+        assert_eq!(cost(Some(0.0), "api"), table, "0은 가격표로");
+        assert_eq!(cost(None, "subscription"), table);
+        assert_eq!(cost(Some(f64::NAN), "api"), table, "유한하지 않으면 가격표로");
+        assert_eq!(cost(Some(0.5), "local"), 0.0, "local 요금제는 로그의 비용보다 먼저 0");
+        assert_eq!(number(book(None, "local").get("cache_saved_usd")), 0.0, "공짜에서 아낀 돈은 없다");
+    }
+
+    #[test]
+    fn calls_follow_the_delta() {
+        let (_g, _tmp) = crate::test_home("calls-delta");
+        assert_eq!(TokenDelta::default().calls, 1, "2.2 전까지 델타마다 1");
+        let mut meter = Meter::new();
+        let base = TokenDelta {
+            service: "claude-code".into(),
+            session: "s1".into(),
+            ..out(10, "p")
+        };
+        meter.ingest(base.clone());
+        meter.ingest(TokenDelta { calls: 0, ..base.clone() });
+        for path in ["/total/totals", "/today/totals", "/session/totals", "/models/claude-opus-5/totals", "/sessions/claude-code~1s1/totals"] {
+            let book = meter.state.pointer(path).unwrap();
+            assert_eq!((book["calls"].clone(), book["output_tokens"].clone()), (json!(1), json!(20)), "{path}");
+        }
+        let cells = meter.state["hour"]["r"].as_object().unwrap();
+        let cell = cells.values().next().unwrap();
+        assert_eq!((cells.len(), cell[1].clone(), cell[4].clone()), (1, json!(20), json!(1)));
+        assert_eq!(meter.state["hour"]["p"]["p"][2], 1, "시간 칸의 호출 수도");
+    }
+
+    #[test]
+    fn speed_only_touches_only_timing_columns() {
+        let (_g, _tmp) = crate::test_home("speed-only");
+        let mut meter = Meter::new();
+        let base = TokenDelta {
+            service: "claude-code".into(),
+            session: "s1".into(),
+            endpoint: "https://api.anthropic.com".into(),
+            ..out(100, "p")
+        };
+        meter.ingest(base.clone());
+        let before = meter.state.clone();
+        meter.ingest(TokenDelta {
+            output_tokens: 300,
+            duration_ms: 6000,
+            calls: 0,
+            speed_only: true,
+            ..base
+        });
+        let mut after = meter.state.clone();
+        let cells = after["hour"]["r"].as_object_mut().unwrap();
+        assert_eq!(cells.len(), 1, "{cells:?}");
+        let cell = cells.values_mut().next().unwrap();
+        assert_eq!((cell[6].clone(), cell[7].clone()), (json!(300), json!(6000)), "api_out·api_ms에만");
+        (cell[6], cell[7]) = (json!(0), json!(0));
+        assert_eq!(after, before, "토큰·비용·세션·일 합계·라이브 속도는 그대로");
+    }
+
+    #[test]
+    fn route_plan_keeps_local() {
+        let (_g, _tmp) = crate::test_home("route-local");
+        let plan = |plan: &str| {
+            route_labels(&TokenDelta {
+                service: "claude-code".into(),
+                plan: plan.into(),
+                ..TokenDelta::default()
+            })[2]
+                .clone()
+        };
+        assert_eq!(plan("local"), "local");
+        assert_eq!(plan("acme-enterprise"), "other");
+    }
+
+    #[test]
     fn league_route_ignores_the_legacy_public_endpoints_list() {
         let (_g, tmp) = crate::test_home("route-public");
         let dir = tmp.join("config/tokenmeter");
@@ -1329,7 +1903,7 @@ mod tests {
         });
         let r = &meter.state["hour"]["r"];
         assert!(r.get("claude-code\u{1f}self-hosted\u{1f}api\u{1f}claude-opus-5").is_some(), "{r}");
-        let upload = crate::sync::build(&json!({"hour": meter.state["hour"].clone()}), true, "", 0.0, crate::watch::now_secs() as i64).0;
+        let upload = crate::sync::build(&json!({"hour": meter.state["hour"].clone()}), true, (0, 0), 0.0, crate::watch::now_secs() as i64).0;
         let text = serde_json::to_string(&upload).unwrap();
         assert!(!text.contains("mycorp") && text.contains("self-hosted"), "{text}");
     }

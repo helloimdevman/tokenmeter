@@ -1,0 +1,26 @@
+label: Kimi CLI
+# 옛 Python kimi-cli: sessions/<작업 폴더 묶음>/<세션>/wire.jsonl. kimi-code의 5단 경로는 패턴이 거른다.
+roots: ["${KIMI_HOME:-~/.kimi}/sessions"]
+patterns: ["*/*/wire.jsonl"]
+match:
+  message.type: StatusUpdate
+  message.payload.token_usage: {$exists: true}
+mode: delta
+# 같은 message_id를 다시 적으면 칸마다 큰 값(tokscale과 같음). id 없는 줄은 레코드 해시.
+key: message.payload.message_id
+timestamp: timestamp
+fields:
+  # input_other는 캐시를 뺀 값
+  input: message.payload.token_usage.input_other
+  cache_read: message.payload.token_usage.input_cache_read
+  cache_write: message.payload.token_usage.input_cache_creation
+  output: message.payload.token_usage.output
+sidecars:
+  toml: "$root/../config.toml"
+  json: "$root/../config.json"
+context:
+  session: $file.dir[-1]
+  # 모델은 레코드에 없다: config.toml의 default_model이 가리키는 [models."…"].model, 없으면 config.json
+  model: ["$side.toml.models[$side.toml.default_model].model", $side.json.model]
+default_model: kimi-for-coding
+vendor: moonshot

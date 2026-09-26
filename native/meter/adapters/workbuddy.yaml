@@ -1,0 +1,38 @@
+label: WorkBuddy
+# CodeBuddy와 같은 형식(TokenTracker rollout.js:10392-10420). workbuddy.db는 문맥 크기 기록이라 읽지 않는다.
+roots: ["${WORKBUDDY_HOME:-~/.workbuddy}/projects", "~/.workbuddy-ai/projects"]   # 5.5(WorkBuddy AI)는 ~/.workbuddy-ai
+patterns: ["**/*.jsonl"]
+# 사용량은 assistant 메시지 줄과 function_call 줄 둘 다에 붙는다(tokscale tencent_buddy.rs:217-230).
+match:
+  $any:
+    - {type: message, role: assistant}
+    - {type: function_call}
+# 한 왕복의 message 줄과 function_call 줄이 응답 id 하나를 같이 쓴다. 0인 첫 복사본은 키를 태우지 않는다(B1).
+# 줄마다 다른 uuid·id는 키로 쓰지 않는다(다른 에이전트의 응답 id와 한 장부에서 부딪힌다). 없으면 줄 해시.
+mode: delta
+key: [providerData.messageId, providerData.traceId]
+timestamp: timestamp          # epoch 밀리초
+# prompt_tokens는 캐시 읽기·쓰기를 포함한다. 캐시 읽기는 거울 칸이 셋이라 처음 값이 있는 것.
+# message.usage는 rawUsage가 없는 줄만(입력이 캐시를 포함하고 캐시 칸이 없을 수 있다).
+# ponytail: TokenTracker는 캐시 읽기 거울 셋의 최댓값을 쓴다. 거울이 서로 다른 로그가 보이면 max 연산을 더한다.
+input_includes: [cache_read, cache_write]
+fields:
+  input: [providerData.rawUsage.prompt_tokens, message.usage.input_tokens]
+  cache_read:
+    - providerData.rawUsage.prompt_tokens_details.cached_tokens
+    - providerData.rawUsage.prompt_cache_hit_tokens
+    - providerData.rawUsage.cache_read_input_tokens
+    - message.usage.cache_read_input_tokens
+  cache_write:
+    - providerData.rawUsage.cache_creation_input_tokens
+    - providerData.rawUsage.prompt_cache_write_tokens
+    - message.usage.cache_creation_input_tokens
+  output: [providerData.rawUsage.completion_tokens, message.usage.output_tokens]   # 추론 포함
+context:
+  cwd: cwd
+  model: [providerData.model, providerData.requestModelId, message.model]
+  session: sessionId
+subagent: providerData.isSubAgent
+default_model: auto
+# 모델과 상관없이 텐센트 크레딧으로 결제된다.
+vendor: tencent

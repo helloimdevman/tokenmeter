@@ -1,0 +1,72 @@
+{
+  "source": "tokscale crates/tokscale-core/tests/junie.rs:51-85 (session-260618-191750-jnus), :128-173 (session-priced); src/sessions/junie.rs:316-343, :357-379, :381-389, :452-463 (session-250622-101010: distinct, replayed, same rows in one event, skipped snapshot kind) (MIT © Junho Yeo); step-2 synthetic: one more usage event appended",
+  "steps": [
+    {
+      "calls": 7,
+      "input": 1510,
+      "cache_read": 22,
+      "cache_write": 8,
+      "output": 465,
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "input": 100,
+          "cache_read": 20,
+          "cache_write": 5,
+          "output": 10
+        },
+        "junie-test-model": {
+          "input": 1010,
+          "cache_read": 2,
+          "cache_write": 3,
+          "output": 255
+        },
+        "gpt-5": {
+          "input": 400,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 200
+        }
+      },
+      "sessions": [
+        "session-250622-101010",
+        "session-260618-191750-jnus",
+        "session-priced"
+      ],
+      "cost_usd": 0.543
+    },
+    {
+      "calls": 8,
+      "input": 1517,
+      "cache_read": 22,
+      "cache_write": 8,
+      "output": 468,
+      "by_model": {
+        "gpt-4.1-2025-04-14": {
+          "input": 100,
+          "cache_read": 20,
+          "cache_write": 5,
+          "output": 10
+        },
+        "junie-test-model": {
+          "input": 1010,
+          "cache_read": 2,
+          "cache_write": 3,
+          "output": 255
+        },
+        "gpt-5": {
+          "input": 407,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 203
+        }
+      },
+      "sessions": [
+        "session-250622-101010",
+        "session-260618-191750-jnus",
+        "session-priced"
+      ],
+      "cost_usd": 0.543
+    }
+  ],
+  "differs": "tokscale adds reasoningTokens to output (jnus +3, session-priced +1, so output 469); we treat reasoning as inside output. Not verified against a real events.jsonl (adapter has verified: false)."
+}

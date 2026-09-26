@@ -1,0 +1,3 @@
+{"type":"session","id":"session-demo-2","timestamp":"2026-09-06T12:00:00.000Z","cwd":"/tmp/demo"}
+{"type":"message","id":"entry-fork-copy","parentId":"session-demo-2","timestamp":"2026-09-06T12:00:00.000Z","message":{"role":"assistant","provider":"openai-codex","model":"gpt-6-astra","responseId":"resp-demo-fork","usage":{"input":100,"output":20,"cacheRead":300,"cacheWrite":0,"totalTokens":420}}}
+{"type":"message","id":"entry-child-new","parentId":"session-demo-2","timestamp":"2026-09-06T12:01:00.000Z","message":{"role":"assistant","provider":"openai-codex","model":"gpt-6-astra","responseId":"resp-demo-child-new","usage":{"input":7,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":10}}}

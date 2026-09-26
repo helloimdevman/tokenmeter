@@ -1,0 +1,8 @@
+{
+  "source": "TokenTracker test/omo-parser.test.js:74-111 (reasoning spelled `reasoning`, total excludes it) and :249-275 (no totalTokens) (MIT © xiufengsun/TokenTracker); the second row moved to the legacy flat root ~/.omo/sessions with its own session id, header timestamps fixed at 23:20 (the test writes new Date()); synthetic: an OpenCode-plugin file under ~/.omo/run-continuation that is not a root (omo.md §8)",
+  "steps": [{"calls": 2, "input": 28746, "cache_read": 532, "cache_write": 0, "output": 680,
+             "by_model": {"grok-4.6": {"calls": 2, "input": 28746, "cache_read": 532, "cache_write": 0, "output": 680}},
+             "sessions": ["01a045b8-b010-77b7-b18e-3a841db5be42", "01a045b8-b010-77b7-b18e-3a841db5be43"],
+             "vendor": "xai"}],
+  "differs": "TokenTracker reads only ~/.omo/agent (not the legacy ~/.omo/sessions), so it sees 28646/512/630 alone."
+}

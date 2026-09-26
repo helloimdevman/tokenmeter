@@ -1,0 +1,5 @@
+{
+  "source": "TokenTracker (MIT, xiufengsun) test/rollout-parser.test.js:564-619 @755fbd9: one live acode rollout, total_tokens 120 -> TM (60,40,0,20). The archived copy is left out (archived_sessions is not a root, spec 3.2). A session_meta head line is added one second before the usage line, as in real rollouts (the replay_gate head)",
+  "steps": [{"calls": 1, "input": 60, "cache_read": 40, "cache_write": 0, "output": 20,
+             "by_model": {"xopglm52": {"input": 60, "cache_read": 40, "cache_write": 0, "output": 20}}}]
+}

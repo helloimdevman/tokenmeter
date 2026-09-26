@@ -1,0 +1,23 @@
+label: OpenCodeReview
+# sessions/<저장소 경로를 편 이름>/<세션 id>.jsonl
+roots: ["~/.opencodereview/sessions"]
+patterns: ["*/*.jsonl"]
+match:
+  type: llm_response
+mode: delta
+# 레코드마다 uuid(시각은 초 단위라 병렬 작업자끼리 겹친다). 없으면 레코드 해시
+key: uuid
+timestamp: timestamp
+# prompt_tokens는 두 캐시를 모두 포함한다(Anthropic 클라이언트가 input + cache_read + cache_creation으로 맞춤)
+input_includes: [cache_read, cache_write]
+fields:
+  input: usage.prompt_tokens
+  cache_read: usage.cache_read_tokens
+  cache_write: usage.cache_write_tokens
+  output: usage.completion_tokens
+duration_ms: duration_ms
+context:
+  session: sessionId
+  cwd: {path: cwd, when: {type: session_start}}
+  model: model
+default_model: default

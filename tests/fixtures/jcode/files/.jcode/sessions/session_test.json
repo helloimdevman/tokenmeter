@@ -1,0 +1,27 @@
+{
+ "id": "session_test",
+ "provider_key": "cliproxyapi",
+ "model": "claude-sonnet-4",
+ "working_dir": "/work/project",
+ "messages": [
+  {
+   "id": "user_1",
+   "role": "user",
+   "timestamp": "2026-06-16T12:00:00Z",
+   "content": []
+  },
+  {
+   "id": "assistant_1",
+   "role": "assistant",
+   "timestamp": "2026-06-16T12:00:01Z",
+   "token_usage": {
+    "input_tokens": 1200,
+    "output_tokens": 300,
+    "cache_read_input_tokens": 800,
+    "cache_creation_input_tokens": 50,
+    "reasoning_output_tokens": 25
+   },
+   "tool_duration_ms": 1234
+  }
+ ]
+}

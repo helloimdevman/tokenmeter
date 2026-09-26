@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"01a045b8-b010-77b7-b18e-3a841db5be42","timestamp":"2026-08-27T23:20:00.000Z"}
+{"type":"message","id":"7ae3734f","parentId":"parent-1","timestamp":"2026-08-27T23:28:16.000Z","message":{"role":"assistant","provider":"xai","model":"grok-4.6","usage":{"input":28646,"output":630,"cacheRead":512,"cacheWrite":0,"reasoning":218,"totalTokens":29788},"timestamp":1787873296000}}

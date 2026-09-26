@@ -1,0 +1,3 @@
+{"type":"session","id":"gjc_ses_001","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/work/pi"}
+{"type":"service_tier_change","id":"x","timestamp":"2026-01-01T00:00:00.500Z"}
+{"type":"message","id":"msg_001","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"assistant","model":"claude-sonnet-4","provider":"anthropic","api":"anthropic","timestamp":1767225601000,"usage":{"input":100,"output":50,"cacheRead":10,"cacheWrite":5,"totalTokens":165,"cost":{"input":0.1,"output":0.2,"cacheRead":0.0,"cacheWrite":0.0,"total":0.3}}}}

@@ -1,0 +1,8 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/opencodereview.rs:222 (single), :289 (identical records), :309 (timestampless), :374 (zero tokens) (MIT © Junho Yeo); the upstream home-directory cwd replaced by /work/project",
+  "steps": [{"calls": 4, "input": 1100, "cache_read": 500, "cache_write": 100, "output": 400,
+             "by_model": {"claude-sonnet-4-20250514": {"input": 400, "cache_read": 500, "cache_write": 100, "output": 200},
+                          "gpt-4o": {"input": 700, "cache_read": 0, "cache_write": 0, "output": 200}},
+             "sessions": ["test-session-123"], "project": "work/project"}],
+  "differs": "tokscale treats prompt_tokens as disjoint from the cache and asserts input 1000 for the first row (total input 1700). OpenCodeReview's clients fold both caches into prompt_tokens (client.go:1708-1716), so we subtract them: 1000 − 500 − 100 = 400."
+}

@@ -29,6 +29,19 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev pkg-config
       - run: cargo test --manifest-path native/Cargo.toml
       - run: cargo build --release --bins --manifest-path native/Cargo.toml
+      - if: runner.os == 'macOS'
+        # 스펙 14절: 0단계 시제품(rusqlite·ruzstd, thin LTO) + 1 MiB. 리그 M2의 iroh가 Cargo.lock에 들어오면
+        # 그 한도(v0.1.0 대비 +8 MB)를 더한다. 넘으면 무엇이 커졌는지 보고 예산을 스펙과 같이 고친다.
+        run: |
+          budget=$BUDGET
+          if grep -qx 'name = "iroh"' native/Cargo.lock; then budget=$((budget + IROH)); fi
+          size=$(stat -f%z native/target/release/tokenmeter)
+          echo "tokenmeter $size / budget $budget"
+          test "$size" -le "$budget"
+          test "$(stat -f%z native/target/release/tokenmeter-hook)" -le 620000
+        env:
+          BUDGET: "13619264"
+          IROH: "8000000"
       - run: |
           mkdir -p dist
           cp native/target/release/tokenmeter "dist/tokenmeter-${{ matrix.tag }}"

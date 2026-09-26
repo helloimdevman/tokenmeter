@@ -1,0 +1,32 @@
+label: AnythingLLM Desktop
+roots:
+  - "~/Library/Application Support/anythingllm-desktop/storage"
+  - "${XDG_CONFIG_HOME:-~/.config}/anythingllm-desktop/storage"
+patterns: ["anythingllm.db"]
+format: sqlite
+# 에이전트 행은 response "{}"로 들어가 끝날 때 고쳐 쓰이고 lastUpdatedAt이 오른다.
+# 커서는 초 단위 갱신 시각이다(Prisma는 밀리초 정수, 기본값은 'YYYY-MM-DD HH:MM:SS' 글자).
+# prompt 열은 읽지 않는다.
+query: |
+  SELECT id, workspaceId, createdAt, lastUpdatedAt, response,
+    COALESCE(CAST(strftime('%s', COALESCE(lastUpdatedAt, createdAt)) AS INTEGER),
+      CASE WHEN CAST(COALESCE(lastUpdatedAt, createdAt) AS INTEGER) >= 100000000000
+        THEN CAST(COALESCE(lastUpdatedAt, createdAt) AS INTEGER) / 1000
+        ELSE CAST(COALESCE(lastUpdatedAt, createdAt) AS INTEGER) END) AS updated
+  FROM workspace_chats WHERE updated >= ?1
+cursor: updated
+match: {response@json.metrics: {$exists: true}}
+mode: delta
+key: id
+# total_tokens는 prompt + completion을 다시 더한 값이라 output을 거기서 끌어내지 않는다(스펙 6.1).
+# 캐시 칸은 없다.
+fields:
+  input: response@json.metrics.prompt_tokens
+  output: response@json.metrics.completion_tokens
+timestamp: [createdAt, lastUpdatedAt]
+context:
+  session: workspaceId
+  model: response@json.metrics.model
+  # LLM 클래스 이름(OpenAI, Anthropic, LMStudio …). 경로 표는 대소문자 없이 맨 id로 찾는다.
+  vendor: response@json.metrics.provider
+default_model: unknown

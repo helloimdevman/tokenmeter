@@ -1,0 +1,128 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/jcode.rs:396-429 (session_test), :431-452 (session_openai_cache), :454-475 (session_anthropic_cache), :477-497 (session_openrouter_claude), :524-561 (session_journal), :617-651 (session_live) (MIT © Junho Yeo); message ids renamed to be unique across sessions, working_dir paths replaced; step-2 synthetic: checkpoint folds the journal into session_live.json and adds assistant_live2",
+  "steps": [
+    {
+      "calls": 7,
+      "input": 25985,
+      "cache_read": 33434,
+      "cache_write": 50,
+      "output": 843,
+      "by_model": {
+        "claude-sonnet-4": {
+          "input": 1200,
+          "cache_read": 800,
+          "cache_write": 50,
+          "output": 300
+        },
+        "gpt-5.6-sol": {
+          "input": 3475,
+          "cache_read": 15872,
+          "cache_write": 0,
+          "output": 71
+        },
+        "claude-sonnet-4-5": {
+          "input": 20000,
+          "cache_read": 15872,
+          "cache_write": 0,
+          "output": 71
+        },
+        "anthropic/claude-sonnet-4": {
+          "input": 200,
+          "cache_read": 800,
+          "cache_write": 0,
+          "output": 71
+        },
+        "snapshot-model": {
+          "input": 200,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 20
+        },
+        "journal-model": {
+          "input": 150,
+          "cache_read": 50,
+          "cache_write": 0,
+          "output": 20
+        },
+        "unknown": {
+          "input": 760,
+          "cache_read": 40,
+          "cache_write": 0,
+          "output": 290
+        }
+      },
+      "sessions": [
+        "session_anthropic_cache",
+        "session_journal",
+        "session_journal.journal",
+        "session_live",
+        "session_live.journal",
+        "session_openai_cache",
+        "session_openrouter_claude",
+        "session_test"
+      ]
+    },
+    {
+      "calls": 8,
+      "input": 26035,
+      "cache_read": 33434,
+      "cache_write": 50,
+      "output": 848,
+      "by_model": {
+        "claude-sonnet-4": {
+          "input": 1200,
+          "cache_read": 800,
+          "cache_write": 50,
+          "output": 300
+        },
+        "gpt-5.6-sol": {
+          "input": 3475,
+          "cache_read": 15872,
+          "cache_write": 0,
+          "output": 71
+        },
+        "claude-sonnet-4-5": {
+          "input": 20000,
+          "cache_read": 15872,
+          "cache_write": 0,
+          "output": 71
+        },
+        "anthropic/claude-sonnet-4": {
+          "input": 200,
+          "cache_read": 800,
+          "cache_write": 0,
+          "output": 71
+        },
+        "snapshot-model": {
+          "input": 250,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 25
+        },
+        "journal-model": {
+          "input": 150,
+          "cache_read": 50,
+          "cache_write": 0,
+          "output": 20
+        },
+        "unknown": {
+          "input": 760,
+          "cache_read": 40,
+          "cache_write": 0,
+          "output": 290
+        }
+      },
+      "sessions": [
+        "session_anthropic_cache",
+        "session_journal",
+        "session_journal.journal",
+        "session_live",
+        "session_live.journal",
+        "session_openai_cache",
+        "session_openrouter_claude",
+        "session_test"
+      ]
+    }
+  ],
+  "differs": "tokscale adds reasoning_output_tokens to the total (session_test +25); it is Codex's name for reasoning inside output, so we do not add it. Journal lines carry no session id or model, so journal-only growth is reported under the journal file stem and default_model (session_live: 760/290/40 under unknown) where tokscale uses the snapshot's session and model; tokens are the same."
+}

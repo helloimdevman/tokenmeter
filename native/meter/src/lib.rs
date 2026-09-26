@@ -4,10 +4,13 @@ pub mod board;
 pub mod cli;
 pub mod daemon;
 pub mod engine;
+pub mod fixture;
+pub mod github;
 pub mod history;
 pub mod i18n;
 pub mod install;
 pub mod league;
+pub mod live;
 pub mod live_rate;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -21,7 +24,7 @@ pub mod share;
 pub mod sync;
 pub mod watch;
 
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.2.0";
 
 #[cfg(test)]
 pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -63,7 +66,6 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
-    use watch::MatchWant;
 
     fn tmp() -> PathBuf {
         let p = std::env::temp_dir().join(format!("tokenmeter-meter-{}", std::process::id()));
@@ -247,20 +249,20 @@ mod tests {
             roots: vec![dir.to_string_lossy().into_owned()],
             patterns: vec!["**/*.jsonl".into()],
             format: "jsonl".into(),
-            match_fields: [("type".into(), MatchWant::One("assistant".into()))].into(),
+            match_fields: serde_yaml::from_str("{type: assistant}").unwrap(),
             mode: "delta".into(),
-            key: Some("uuid".into()),
+            key: "uuid".into(),
             fields: [
-                ("input".into(), Some("message.usage.input_tokens".into())),
+                ("input".into(), "message.usage.input_tokens".into()),
                 (
                     "cache_read".into(),
-                    Some("message.usage.cache_read_input_tokens".into()),
+                    "message.usage.cache_read_input_tokens".into(),
                 ),
                 (
                     "cache_write".into(),
-                    Some("message.usage.cache_creation_input_tokens".into()),
+                    "message.usage.cache_creation_input_tokens".into(),
                 ),
-                ("output".into(), Some("message.usage.output_tokens".into())),
+                ("output".into(), "message.usage.output_tokens".into()),
             ]
             .into(),
             context: [
@@ -412,12 +414,10 @@ mod tests {
 
     #[test]
     fn default_yaml_loads_known_agents() {
-        let specs = watch::default_specs();
-        let names: Vec<_> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"claude-code"));
-        assert!(names.contains(&"codex"));
-        assert!(names.contains(&"opencode"));
-        assert!(names.contains(&"grok"));
+        let ids: Vec<_> = watch::ADAPTERS.iter().map(|(id, _)| *id).collect();
+        for id in ["claude-code", "codex", "opencode", "grok", "cursor"] {
+            assert!(ids.contains(&id), "{id}");
+        }
     }
 
     #[test]
@@ -443,6 +443,7 @@ mod tests {
             ctx_window: 200_000,
             ..TokenDelta::default()
         });
+        meter.commit(meter.next_seq()).unwrap();
         let saved: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(

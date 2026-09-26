@@ -1,0 +1,59 @@
+label: Claude Code
+roots: ["${CLAUDE_CONFIG_DIR:-~/.claude}/projects", "~/.config/claude/projects"]
+patterns: ["**/*.jsonl"]
+# 워크플로 오케스트레이션 기록이다. usage가 없다(tokscale도 뺀다).
+exclude: ["**/subagents/workflows/*/journal.jsonl"]
+match:
+  type: assistant
+# 한 API 응답을 내용 블록마다 따로 적는다. 줄마다 uuid만 다르고 output만 늘어난다(스펙 3.1).
+# 호출 하나 = 키 하나, 칸마다 큰 값 유지. requestId가 없으면 세션 안의 message.id로 묶는다.
+mode: delta
+key: ["message.id & requestId", "sessionId & message.id"]
+timestamp: timestamp
+fields:
+  input: message.usage.input_tokens
+  cache_read: message.usage.cache_read_input_tokens
+  cache_write: message.usage.cache_creation_input_tokens
+  output: message.usage.output_tokens
+context:
+  cwd: cwd
+  model: message.model
+  session: sessionId
+  effort: effort
+# 서브에이전트(subagents/agent-*.jsonl)는 부모와 같은 sessionId 로 찍힌다.
+# 토큰/비용은 내가 낸 것이라 합산하되, 그 컨텍스트를 세션 ctx% 로 삼으면 안 된다.
+subagent: isSidechain
+default_model: claude-sonnet-4-6
+vendor: anthropic
+# 로그에는 결제 형태가 없다. Claude Code 는 API 키가 있으면 그걸 쓰고
+# 없으면 OAuth(구독)로 붙으므로 환경변수 존재 여부가 유일한 단서다.
+plan_probe:
+  env: [ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN]
+  if_set: api
+  else: subscription
+# 같은 opus 라도 공식 API / Bedrock / 사내 게이트웨이는 결제처가 다르다.
+# 훅이 세션 시작 때 찍어 둔 환경변수를 먼저 본다.
+endpoint_probe:
+  flags:
+    CLAUDE_CODE_USE_BEDROCK: bedrock
+    CLAUDE_CODE_USE_VERTEX: vertex
+  env: [ANTHROPIC_BASE_URL]
+  default: https://api.anthropic.com
+install:
+  target: claude_json
+  path: ~/.claude/settings.json
+  events: [SessionStart, UserPromptSubmit, PermissionRequest, Notification, Stop, SessionEnd]
+sources:
+  - {}
+  # advisor 호출(ccusage만 센다). 위 사용량은 본 모델 몫이고 advisor는 iterations에만 있다.
+  - each: message.usage.iterations
+    match: {$.type: assistant, type: advisor_message}
+    key: "$.message.id & $.requestId & $index"   # 부분이 셋이라 본 키(둘)와 부딪히지 않는다
+    timestamp: $.timestamp
+    subagent: $.isSidechain
+    fields:
+      input: input_tokens
+      cache_read: cache_read_input_tokens
+      cache_write: cache_creation_input_tokens
+      output: output_tokens
+    context: {model: model}

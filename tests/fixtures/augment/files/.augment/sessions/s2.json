@@ -1,0 +1,27 @@
+{
+ "sessionId": "s2",
+ "agentState": {
+  "modelId": "grok-4-5"
+ },
+ "chatHistory": [
+  "bad-turn",
+  {
+   "completed": true,
+   "finishedAt": "2026-07-20T13:33:00.000Z",
+   "exchange": {
+    "model_id": "grok-4-5",
+    "request_id": "ok",
+    "response_nodes": [
+     {
+      "token_usage": {
+       "input_tokens": 1,
+       "output_tokens": 2,
+       "cache_read_input_tokens": 0,
+       "cache_creation_input_tokens": 0
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -1,0 +1,9 @@
+{
+ "session_id": "cline-cli-session",
+ "provider": "cline-pass",
+ "model": "cline-pass/glm-5.2",
+ "workspace_root": "/work/project",
+ "metadata": {
+  "title": "CLI task"
+ }
+}

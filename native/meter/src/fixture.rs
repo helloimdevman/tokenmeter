@@ -23,12 +23,13 @@ const OWN_VARS: [&str; 6] = [
 ];
 
 /// `steps[n]`에 쓸 수 있는 칸. 모르는 칸은 오타로 보고 실패한다.
-const STEP_KEYS: [&str; 12] = [
+const STEP_KEYS: [&str; 13] = [
     "calls",
     "input",
     "cache_read",
     "cache_write",
     "output",
+    "cost_usd",
     "by_model",
     "sessions",
     "project",
@@ -191,7 +192,7 @@ fn env_names(text: &str) -> Vec<&str> {
     out
 }
 
-/// 지금까지의 델타 누계. `project`·`vendor`·`plan`·`route`·`model_label`은 모든 델타가
+/// 지금까지의 델타 누계(`cost_usd`는 로그에 적힌 비용의 합). `project`·`vendor`·`plan`·`route`·`model_label`은 모든 델타가
 /// 같으면 그 값, 아니면 서로 다른 값의 목록이다(기대값의 문자열과 맞지 않아 실패한다).
 fn totals(deltas: &[TokenDelta]) -> Value {
     let mut sum = [0i64; 5];
@@ -229,6 +230,8 @@ fn totals(deltas: &[TokenDelta]) -> Value {
             .collect()
     };
     let mut out = row(&sum);
+    let logged: f64 = deltas.iter().map(|d| d.cost_usd.unwrap_or(0.0)).sum();
+    out.insert("cost_usd".into(), json!(logged));
     out.insert(
         "by_model".into(),
         json!(by_model
@@ -275,6 +278,8 @@ pub fn compare(expected: &Value, got: &[Value]) -> Result<(), String> {
             let g = &got[key.as_str()];
             let ok = if key == "by_model" {
                 same_models(w, g)
+            } else if key == "cost_usd" {
+                matches!((w.as_f64(), g.as_f64()), (Some(w), Some(g)) if (w - g).abs() <= 1e-9)
             } else {
                 w == g
             };
@@ -534,6 +539,9 @@ mod tests {
             .contains("unknown field outptu"));
         let extra_model = json!({"steps": [{"by_model": {"m": {"output": 5}, "n": {}}}]});
         assert!(compare(&extra_model, &got).is_err());
+        let cost = [json!({"cost_usd": 0.1 + 0.2})];
+        assert_eq!(compare(&json!({"steps": [{"cost_usd": 0.3}]}), &cost), Ok(()), "1e-9 오차");
+        assert!(compare(&json!({"steps": [{"cost_usd": 0.31}]}), &cost).is_err());
         let two = json!({"steps": [{}, {}]});
         assert!(compare(&two, &got).unwrap_err().contains("2 steps, got 1"));
     }

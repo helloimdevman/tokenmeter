@@ -85,17 +85,29 @@ impl Meter {
         self.resolve_project(&mut delta);
         let now = crate::watch::now_secs();
         self.refresh_clock(now);
-        let cost = cost_usd(
-            &delta.model,
-            delta.input_tokens,
-            delta.cache_read,
-            delta.cache_write,
-            delta.output_tokens,
-        );
-        let saved = cache_savings(&delta.model, delta.cache_read);
+        let local = delta.plan == "local";
+        let cost = match delta.cost_usd {
+            _ if local => 0.0,
+            Some(logged) if logged.is_finite() && logged > 0.0 => logged,
+            _ => cost_usd(
+                &delta.model,
+                delta.input_tokens,
+                delta.cache_read,
+                delta.cache_write,
+                delta.output_tokens,
+            ),
+        };
+        let saved = if local { 0.0 } else { cache_savings(&delta.model, delta.cache_read) };
         self.roll_today();
         self.roll_hour();
         self.roll_rate();
+        if delta.speed_only {
+            // 토큰은 다른 줄에서 이미 셌다. 기록된 API 시간 표본만 경로 셀에(스펙 10절).
+            let timed = (delta.duration_ms > 0).then(|| delta.duration_ms as f64 / 1000.0);
+            self.bucket_route(&delta, 0.0, timed);
+            let _ = self.save();
+            return;
+        }
         self.bucket_hour(&delta, cost);
 
         for path in ["/total/totals", "/session/totals", "/today/totals"] {
@@ -418,7 +430,7 @@ impl Meter {
             .expect("hour cell");
         cell[0] = json!(int(cell.first()) + delta.total());
         cell[1] = json!(number(cell.get(1)) + cost);
-        cell[2] = json!(int(cell.get(2)) + 1);
+        cell[2] = json!(int(cell.get(2)) + i64::from(delta.calls));
     }
 
     /// 리그 동기화용 시간 칸: (도구, 경로, 요금제, 모델)마다 한 셀. 라벨은 모두 올려도 되는 값이다.
@@ -438,11 +450,19 @@ impl Meter {
             .or_insert_with(|| json!([0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0]))
             .as_array_mut()
             .expect("route cell");
-        let counts = [delta.input_tokens, delta.output_tokens, delta.cache_read, delta.cache_write, 1];
-        for (i, n) in counts.into_iter().enumerate() {
-            cell[i] = json!(int(cell.get(i)) + n);
+        if !delta.speed_only {
+            let counts = [
+                delta.input_tokens,
+                delta.output_tokens,
+                delta.cache_read,
+                delta.cache_write,
+                i64::from(delta.calls),
+            ];
+            for (i, n) in counts.into_iter().enumerate() {
+                cell[i] = json!(int(cell.get(i)) + n);
+            }
+            cell[5] = json!(number(cell.get(5)) + cost);
         }
-        cell[5] = json!(number(cell.get(5)) + cost);
         if let Some(secs) = timed {
             let at = if delta.duration_ms > 0 { 6 } else { 8 };
             cell[at] = json!(int(cell.get(at)) + delta.output_tokens);
@@ -654,7 +674,7 @@ fn accumulate(book: &mut Map<String, Value>, delta: &TokenDelta, cost: f64, save
     add_int(book, "output_tokens", delta.output_tokens);
     add_number(book, "cost_usd", cost);
     add_number(book, "cache_saved_usd", saved);
-    add_int(book, "calls", 1);
+    add_int(book, "calls", i64::from(delta.calls));
 }
 
 fn group_node<'a>(state: &'a mut Value, group: &str, name: &str) -> &'a mut Map<String, Value> {
@@ -719,7 +739,7 @@ pub fn route_labels(delta: &TokenDelta) -> [String; 4] {
     // 요금제는 기본 서비스가 내는 값만 그대로 둔다. services.yaml에 사용자가 적은 계약명은 새지 않게 other로.
     let plan = match delta.plan.as_str() {
         "" => "unknown",
-        p @ ("subscription" | "api" | "unknown") => p,
+        p @ ("subscription" | "api" | "local" | "unknown") => p,
         _ => "other",
     };
     [
@@ -1311,6 +1331,95 @@ mod tests {
         let line = fs::read_to_string(data_dir().join("hours.jsonl")).unwrap();
         assert!(line.contains("\"r\""), "{line}");
         assert_eq!(meter.state["hour"]["r"].as_object().unwrap().len(), 1, "새 시간은 새 경로 장부");
+    }
+
+    #[test]
+    fn logged_cost_wins_over_table_and_local_plan_is_free() {
+        let (_g, _tmp) = crate::test_home("logged-cost");
+        let table = cost_usd("claude-opus-5", 0, 1000, 0, 1000);
+        assert!(table > 0.0);
+        let book = |cost: Option<f64>, plan: &str| {
+            let mut meter = Meter::new();
+            meter.ingest(TokenDelta {
+                cache_read: 1000,
+                cost_usd: cost,
+                plan: plan.into(),
+                ..out(1000, "p")
+            });
+            meter.state["total"]["totals"].clone()
+        };
+        let cost = |cost: Option<f64>, plan: &str| number(book(cost, plan).get("cost_usd"));
+        assert_eq!(cost(Some(0.5), "api"), 0.5, "로그의 비용이 가격표를 이긴다");
+        assert_eq!(cost(Some(0.0), "api"), table, "0은 가격표로");
+        assert_eq!(cost(None, "subscription"), table);
+        assert_eq!(cost(Some(f64::NAN), "api"), table, "유한하지 않으면 가격표로");
+        assert_eq!(cost(Some(0.5), "local"), 0.0, "local 요금제는 로그의 비용보다 먼저 0");
+        assert_eq!(number(book(None, "local").get("cache_saved_usd")), 0.0, "공짜에서 아낀 돈은 없다");
+    }
+
+    #[test]
+    fn calls_follow_the_delta() {
+        let (_g, _tmp) = crate::test_home("calls-delta");
+        assert_eq!(TokenDelta::default().calls, 1, "2.2 전까지 델타마다 1");
+        let mut meter = Meter::new();
+        let base = TokenDelta {
+            service: "claude-code".into(),
+            session: "s1".into(),
+            ..out(10, "p")
+        };
+        meter.ingest(base.clone());
+        meter.ingest(TokenDelta { calls: 0, ..base.clone() });
+        for path in ["/total/totals", "/today/totals", "/session/totals", "/models/claude-opus-5/totals", "/sessions/claude-code~1s1/totals"] {
+            let book = meter.state.pointer(path).unwrap();
+            assert_eq!((book["calls"].clone(), book["output_tokens"].clone()), (json!(1), json!(20)), "{path}");
+        }
+        let cells = meter.state["hour"]["r"].as_object().unwrap();
+        let cell = cells.values().next().unwrap();
+        assert_eq!((cells.len(), cell[1].clone(), cell[4].clone()), (1, json!(20), json!(1)));
+        assert_eq!(meter.state["hour"]["p"]["p"][2], 1, "시간 칸의 호출 수도");
+    }
+
+    #[test]
+    fn speed_only_touches_only_timing_columns() {
+        let (_g, _tmp) = crate::test_home("speed-only");
+        let mut meter = Meter::new();
+        let base = TokenDelta {
+            service: "claude-code".into(),
+            session: "s1".into(),
+            endpoint: "https://api.anthropic.com".into(),
+            ..out(100, "p")
+        };
+        meter.ingest(base.clone());
+        let before = meter.state.clone();
+        meter.ingest(TokenDelta {
+            output_tokens: 300,
+            duration_ms: 6000,
+            calls: 0,
+            speed_only: true,
+            ..base
+        });
+        let mut after = meter.state.clone();
+        let cells = after["hour"]["r"].as_object_mut().unwrap();
+        assert_eq!(cells.len(), 1, "{cells:?}");
+        let cell = cells.values_mut().next().unwrap();
+        assert_eq!((cell[6].clone(), cell[7].clone()), (json!(300), json!(6000)), "api_out·api_ms에만");
+        (cell[6], cell[7]) = (json!(0), json!(0));
+        assert_eq!(after, before, "토큰·비용·세션·일 합계·라이브 속도는 그대로");
+    }
+
+    #[test]
+    fn route_plan_keeps_local() {
+        let (_g, _tmp) = crate::test_home("route-local");
+        let plan = |plan: &str| {
+            route_labels(&TokenDelta {
+                service: "claude-code".into(),
+                plan: plan.into(),
+                ..TokenDelta::default()
+            })[2]
+                .clone()
+        };
+        assert_eq!(plan("local"), "local");
+        assert_eq!(plan("acme-enterprise"), "other");
     }
 
     #[test]

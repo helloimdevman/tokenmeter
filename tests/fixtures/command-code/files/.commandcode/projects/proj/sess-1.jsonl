@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"sess-1","timestamp":"2026-08-31T04:36:38.441Z","cwd":"/work/learning"}
+{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-08-31T04:37:00.000Z","model":"deepseek/deepseek-v4-flash"}
+{"type":"message","id":"u1","parentId":"m1","timestamp":"2026-08-31T04:39:16.867Z","message":{"role":"user","content":[{"type":"text","text":"prompt"}]}}
+{"type":"message","id":"t1","parentId":"u1","timestamp":"2026-08-31T04:39:18.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_00_abc","name":"read_directory","input":{"path":"/work/learning"}}]},"usage":{"inputTokens":21000,"outputTokens":90,"cacheReadTokens":4000,"cacheWriteTokens":0,"costUsd":0.002},"model":"deepseek/deepseek-v4-flash"}
+{"type":"message","id":"r1","parentId":"t1","timestamp":"2026-08-31T04:39:19.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_00_abc","content":"Found 28 items"}]}}
+{"type":"message","id":"a1","parentId":"r1","timestamp":"2026-08-31T04:39:20.351Z","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]},"usage":{"inputTokens":28534,"outputTokens":205,"cacheReadTokens":7424,"cacheWriteTokens":0,"costUsd":0.006464748},"model":"deepseek/deepseek-v4-flash"}

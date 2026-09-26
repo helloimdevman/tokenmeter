@@ -1,0 +1,9 @@
+{
+  "source": "ccusage rust/adapters/kimi/src/loader.rs:58-87 (MIT © ryoppippi); TokenTracker test/rollout-parser.test.js:7560-7624 (MIT © xiufengsun/TokenTracker); tokscale crates/tokscale-core/src/sessions/kimi.rs:723-738 (MIT © Junho Yeo)",
+  "steps": [{"calls": 4, "input": 14991, "cache_read": 26383, "cache_write": 20, "output": 560,
+             "by_model": {"kimi-k2": {"input": 14991, "cache_read": 26383, "cache_write": 20, "output": 560}},
+             "sessions": ["sess-p", "sess1", "session-a"], "vendor": "moonshot"}],
+  "ccusage": {"cmd": "kimi", "env": {"KIMI_DATA_DIR": "$HOME/.kimi"},
+              "totals": {"input": 29309, "cache_read": 32527, "cache_write": 20, "output": 693}},
+  "differs": "ccusage keys rows by session:message_id:timestamp:…, so the repeated chatcmpl-TEST1 (new timestamp, same usage; TokenTracker counts it once) and both progressive msg-progressive updates (tokscale keeps the larger, 120/30/5) count separately there: +14218/123/6144 and +100/10/0. We keep the largest value per message_id like tokscale."
+}

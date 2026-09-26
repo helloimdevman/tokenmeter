@@ -1,0 +1,26 @@
+label: Command Code
+# projects/<slug>/<session>.jsonl(v3). 같은 디렉터리의 <session>.checkpoints.jsonl은 스냅샷이라 뺀다.
+roots: ["~/.commandcode/projects"]
+patterns: ["**/*.jsonl"]
+exclude: ["**/*.checkpoints.jsonl"]
+match:
+  type: message
+  message.role: assistant
+  usage: {$exists: true}
+mode: delta
+# 항목 id는 8자리라 세션 안에서만 고유하다. /fork·/clone이 같은 id와 시각으로 새 파일에 복사한다.
+# /rewind로 버린 가지도 실제로 낸 호출이라 센다(tokscale은 마지막 가지만 센다).
+key: "id & timestamp"
+timestamp: timestamp
+fields:
+  input: usage.inputTokens
+  cache_read: usage.cacheReadTokens
+  cache_write: usage.cacheWriteTokens
+  output: usage.outputTokens
+cost_usd: usage.costUsd
+context:
+  session: {path: id, when: {type: session}}
+  cwd: {path: cwd, when: {type: session}}
+  # 줄의 model, 없으면 앞선 model_change 줄
+  model: model
+default_model: default

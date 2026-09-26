@@ -1,0 +1,8 @@
+{
+  "source": "TokenTracker test/minimax-code-parser.test.js:131-197, :199-238 (MIT © xiufengsun/TokenTracker); timestamps moved to the UTC instants the test names",
+  "steps": [{"calls": 4, "input": 132879, "cache_read": 439643, "cache_write": 7, "output": 16722,
+             "by_model": {"MiniMax-M2.7": {"input": 132869, "cache_read": 439643, "cache_write": 7, "output": 16717},
+                          "kimi-for-coding": {"input": 10, "cache_read": 0, "cache_write": 0, "output": 5}},
+             "sessions": ["09-10-00-000-session_ONE", "14-05-00-000-session_ABC"], "vendor": "minimax"}],
+  "differs": "TokenTracker asserts MiniMax-M2.7 132819/16712/439598/7 for the first session and total 100 for dup-1 (counted once across two session dirs); our totals are those sums. The zero-usage historical-transcript row and task-1.readable.v1.jsonl give nothing in both."
+}

@@ -1,0 +1,11 @@
+{
+  "source": "ccusage rust/adapters/qwen/src/lib.rs:83-109, parser.rs:345-368 (MIT © ryoppippi); tokscale crates/tokscale-core/src/sessions/qwen.rs:231-250 (MIT © Junho Yeo); synthetic: ui_telemetry line (chatRecordingService.ts:2552-2560) and a subagent transcript (agent-transcript.ts:708-721)",
+  "steps": [{"calls": 5, "input": 1080, "cache_read": 420, "cache_write": 0, "output": 1071,
+             "by_model": {"qwen3-coder-plus": {"input": 985, "cache_read": 415, "cache_write": 0, "output": 550},
+                          "qwen3.5-plus": {"input": 95, "cache_read": 5, "cache_write": 0, "output": 200},
+                          "qwen3-coder": {"input": 0, "cache_read": 0, "cache_write": 0, "output": 321}},
+             "sessions": ["session-a", "session-json", "session1"]}],
+  "ccusage": {"cmd": "qwen", "env": {"QWEN_DATA_DIR": "$HOME/.qwen"},
+              "totals": {"input": 500, "cache_read": 20, "cache_write": 0, "output": 971}},
+  "differs": "ccusage and tokscale book promptTokenCount as input although it includes cachedContentTokenCount (Qwen converter.ts:1428-1477), so their input is 5+5+10 higher per chat row; ccusage also does not scan subagents/ (−1000 input incl. 400 cached, −100 output). Thoughts stay inside candidates (not added; ccusage adds them only to its total)."
+}

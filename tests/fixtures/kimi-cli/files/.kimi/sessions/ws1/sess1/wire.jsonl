@@ -1,0 +1,4 @@
+{"type":"metadata","protocol_version":"1.5"}
+{"timestamp":1775833108.22,"message":{"type":"StatusUpdate","payload":{"message_id":"chatcmpl-TEST1","token_usage":{"input_other":14218,"output":123,"input_cache_read":6144,"input_cache_creation":0}}}}
+{"timestamp":1775833109.0,"message":{"type":"StatusUpdate","payload":{"message_id":"chatcmpl-TEST1","token_usage":{"input_other":14218,"output":123,"input_cache_read":6144,"input_cache_creation":0}}}}
+{"timestamp":1775833119.41,"message":{"type":"StatusUpdate","payload":{"message_id":"chatcmpl-TEST2","token_usage":{"input_other":553,"output":357,"input_cache_read":20224,"input_cache_creation":0}}}}

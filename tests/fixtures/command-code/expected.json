@@ -1,0 +1,8 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/commandcode.rs:752 (realistic v3), :1011 (fork copies), :1264 (checkpoints), :1701 (zero usage, positive cost) (MIT © Junho Yeo); the upstream home-directory cwd replaced by /work/learning, the cost-only row renamed a1 → b1 so it does not share the fork's id & timestamp, and one usage row added to s.checkpoints.jsonl to show the file is not read",
+  "steps": [{"calls": 4, "input": 49634, "cache_read": 11424, "cache_write": 0, "output": 305, "cost_usd": 0.429464748,
+             "by_model": {"deepseek/deepseek-v4-flash": {"input": 49534, "cache_read": 11424, "cache_write": 0, "output": 295},
+                          "model-x": {"input": 100, "cache_read": 0, "cache_write": 0, "output": 10}},
+             "sessions": ["orig-sess", "s", "sess-1"], "project": ["", "work/learning"]}],
+  "differs": "tokscale keeps only the parent chain of the last entry and drops abandoned /rewind branches; we count them (they were billed). No rewind in this fixture, so totals match tokscale."
+}

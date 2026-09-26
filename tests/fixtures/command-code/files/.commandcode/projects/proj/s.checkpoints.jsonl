@@ -1,0 +1,2 @@
+{"type":"checkpoint","messageId":"m","snapshot":"snap","isSnapshotUpdate":false}
+{"type":"message","id":"c1","parentId":"u1","timestamp":"2026-08-31T00:00:09Z","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]},"usage":{"inputTokens":999,"outputTokens":999,"cacheReadTokens":0,"cacheWriteTokens":0,"costUsd":0.5},"model":"model-x"}

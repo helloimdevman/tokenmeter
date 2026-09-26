@@ -1,0 +1,27 @@
+label: Kimi Code
+# @moonshot-ai/kimi-code와 Kimi Work 데스크톱: sessions/<작업 공간>/<세션>/agents/<에이전트>/wire.jsonl
+roots:
+  - "${KIMI_CODE_HOME:-~/.kimi-code}/sessions"
+  - "~/Library/Application Support/kimi-desktop/daimon-share/daimon/runtime/kimi-code/home/sessions"
+patterns: ["*/*/agents/*/wire.jsonl"]
+# usage.record는 요청마다 한 번 쓰인다. usageScope가 session인 줄은 누적치가 아니라 압축 요청이라
+# 범위와 상관없이 모두 센다(스펙 6.1). step.end 이벤트는 같은 사용량의 사본이라 읽지 않는다.
+match:
+  type: usage.record
+mode: delta
+# 키 없음: 레코드 해시(usage.record에는 id가 없다)
+timestamp: time
+fields:
+  # inputOther는 캐시를 뺀 값
+  input: usage.inputOther
+  cache_read: usage.inputCacheRead
+  cache_write: usage.inputCacheCreation
+  output: usage.output
+sidecars:
+  ws: "$root/../workspaces.json"
+context:
+  session: $file.dir[-3]
+  cwd: "$side.ws.workspaces[$file.dir[-4]].root"
+  model: model
+default_model: kimi-for-coding
+vendor: moonshot

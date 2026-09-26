@@ -256,6 +256,58 @@ pub fn validate(up: &UsageUpload, now: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// 0.1.x가 올린 경로 라벨(공개 호스트 18개와 클라우드 이름) → 0.2.0의 프로바이더 id.
+/// 바뀌는 행만 둔다. `self-hosted`, `unknown`은 그대로 간다.
+pub const LEGACY_ROUTE: &[(&str, &str)] = &[
+    ("api.anthropic.com", "anthropic"),
+    ("api.openai.com", "openai"),
+    ("chatgpt.com", "openai"),
+    ("generativelanguage.googleapis.com", "google"),
+    ("api.x.ai", "xai"),
+    ("cli-chat-proxy.grok.com", "xai"),
+    ("api.deepseek.com", "deepseek"),
+    ("api.mistral.ai", "mistral"),
+    ("api.groq.com", "groq"),
+    ("openrouter.ai", "openrouter"),
+    ("api.together.xyz", "togetherai"),
+    ("api.fireworks.ai", "fireworks-ai"),
+    ("api.moonshot.cn", "moonshotai-cn"),
+    ("api.cohere.com", "cohere"),
+    ("api.perplexity.ai", "perplexity"),
+    ("integrate.api.nvidia.com", "nvidia"),
+    ("api.studio.nebius.ai", "nebius"),
+    ("opencode.ai", "opencode"),
+    ("bedrock", "amazon-bedrock"),
+    ("vertex", "google-vertex"),
+    ("azure-openai", "azure"),
+];
+
+/// 0.1.x의 모델 계열 이름 → 내장 가격표의 id. 계열은 나눌 수 없어 가장 가까운 id를 붙인다.
+/// 바뀌는 행만 둔다(`claude-opus-5`, `gpt-5.6-luna`, `other` 들은 그대로 간다).
+pub const LEGACY_MODEL: &[(&str, &str)] = &[
+    ("claude-fable-5.1", "claude-fable-5-1"),
+    ("claude-opus-4.8", "claude-opus-4-8"),
+    ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+    ("claude-haiku-4.5", "claude-haiku-4-5"),
+    ("grok-4.6-build", "grok-4.6"),
+    ("deepseek", "other"),
+    ("grok", "other"),
+];
+
+fn legacy<'a>(table: &[(&str, &'static str)], s: &'a str) -> &'a str {
+    table.iter().find(|(old, _)| *old == s).map_or(s, |(_, new)| new)
+}
+
+/// 표에 없으면 그대로.
+pub fn legacy_route(s: &str) -> &str {
+    legacy(LEGACY_ROUTE, s)
+}
+
+/// 표에 없으면 그대로.
+pub fn legacy_model(s: &str) -> &str {
+    legacy(LEGACY_MODEL, s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +423,89 @@ mod tests {
         let line: LiveLine = serde_json::from_str(r#"{"tps": 12.5, "later": 1}"#).unwrap();
         assert_eq!(line.tps, Some(12.5));
         assert_eq!(serde_json::to_string(&LiveLine::default()).unwrap(), "{}");
+    }
+
+    /// 스펙 7.6의 두 표를 그대로 옮긴 것(그대로 가는 행 포함).
+    const SPEC_ROUTES: &[(&str, &str)] = &[
+        ("api.anthropic.com", "anthropic"),
+        ("api.openai.com", "openai"),
+        ("chatgpt.com", "openai"),
+        ("generativelanguage.googleapis.com", "google"),
+        ("api.x.ai", "xai"),
+        ("cli-chat-proxy.grok.com", "xai"),
+        ("api.deepseek.com", "deepseek"),
+        ("api.mistral.ai", "mistral"),
+        ("api.groq.com", "groq"),
+        ("openrouter.ai", "openrouter"),
+        ("azure-openai", "azure"),
+        ("api.together.xyz", "togetherai"),
+        ("api.fireworks.ai", "fireworks-ai"),
+        ("api.moonshot.cn", "moonshotai-cn"),
+        ("api.cohere.com", "cohere"),
+        ("api.perplexity.ai", "perplexity"),
+        ("integrate.api.nvidia.com", "nvidia"),
+        ("api.studio.nebius.ai", "nebius"),
+        ("opencode.ai", "opencode"),
+        ("bedrock", "amazon-bedrock"),
+        ("vertex", "google-vertex"),
+        ("self-hosted", "self-hosted"),
+        ("unknown", "unknown"),
+    ];
+    const SPEC_MODELS: &[(&str, &str)] = &[
+        ("claude-fable-5.1", "claude-fable-5-1"),
+        ("claude-fable-5", "claude-fable-5"),
+        ("claude-opus-5", "claude-opus-5"),
+        ("claude-opus-4.8", "claude-opus-4-8"),
+        ("claude-sonnet-5", "claude-sonnet-5"),
+        ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+        ("claude-haiku-4.5", "claude-haiku-4-5"),
+        ("other", "other"),
+        ("gpt-5.6-luna", "gpt-5.6-luna"),
+        ("gpt-5.6-terra", "gpt-5.6-terra"),
+        ("gpt-5.6-sol", "gpt-5.6-sol"),
+        ("gpt-5.4", "gpt-5.4"),
+        ("deepseek-flash", "deepseek-flash"),
+        ("grok-4.6-build", "grok-4.6"),
+        ("deepseek", "other"),
+        ("grok", "other"),
+    ];
+
+    #[test]
+    fn legacy_tables_match_the_spec() {
+        for &(old, new) in SPEC_ROUTES {
+            assert_eq!(legacy_route(old), new, "{old}");
+        }
+        for &(old, new) in SPEC_MODELS {
+            assert_eq!(legacy_model(old), new, "{old}");
+        }
+        // 표에는 바뀌는 행만 있고, 모두 스펙에 있다.
+        for (table, spec) in [(LEGACY_ROUTE, SPEC_ROUTES), (LEGACY_MODEL, SPEC_MODELS)] {
+            for row in table {
+                assert_ne!(row.0, row.1, "그대로 가는 행은 표에 두지 않는다: {row:?}");
+                assert!(spec.contains(row), "스펙에 없는 행: {row:?}");
+            }
+            assert_eq!(table.len(), spec.iter().filter(|(o, n)| o != n).count());
+        }
+    }
+
+    #[test]
+    fn legacy_targets_are_valid_labels() {
+        for (_, new) in LEGACY_ROUTE {
+            assert!(Label::Route.ok(new), "{new}");
+        }
+        for (_, new) in LEGACY_MODEL {
+            assert!(model_ok(new), "{new}");
+        }
+    }
+
+    #[test]
+    fn unknown_labels_pass_through() {
+        for s in ["openai", "amazon-bedrock", "local", "self-hosted", "unknown", "llm.corp.example", "", ALL] {
+            assert_eq!(legacy_route(s), s);
+        }
+        for s in ["claude-opus-4-8", "gpt-5", "other", "", ALL] {
+            assert_eq!(legacy_model(s), s);
+        }
     }
 
     fn pretty<T: serde::Serialize>(v: &T) -> String {

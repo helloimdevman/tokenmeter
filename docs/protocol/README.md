@@ -44,15 +44,19 @@ the same check on each hour before sending and drops the hours that fail.
 | Setting | Sent |
 |---|---|
 | sharing off | nothing |
-| sharing on | device token, platform and version, and per local hour: tool, route label, plan, model family, token counts, request count, estimated cost, timing sums |
+| sharing on | device token, platform and version, and per local hour: tool, route label, plan, model id, token counts, request count, estimated cost, timing sums |
 | Token League login | GitHub id and login, the rooms you are in, and an iroh endpoint id per device. With sharing off, one total cell (`*` labels) per hour from the hour you log in, used for matches |
 | never | prompts, code, file paths, project names, session ids, private endpoint hostnames, custom service or model names |
 
 - Hours that ended before you turned sharing on are never sent; the hour you turn it on in is sent
   whole. Turning it off and on again starts over from that hour.
-- Route labels are public API hosts (`api.anthropic.com`), `bedrock`, `vertex`, `azure-openai`,
-  `self-hosted` for every other address, or `unknown`.
-- Model names are built-in price families (`claude-opus-5`); anything else is `other`.
+- Route labels are public provider ids (`anthropic`, `openai`, `amazon-bedrock` …) from the built-in
+  route table, `local` for local runners (Ollama, LM Studio) and for `localhost`, `*.local`, loopback,
+  private, link-local and 100.64.0.0/10 addresses, `self-hosted` for every other address, or `unknown`.
+- Model names are ids from the built-in price table (`claude-opus-4-8`); anything else is `other`.
+- Plans include `local` for local runners (Ollama, LM Studio).
+- 0.1.x clients sent host names (`api.openai.com`) and model families (`claude-opus-4.8`); the server
+  maps them to the ids above (`LEGACY_ROUTE`, `LEGACY_MODEL` in `native/protocol`). `v` stays 1.
 - `t` is the Unix second at the start of your local hour (a multiple of 900).
 - An upload replaces whole hours, so sending the same body twice changes nothing.
 - `tokenmeter share preview` prints the next upload. `tokenmeter account delete` deletes this device's data on the server.

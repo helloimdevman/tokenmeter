@@ -67,6 +67,9 @@ tokenmeter adapter init gemini-cli --log ~/.gemini/tmp
 tokenmeter adapter check ./gemini-cli-adapter
 tokenmeter share on|off|preview   # 익명 사용 통계(동의할 때만)
 tokenmeter account delete         # 이 기기가 보낸 데이터 삭제
+tokenmeter league login           # Token League: GitHub 로그인(기기 코드)
+tokenmeter league open            # 방을 열고 초대 링크 출력
+tokenmeter league join <링크>     # 친구의 방에 참가
 tokenmeter quota                  # Claude/Codex/Grok 잔여 한도
 tokenmeter services               # 로그 감지와 훅 상태
 tokenmeter doctor                 # 파서와 설치 검증
@@ -102,11 +105,12 @@ npx skills add helloimdevman/tokenmeter -g -a claude-code
 - 한도(`tokenmeter quota`)는 이미 저장된 Claude/Codex/Grok 자격 증명으로 잔여 창만 읽습니다. 세션 로그는 보내지 않습니다.
 - 금액은 **API 환산 추정**입니다. 청구서가 아닙니다.
 - 익명 사용 통계는 동의할 때만 보냅니다. 설치할 때 한 번 묻고, `tokenmeter share on|off`로 바꿉니다. 공유를 켠 시간의 칸부터(그 칸은 통째로 가고, 그 전에 끝난 칸은 보내지 않으며, 껐다 켜면 그 시간부터 다시) 도구·경로 라벨·모델 계열별 시간당 토큰 수를 TokenMeter 서버로 보내며, 프롬프트·코드·경로·프로젝트명·세션 ID·사설 호스트 이름·사용자 모델 이름은 보내지 않습니다. `tokenmeter share preview`는 다음에 보낼 내용을 보여 주고, `tokenmeter account delete`는 보낸 데이터를 지웁니다. 자세한 내용: [docs/protocol](docs/protocol/README.md)
+- Token League도 직접 켤 때만 씁니다. `tokenmeter league login`은 GitHub로 로그인하며, GitHub 토큰은 서버가 한 번 확인하고 폐기할 뿐 저장하지 않습니다. 서버는 GitHub id와 login, 들어간 방, 기기마다 iroh EndpointId를 갖고, 공유가 꺼져 있으면 경기 계산용으로 한 시간에 합계 셀 하나만 받습니다. 방 멤버는 내 login과 실시간 출력 속도를 봅니다. 미터가 방에 있는 동안, 내 EndpointId를 아는 사람(지금이나 예전의 방 멤버)은 연결할 때 내 공인 IP와 로컬 주소를 받습니다. 직접 연결 여부와는 상관없고, 방을 나가거나 로그아웃하면 키를 바꿉니다. `tokenmeter league logout`은 이 기기의 연결을 끊고, `tokenmeter account delete`는 계정을 지웁니다.
 - 레거시 `leaderboard.endpoint`는 직접 켜기 전까지 꺼져 있습니다.
 
 ## Token League
 
-Token League는 공유 방에서 친구의 실시간 출력 속도를 보여 줍니다. 방은 TokenMeter 서버와 P2P 실시간 연결로 다시 만드는 중이라 다음 릴리스에서 열립니다. 그전까지 `tokenmeter league …`는 안내만 출력하고 네트워크를 쓰지 않습니다.
+Token League는 공유 방에서 친구의 실시간 출력 속도를 보여 줍니다. `tokenmeter league login`으로 GitHub 로그인을 하고, `tokenmeter league open`이 초대 링크(`https://tokenmeter.online/j/<id>`)를 출력하면, 친구가 `tokenmeter league join <링크>`로 들어옵니다. 오버레이의 리그 판에 멤버마다 tok/s가 뜹니다. 값은 멤버의 미터끼리 QUIC(iroh)으로 직접 오가고, 직접 경로가 막히면 TokenMeter 릴레이를 거칩니다. 서버는 방 목록만 갖습니다. 방 하나에 20명, 한 사람이 방 8개까지입니다. `tokenmeter league`는 내 방과 초대 링크를 보여 주고, `leave`·`close`로 나가거나 닫습니다. macOS 방화벽을 켜 두었다면 들어오는 연결 허용 창이 뜰 수 있습니다. 거부해도 실시간 값은 릴레이로 오갑니다.
 
 ## 업데이트와 제거
 

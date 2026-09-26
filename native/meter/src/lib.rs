@@ -5,10 +5,12 @@ pub mod cli;
 pub mod daemon;
 pub mod engine;
 pub mod fixture;
+pub mod github;
 pub mod history;
 pub mod i18n;
 pub mod install;
 pub mod league;
+pub mod live;
 pub mod live_rate;
 #[cfg(target_os = "macos")]
 pub mod macos;

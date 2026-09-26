@@ -16,11 +16,13 @@ egui = "0.31"
 glob = "0.3"
 rusqlite = { version = "0.40", features = ["bundled"] }
 ruzstd = "0.9"
+iroh = { version = "1.2", default-features = false, features = ["tls-ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 tokenmeter-hook = { path = "../hook" }
 tokenmeter-protocol = { path = "../protocol" }
+tokio = { version = "1", features = ["rt", "sync", "time", "io-util", "macros"] }
 ureq = { version = "2", features = ["json"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1278,11 +1278,11 @@ fn cmd_league(args: &Args) -> i32 {
     match args.rest.first().map(String::as_str) {
         Some("login") => league::login(),
         Some("logout") => league::logout(),
-        Some("open") => league::open_room(flag(args, "rule").unwrap_or("cost")),
+        Some("open") => league::open_room(""),
         Some("join") => league::join_room(args.rest.get(1).map(String::as_str).unwrap_or("")),
         Some("leave") => league::leave(args.rest.get(1).map(String::as_str)),
         Some("close") => league::close_room(args.rest.get(1).map(String::as_str)),
-        _ => league::soon(),
+        _ => league::show(),
     }
 }
 
@@ -1325,6 +1325,9 @@ fn cmd_account(args: &Args) -> i32 {
         println!("  서버에 보낸 데이터가 없습니다. 공유를 껐습니다.");
         return 0;
     };
+    if crate::league::has_auth() {
+        println!("  You are logged in to Token League: this also deletes your league account, every linked device's data and your room memberships.");
+    }
     if !on(args, "yes") {
         print!("  서버에 있는 이 기기의 사용 데이터를 모두 지웁니다. 계속할까요? [y/N] ");
         let _ = std::io::stdout().flush();
@@ -1339,6 +1342,7 @@ fn cmd_account(args: &Args) -> i32 {
         Ok(()) | Err(crate::server::ApiError::Status(401, _)) => {
             crate::server::forget_device();
             crate::sync::forget();
+            crate::league::forget();
             println!("  서버의 사용 데이터를 지우고 공유를 껐습니다.");
             0
         }

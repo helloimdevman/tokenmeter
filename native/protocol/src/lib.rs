@@ -15,6 +15,14 @@ pub const FUTURE_SECS: i64 = 3_600;
 pub const HOUR_STEP: i64 = 900;
 /// 공유가 꺼진 사용자의 합계 셀은 네 라벨이 모두 이 값이다.
 pub const ALL: &str = "*";
+/// 방 안 실시간 연결의 ALPN.
+pub const LIVE_ALPN: &[u8] = b"tokenleague/live/1";
+/// 실시간 한 줄의 최대 바이트('\n' 포함). 넘으면 받는 쪽이 연결을 끊는다.
+pub const MAX_LINE: usize = 1024;
+/// 한 사용자가 들어가 있을 수 있는 방 수.
+pub const MAX_ROOMS: i64 = 8;
+/// 한 방의 최대 인원.
+pub const MAX_MEMBERS: i64 = 20;
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct ServerConfig {
@@ -75,6 +83,58 @@ pub struct Cell {
 pub struct ErrorBody {
     pub error: String,
     pub message: String,
+}
+
+/// `POST /v1/auth/github`. GitHub 토큰은 서버가 확인한 뒤 바로 폐기한다.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct AuthRequest {
+    pub github_token: String,
+    /// 이 기기의 iroh EndpointId(소문자 16진수 64자).
+    pub endpoint_id: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct AuthResponse {
+    pub user_id: i64,
+    pub login: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct RoomList {
+    pub rooms: Vec<Room>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct Room {
+    /// URL에 쓸 수 있는 12자(`[A-Za-z0-9_-]`).
+    pub id: String,
+    pub host_id: i64,
+    /// 들어온 순서.
+    pub members: Vec<Member>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct Member {
+    pub user_id: i64,
+    pub login: String,
+    /// 로그인한 기기마다 하나.
+    pub endpoints: Vec<String>,
+}
+
+/// 멤버끼리 단방향 스트림에 보내는 한 줄(JSON + '\n'). 이름은 보내지 않는다:
+/// 받는 쪽이 연결 상대의 EndpointId를 멤버 목록에 맞춘다. 모르는 필드는 무시한다.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Default)]
+pub struct LiveLine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tps: Option<f64>,
+}
+
+pub fn endpoint_ok(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub fn room_id_ok(id: &str) -> bool {
+    id.len() == 12 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 impl Cell {
@@ -157,10 +217,8 @@ pub fn validate(up: &UsageUpload, now: i64) -> Result<(), String> {
     if up.hours.len() > MAX_HOURS {
         return Err(format!("more than {MAX_HOURS} hours"));
     }
-    if let Some(id) = &up.endpoint_id {
-        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-            return Err("bad endpoint_id".into());
-        }
+    if up.endpoint_id.as_deref().is_some_and(|id| !endpoint_ok(id)) {
+        return Err("bad endpoint_id".into());
     }
     let mut hours = HashSet::new();
     for hour in &up.hours {
@@ -296,6 +354,25 @@ mod tests {
         assert_eq!(Label::Client.clean(""), "unknown");
     }
 
+    #[test]
+    fn ids_follow_the_rules() {
+        assert!(endpoint_ok(&"ae".repeat(32)));
+        for bad in ["", "AE".repeat(32).as_str(), "g".repeat(64).as_str(), "a".repeat(63).as_str()] {
+            assert!(!endpoint_ok(bad), "{bad:?}");
+        }
+        assert!(room_id_ok("aZ0_-aZ0_-aZ"));
+        for bad in ["", "short", "aZ0_-aZ0_-aZ0", "aZ0_-aZ0_-a/", "방방방방"] {
+            assert!(!room_id_ok(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn live_lines_ignore_what_they_do_not_know() {
+        let line: LiveLine = serde_json::from_str(r#"{"tps": 12.5, "later": 1}"#).unwrap();
+        assert_eq!(line.tps, Some(12.5));
+        assert_eq!(serde_json::to_string(&LiveLine::default()).unwrap(), "{}");
+    }
+
     fn pretty<T: serde::Serialize>(v: &T) -> String {
         serde_json::to_string_pretty(v).unwrap() + "\n"
     }
@@ -309,6 +386,11 @@ mod tests {
             ("device-response", pretty(&schemars::schema_for!(DeviceResponse))),
             ("usage-upload", pretty(&schemars::schema_for!(UsageUpload))),
             ("error", pretty(&schemars::schema_for!(ErrorBody))),
+            ("auth-request", pretty(&schemars::schema_for!(AuthRequest))),
+            ("auth-response", pretty(&schemars::schema_for!(AuthResponse))),
+            ("room", pretty(&schemars::schema_for!(Room))),
+            ("rooms", pretty(&schemars::schema_for!(RoomList))),
+            ("live-line", pretty(&schemars::schema_for!(LiveLine))),
         ];
         for (name, text) in schemas {
             let path = dir.join(format!("{name}.schema.json"));

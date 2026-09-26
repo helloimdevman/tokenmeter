@@ -1,6 +1,6 @@
 [package]
 name = "tokenmeter-protocol"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Wire types shared by the TokenMeter client and the Token League server"
 license = "MIT"

@@ -5,7 +5,7 @@ use super::delta::TokenDelta;
 use super::expr::{Env, Pick};
 use super::ledger::{self, key_hash, record_hash, Vals};
 use super::probe::resolve_endpoint;
-use super::reader::{path_key, ServiceReader};
+use super::reader::{path_key, ServiceReader, Source};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -31,6 +31,7 @@ fn int(pick: Option<&Pick>, env: &Env) -> i64 {
 impl ServiceReader {
     pub(super) fn handle(
         &mut self,
+        src: &mut Source,
         obj: &Value,
         path: &Path,
         out: &mut Vec<TokenDelta>,
@@ -39,11 +40,11 @@ impl ServiceReader {
         let key = path_key(path);
         // 문맥 학습: 이 레코드에 값이 있으면 파일 문맥을 바꾼다. 문맥 식의 `$ctx`는 앞 레코드까지 배운 값.
         let ctx_map = {
-            let learned = self.ctx.entry(key.clone()).or_default();
+            let learned = src.ctx.entry(key.clone()).or_default();
             let found: Vec<(String, String)> = {
                 let get = |name: &str| learned.get(name).cloned();
                 let env = Env::new(obj, &get);
-                self.x
+                src.x
                     .context
                     .iter()
                     .filter_map(|(name, p)| Some((name.clone(), p.text(&env)?)))
@@ -54,35 +55,35 @@ impl ServiceReader {
         };
         let get = |name: &str| ctx_map.get(name).cloned();
         let env = Env::new(obj, &get);
-        if !cond::all(&self.x.conds, &env) {
+        if !cond::all(&src.x.conds, &env) {
             return;
         }
         // 필드와 토큰 의미(F5): input에 든 칸은 그 합이 input 이하일 때만 뺀다.
         let mut vals: Vals = [0.0; 6];
-        for (slot, pick) in vals.iter_mut().zip(&self.x.fields) {
+        for (slot, pick) in vals.iter_mut().zip(&src.x.fields) {
             *slot = val(pick.as_ref(), &env).trunc();
         }
-        vals[4] = val(self.x.cost_usd.as_ref(), &env);
-        vals[5] = val(self.x.duration_ms.as_ref(), &env);
-        let inside: f64 = self.x.input_includes.iter().map(|i| vals[*i]).sum();
+        vals[4] = val(src.x.cost_usd.as_ref(), &env);
+        vals[5] = val(src.x.duration_ms.as_ref(), &env);
+        let inside: f64 = src.x.input_includes.iter().map(|i| vals[*i]).sum();
         if inside <= vals[0] {
             vals[0] -= inside;
         }
-        if let Some(p) = &self.x.rebase_on {
+        if let Some(p) = &src.x.rebase_on {
             let h = key_hash(&p.text(&env).unwrap_or_default());
-            if self.roll.insert(key.clone(), h).is_some_and(|old| old != h) {
-                self.rolling = true;
+            if src.roll.insert(key.clone(), h).is_some_and(|old| old != h) {
+                src.rolling = true;
             }
         }
         // 키와 모드(F2)
-        let stream = self
+        let stream = src
             .x
             .key
             .as_ref()
             .and_then(|k| k.text(&env))
             .map(|k| key_hash(&k));
-        let (d, calls, fresh) = if self.spec.mode == "cumulative" {
-            let Some((d, calls)) = self.cumulative(&key, stream, vals) else {
+        let (d, calls, fresh) = if src.spec.mode == "cumulative" {
+            let Some((d, calls)) = self.cumulative(src, &key, stream, vals) else {
                 return;
             };
             (d, calls, true)
@@ -121,12 +122,12 @@ impl ServiceReader {
         let effort = pick_ctx("effort", "");
         let endpoint = self.endpoint_for(&session, &vendor);
         output_tokens = self.adjust_live_output(&env, &session, output_tokens, fresh);
-        let subagent = self.x.subagent.as_ref().is_some_and(|p| p.truthy(&env));
+        let subagent = src.x.subagent.as_ref().is_some_and(|p| p.truthy(&env));
         let (ctx_now, ctx_win) = if subagent {
             (0, 0)
-        } else if let Some(p) = &self.x.ctx_tokens {
+        } else if let Some(p) = &src.x.ctx_tokens {
             let current = int(Some(p), &env);
-            let window = Some(int(self.x.ctx_window.as_ref(), &env))
+            let window = Some(int(src.x.ctx_window.as_ref(), &env))
                 .filter(|n| *n > 0)
                 .unwrap_or_else(|| crate::pricing::context_window(&model, current));
             (current, window)
@@ -201,27 +202,29 @@ impl ServiceReader {
     }
 
     /// cumulative(F2): 스트림(키, 없으면 파일)의 기준값과의 차이와 calls. None이면 낼 것이 없다.
-    fn cumulative(&mut self, file: &str, stream: Option<u64>, v: Vals) -> Option<(Vals, bool)> {
-        let mine = self.base.get(file).and_then(|b| b.get(&stream)).copied();
-        // 이 파일에 기준값이 없으면 같은 서비스 다른 파일의 같은 키(파일 사이 복사본)
+    /// `src`는 `with_source`로 꺼내 둔 소스라 `self.sources`에는 다른 소스만 남아 있다.
+    fn cumulative(&mut self, src: &mut Source, file: &str, stream: Option<u64>, v: Vals) -> Option<(Vals, bool)> {
+        let mine = src.base.get(file).and_then(|b| b.get(&stream)).copied();
+        // 이 파일에 기준값이 없으면 같은 서비스 다른 파일 항목(다른 소스 포함)의 같은 키(파일 사이 복사본)
         // ponytail: 파일 수만큼 훑는다(파일·스트림마다 처음 한 번). 느려지면 키 → 파일 색인을 둔다.
         let other = match (mine, stream) {
-            (None, Some(_)) => self
+            (None, Some(_)) => src
                 .base
                 .iter()
                 .filter(|(f, _)| f.as_str() != file)
+                .chain(self.sources.iter().flat_map(|s| &s.base))
                 .filter_map(|(_, b)| b.get(&stream).copied())
                 .max_by(|a, b| a[..4].iter().sum::<f64>().total_cmp(&b[..4].iter().sum())),
             _ => None,
         };
-        self.base
+        src.base
             .entry(file.to_string())
             .or_default()
             .insert(stream, v);
-        if self.rolling {
+        if src.rolling {
             return None;
         }
-        if mine.is_none() && other.is_none() && self.blind.remove(file) {
+        if mine.is_none() && other.is_none() && src.blind.remove(file) {
             return None;
         }
         // 기준값이 어디에도 없으면 지금처럼 0에서 시작한 스트림으로 본다(2.9가 문턱으로 가른다).

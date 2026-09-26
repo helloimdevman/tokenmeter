@@ -60,7 +60,11 @@ fn spec_at(name: &str, root: &Path) -> ServiceSpec {
         .into_iter()
         .find(|s| s.name == name)
         .unwrap_or_else(|| panic!("services.yaml 에 {name} 가 없다"));
-    spec.roots = vec![root.to_string_lossy().into_owned()];
+    let root = vec![root.to_string_lossy().into_owned()];
+    for s in &mut spec.sources {
+        s.roots = root.clone();
+    }
+    spec.roots = root;
     spec
 }
 
@@ -137,8 +141,11 @@ fn grok_chunk(event: &str, text: &str, thought: bool, total: i64) -> Value {
 #[test]
 fn enabled_services_declare_token_fields() {
     for spec in default_specs() {
-        let has = |f: &str| spec.fields.get(f).is_some_and(|v| !v.is_null());
-        assert!(has("output") || has("input"), "{}", spec.name);
+        let views = if spec.sources.is_empty() { vec![&spec] } else { spec.sources.iter().collect() };
+        for view in views {
+            let has = |f: &str| view.fields.get(f).is_some_and(|v| !v.is_null());
+            assert!(has("output") || has("input"), "{}", spec.name);
+        }
     }
 }
 
@@ -838,6 +845,7 @@ fn legacy_forms_only_from_user_override() {
         "context:\n  model: [a.model, a.1.model]",
         "input_includes_cache: true",
         "input_includes_cache: false",
+        "sources: [{fields: {output: usage.0.out}}]",
     ] {
         assert!(uses_legacy(legacy), "adapters/에 넣으면 builtin_adapters_use_current_syntax가 막는다: {legacy}");
     }
@@ -864,4 +872,136 @@ fn builtin_probe_keys_take_the_vendor_from_ctx() {
     let mut opencode = ServiceReader::new(spec_at("opencode", &root));
     assert_eq!(opencode.endpoint_for("", "acme"), "https://gw.acme.test/v1");
     assert_eq!(opencode.endpoint_for("", "nope"), "", "벤더 항목이 없으면 비어 있다(opencode는 default가 없다)");
+}
+
+#[test]
+fn sources_inherit_and_override_service_level_keys() {
+    let (_g, tmp) = crate::test_home("src-merge");
+    let root = tmp.join("d");
+    let mut reader = inline(
+        &root,
+        r#"patterns: ["*.jsonl"], match: {kind: call}, key: id, fields: {input: u.in, output: u.out},
+        sources: [{fields: {output: u.out2}}, {patterns: ["*.log"], match: {src: b}, mode: cumulative, key: id2}]"#,
+    );
+    let [a, b] = &reader.spec.sources[..] else { panic!("소스 둘") };
+    let text = |v: &serde_yaml::Value| v.as_str().unwrap_or_default().to_string();
+    assert_eq!((text(&a.fields["input"]), text(&a.fields["output"])), ("u.in".into(), "u.out2".into()), "맵은 깊게");
+    assert_eq!((a.patterns.clone(), text(&a.key), a.mode.as_str()), (vec!["*.jsonl".to_string()], "id".into(), "delta"));
+    assert_eq!(
+        (b.patterns.clone(), text(&b.key), b.mode.as_str()),
+        (vec!["*.log".to_string()], "id2".into(), "cumulative"),
+        "목록과 스칼라는 바꾼다"
+    );
+    assert_eq!(b.match_fields.len(), 2, "match도 맵이라 서비스 조건에 더해진다");
+    append(&root.join("a.jsonl"), &lines(&[
+        json!({"kind": "call", "src": "b", "id": "1", "id2": "z", "u": {"in": 3, "out": 5, "out2": 7}}),
+    ]));
+    append(&root.join("b.log"), &lines(&[
+        json!({"kind": "call", "src": "b", "id2": "x", "u": {"in": 10, "out": 20}}),
+        json!({"src": "b", "id2": "y", "u": {"in": 100, "out": 1}}),
+    ]));
+    let got: Vec<_> = reader.poll().iter().map(vec4).collect();
+    assert_eq!(got, [(3, 0, 0, 7), (10, 0, 0, 20)], "둘째 소스는 *.log만 읽고 kind도 본다");
+}
+
+#[test]
+fn two_sources_share_one_ledger() {
+    let (_g, tmp) = crate::test_home("src-ledger");
+    let root = tmp.join("d");
+    let mut reader = inline(
+        &root,
+        r#"key: id, fields: {output: out}, sources: [{patterns: ["*.jsonl"]}, {patterns: ["old/*.json"], format: json}]"#,
+    );
+    append(&root.join("s.jsonl"), &lines(&[json!({"id": "m1", "out": 5}), json!({"id": "m2", "out": 4})]));
+    write_json(&root.join("old/m1.json"), &json!({"id": "m1", "out": 5}), 1);
+    write_json(&root.join("old/m3.json"), &json!({"id": "m3", "out": 2}), 1);
+    let got = reader.poll();
+    assert_eq!((sum4(&got).3, calls(&got)), (5 + 4 + 2, 3), "두 소스에 같은 키가 있으면 한 번");
+    write_json(&root.join("old/m1.json"), &json!({"id": "m1", "out": 8}), 2);
+    let got = reader.poll();
+    assert_eq!((got.len(), got[0].output_tokens, got[0].calls), (1, 3, 0), "다른 소스가 본 값에서 늘어난 만큼만");
+
+    // cumulative 기준값도 서비스 안의 다른 파일 항목을 본다(소스가 달라도)
+    let root = tmp.join("c");
+    let mut reader = inline(
+        &root,
+        r#"mode: cumulative, key: sid, fields: {output: out}, sources: [{patterns: ["*.jsonl"]}, {patterns: ["*.log"]}]"#,
+    );
+    append(&root.join("a.jsonl"), &lines(&[json!({"sid": "s", "out": 100})]));
+    append(&root.join("b.log"), &lines(&[json!({"sid": "s", "out": 130})]));
+    let got = reader.poll();
+    assert_eq!(got.iter().map(|d| d.output_tokens).collect::<Vec<_>>(), [100, 30]);
+    assert_eq!(calls(&got), 1);
+}
+
+#[test]
+fn empty_entry_is_the_service_defaults() {
+    let (_g, tmp) = crate::test_home("src-empty");
+    let root = tmp.join("d");
+    append(&root.join("s.jsonl"), &lines(&[
+        json!({"id": "a", "sid": "s-1", "out": 5}),
+        json!({"id": "b", "out": 6}),
+        json!({"id": "a", "out": 5}),
+    ]));
+    let body = "key: id, fields: {output: out}, context: {session: sid}";
+    let seen = |got: Vec<TokenDelta>| -> Vec<_> { got.iter().map(|d| (vec4(d), d.session.clone(), d.calls)).collect() };
+    let plain = seen(inline(&root, body).poll());
+    let mut reader = inline(&root, &format!("{body}, sources: [{{}}]"));
+    assert_eq!(reader.spec.sources.len(), 1);
+    let got = seen(reader.poll());
+    assert_eq!(got, plain);
+    assert_eq!(got.len(), 2);
+}
+
+#[test]
+fn service_only_key_in_source_is_rejected() {
+    let (_g, root) = crate::test_home("src-only");
+    write_user_services(
+        &root,
+        r#"services:
+  a:
+    roots: ["~/x"]
+    fields: {output: n}
+    sources: [{plan: api}]
+  b:
+    roots: ["~/x"]
+    sources: [{fields: {output: n}}, {fields: {input: "a["}}]
+  c:
+    roots: ["~/x"]
+    sources: [{roots: "not-a-list"}]
+  d:
+    roots: ["~/x"]
+    sources: [{fields: {output: n}, colour: red}]
+"#,
+    );
+    let names = loaded_names();
+    for bad in ["a", "b", "c"] {
+        assert!(!names.contains(&bad.to_string()), "{bad}");
+    }
+    assert!(names.contains(&"d".to_string()) && names.contains(&"claude-code".to_string()));
+    let report = load_report();
+    for (id, site) in [("a", "sources[0].plan"), ("b", "sources[1].fields.input"), ("c", "sources[0].roots")] {
+        assert!(report.skipped.iter().any(|(s, why)| s == id && why.starts_with(site)), "{id}: {:?}", report.skipped);
+    }
+    assert_eq!(report.warnings, vec!["d: unknown key sources[0].colour".to_string()], "모르는 키는 경고뿐");
+}
+
+#[test]
+fn sources_report_under_the_service_name() {
+    let (_g, root) = crate::test_home("src-name");
+    let data = root.join("data");
+    write_user_services(
+        &root,
+        &format!(
+            "services:\n  mine:\n    label: Mine\n    roots: [{data:?}]\n    key: id\n    fields: {{output: out}}\n    sources: [{{match: {{t: a}}}}, {{match: {{t: b}}}}]\n"
+        ),
+    );
+    let specs = load_all_specs();
+    assert_eq!(specs.iter().filter(|s| s.name == "mine").count(), 1, "소스마다 서비스가 생기지 않는다");
+    let mut reader = ServiceReader::new(specs.into_iter().find(|s| s.name == "mine").unwrap());
+    append(&data.join("s.jsonl"), &lines(&[json!({"t": "a", "id": 1, "out": 3}), json!({"t": "b", "id": 2, "out": 4})]));
+    assert_eq!(reader.files().len(), 1, "두 소스가 같은 파일을 읽어도 목록에는 한 번");
+    let got = reader.poll();
+    assert_eq!(got.iter().map(|d| (d.service.as_str(), d.output_tokens)).collect::<Vec<_>>(), [("mine", 3), ("mine", 4)]);
+    assert!(reader.spec.sources.iter().all(|s| s.name == "mine" && s.label == "Mine"));
 }

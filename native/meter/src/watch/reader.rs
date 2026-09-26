@@ -1,4 +1,4 @@
-//! 파일 찾기, 폴, JSON·JSONL 읽기.
+//! 파일 찾기, 폴, JSON·JSONL 읽기. 소스(F11)마다 파일 상태, 서비스마다 장부·프로브 캐시.
 
 use super::delta::TokenDelta;
 use super::ledger::{Ledger, Vals};
@@ -21,14 +21,24 @@ const LEDGER_CAP: usize = 500_000;
 
 pub struct ServiceReader {
     pub spec: ServiceSpec,
+    /// 서비스 수준 자리(프로브 키, `live_chars`). 소스 자리는 `Source::x`.
     pub(super) x: Compiled,
+    pub(super) sources: Vec<Source>,
     pub(super) plan: String,
     pub(super) endpoint: HashMap<String, String>,
+    /// delta 키(없으면 레코드 해시)의 칸별 최댓값. 서비스에 하나, 소스들이 같이 쓴다(F2, F11).
+    pub(super) ledger: Ledger,
+    pub(super) live_out: HashMap<String, i64>,
+}
+
+/// 읽기 단위 하나(F11): 병합한 스펙과 그 파일 상태.
+#[derive(Default)]
+pub(super) struct Source {
+    pub(super) spec: ServiceSpec,
+    pub(super) x: Compiled,
     offset: HashMap<String, u64>,
     mtime: HashMap<String, f64>,
     pub(super) ctx: HashMap<String, HashMap<String, String>>,
-    /// delta 키(없으면 레코드 해시)의 칸별 최댓값. 서비스에 하나(F2).
-    pub(super) ledger: Ledger,
     /// cumulative 기준값: 파일 → 스트림 키 해시(키가 없으면 None) → 값.
     pub(super) base: HashMap<String, HashMap<Option<u64>, Vals>>,
     /// 파일마다 지난 `rebase_on` 값의 해시.
@@ -36,32 +46,16 @@ pub struct ServiceReader {
     /// 이번 파일 읽기에서 `rebase_on`이 바뀌었다: 기준값만 잡고 내지 않는다.
     pub(super) rolling: bool,
     pub(super) blind: HashSet<String>,
-    pub(super) live_out: HashMap<String, i64>,
 }
 
-impl ServiceReader {
-    pub fn new(spec: ServiceSpec) -> Self {
+impl Source {
+    fn new(spec: ServiceSpec) -> Self {
         // 로더가 이미 검증했다. 검증 없이 만든 스펙(adapter check)의 틀린 식은 아무것도 읽지 않는다.
         let x = Compiled::new(&spec).unwrap_or_default();
-        let plan = resolve_plan(&spec, x.plan_key.as_ref());
-        Self {
-            spec,
-            x,
-            plan,
-            endpoint: HashMap::new(),
-            offset: HashMap::new(),
-            mtime: HashMap::new(),
-            ctx: HashMap::new(),
-            ledger: Ledger::new(now_secs, LEDGER_CAP),
-            base: HashMap::new(),
-            roll: HashMap::new(),
-            rolling: false,
-            blind: HashSet::new(),
-            live_out: HashMap::new(),
-        }
+        Self { spec, x, ..Default::default() }
     }
 
-    pub fn files(&self) -> Vec<PathBuf> {
+    fn files(&self) -> Vec<PathBuf> {
         let mut out = Vec::new();
         for root in &self.spec.roots {
             let root = expand_home(root);
@@ -82,52 +76,115 @@ impl ServiceReader {
         out
     }
 
+    /// 지난 읽기 뒤로 바뀌지 않았다.
+    fn unchanged(&self, path: &Path) -> bool {
+        let key = path_key(path);
+        fs::metadata(path).is_ok_and(|stat| {
+            self.mtime.get(&key).copied() == Some(mtime_of(&stat))
+                && (self.spec.format == "json"
+                    || self.offset.get(&key).copied().unwrap_or(0) >= stat.len())
+        })
+    }
+}
+
+impl ServiceReader {
+    pub fn new(spec: ServiceSpec) -> Self {
+        let x = Compiled::new(&spec).unwrap_or_default();
+        let plan = resolve_plan(&spec, x.plan_key.as_ref());
+        // 소스가 없으면 서비스 자체가 소스 하나다(F11)
+        let views = if spec.sources.is_empty() {
+            vec![spec.clone()]
+        } else {
+            spec.sources.clone()
+        };
+        Self {
+            spec,
+            x,
+            sources: views.into_iter().map(Source::new).collect(),
+            plan,
+            endpoint: HashMap::new(),
+            ledger: Ledger::new(now_secs, LEDGER_CAP),
+            live_out: HashMap::new(),
+        }
+    }
+
+    /// 모든 소스가 찾는 파일. 두 소스가 같은 파일을 읽어도 한 번만 든다.
+    pub fn files(&self) -> Vec<PathBuf> {
+        let mut seen = HashSet::new();
+        let mut out: Vec<PathBuf> = self.sources.iter().flat_map(Source::files).collect();
+        out.retain(|p| seen.insert(p.clone()));
+        out
+    }
+
+    /// 소스 `i`를 잠시 꺼내 읽는다. 소스는 제 파일 상태를, 장부·프로브 캐시는 `self`를 쓴다.
+    fn with_source(&mut self, i: usize, f: impl FnOnce(&mut Self, &mut Source)) {
+        let mut src = std::mem::take(&mut self.sources[i]);
+        f(self, &mut src);
+        self.sources[i] = src;
+    }
+
     pub fn prime(&mut self) {
         let cutoff = now_secs() - PRIME_WINDOW_SECS;
-        for path in self.files() {
-            let Ok(stat) = fs::metadata(&path) else {
-                continue;
-            };
-            if mtime_of(&stat) >= cutoff {
-                let _ = self.read_file(&path, false);
-            } else {
-                let key = path_key(&path);
-                self.offset.insert(key.clone(), stat.len());
-                self.mtime.insert(key.clone(), mtime_of(&stat));
-                self.blind.insert(key);
-            }
+        for i in 0..self.sources.len() {
+            self.with_source(i, |me, src| {
+                for path in src.files() {
+                    let Ok(stat) = fs::metadata(&path) else {
+                        continue;
+                    };
+                    if mtime_of(&stat) >= cutoff {
+                        let _ = me.read_in(src, &path, false);
+                    } else {
+                        let key = path_key(&path);
+                        src.offset.insert(key.clone(), stat.len());
+                        src.mtime.insert(key.clone(), mtime_of(&stat));
+                        src.blind.insert(key);
+                    }
+                }
+            });
         }
     }
 
     pub fn poll(&mut self) -> Vec<TokenDelta> {
         let mut all = Vec::new();
-        for path in self.files() {
-            let key = path_key(&path);
-            if let Ok(stat) = fs::metadata(&path) {
-                if self.mtime.get(&key).copied() == Some(mtime_of(&stat))
-                    && (self.spec.format == "json"
-                        || self.offset.get(&key).copied().unwrap_or(0) >= stat.len())
-                {
-                    continue;
+        for i in 0..self.sources.len() {
+            self.with_source(i, |me, src| {
+                for path in src.files() {
+                    if !src.unchanged(&path) {
+                        all.extend(me.read_in(src, &path, true));
+                    }
                 }
-            }
-            all.extend(self.read_file(&path, true));
+            });
         }
         all
     }
 
+    /// 그 파일을 찾는 소스마다 읽는다(`doctor` 표본).
+    /// ponytail: 소스가 여럿이면 부를 때마다 소스별 glob을 돈다. 느려지면 패턴 대조로 바꾼다.
     pub fn read_file(&mut self, path: &Path, emit: bool) -> Vec<TokenDelta> {
+        let only = self.sources.len() == 1;
         let mut out = Vec::new();
-        self.rolling = false;
-        if self.spec.format == "json" {
-            self.read_json(path, &mut out, emit);
-        } else {
-            self.read_jsonl(path, &mut out, emit);
+        for i in 0..self.sources.len() {
+            self.with_source(i, |me, src| {
+                if only || src.files().iter().any(|p| p == path) {
+                    out.extend(me.read_in(src, path, emit));
+                }
+            });
         }
         out
     }
 
-    fn read_json(&mut self, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {
+    fn read_in(&mut self, src: &mut Source, path: &Path, emit: bool) -> Vec<TokenDelta> {
+        let mut out = Vec::new();
+        src.rolling = false;
+        if src.spec.format == "json" {
+            self.read_json(src, path, &mut out, emit);
+        } else {
+            self.read_jsonl(src, path, &mut out, emit);
+        }
+        out
+    }
+
+    fn read_json(&mut self, src: &mut Source, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {
         let Ok(stat) = fs::metadata(path) else { return };
         let Ok(raw) = fs::read_to_string(path) else {
             return;
@@ -139,20 +196,20 @@ impl ServiceReader {
         let Ok(obj) = serde_json::from_str::<Value>(raw) else {
             return;
         };
-        self.handle(&obj, path, out, emit);
-        self.mtime.insert(path_key(path), mtime_of(&stat));
+        self.handle(src, &obj, path, out, emit);
+        src.mtime.insert(path_key(path), mtime_of(&stat));
     }
 
-    fn read_jsonl(&mut self, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {
+    fn read_jsonl(&mut self, src: &mut Source, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {
         let Ok(stat) = fs::metadata(path) else { return };
         let key = path_key(path);
         let size = stat.len();
-        let mut offset = self.offset.get(&key).copied().unwrap_or(0);
+        let mut offset = src.offset.get(&key).copied().unwrap_or(0);
         if size < offset {
             offset = 0;
         }
         if size == offset {
-            self.mtime.insert(key, mtime_of(&stat));
+            src.mtime.insert(key, mtime_of(&stat));
             return;
         }
         let Ok(mut file) = fs::File::open(path) else {
@@ -180,11 +237,11 @@ impl ServiceReader {
                 continue;
             }
             if let Ok(obj) = serde_json::from_str::<Value>(text) {
-                self.handle(&obj, path, out, emit);
+                self.handle(src, &obj, path, out, emit);
             }
         }
-        self.offset.insert(key.clone(), pos);
-        self.mtime.insert(key, mtime_of(&stat));
+        src.offset.insert(key.clone(), pos);
+        src.mtime.insert(key, mtime_of(&stat));
     }
 }
 

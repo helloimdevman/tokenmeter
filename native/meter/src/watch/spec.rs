@@ -67,6 +67,9 @@ pub struct ServiceSpec {
     pub rebase_on: serde_yaml::Value,
     #[serde(default)]
     pub install: InstallSpec,
+    /// 읽기 단위(F11). 항목마다 서비스 수준 값 위에 깊은 병합한 스펙이다. 비면 서비스 자체가 소스 하나다.
+    #[serde(default)]
+    pub sources: Vec<ServiceSpec>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -222,6 +225,7 @@ pub(super) fn upgrade_legacy(block: &mut serde_yaml::Value) {
                 .flat_map(|m| m.values_mut())
                 .for_each(paths),
             "match" => v.as_mapping_mut().into_iter().for_each(conds),
+            "sources" => v.as_sequence_mut().into_iter().flatten().for_each(upgrade_legacy),
             "plan_probe" | "endpoint_probe" => {
                 if let Some(key) = v.get_mut("key") {
                     if let Y::String(s) = key {
@@ -312,6 +316,8 @@ struct YamlService {
     label: Option<String>,
     #[serde(default)]
     install: Option<InstallSpec>,
+    #[serde(default)]
+    sources: Vec<serde_yaml::Mapping>,
 }
 
 /// `settings`만 든다. 기본 서비스는 `ADAPTERS`(adapters/*.yaml)에서 온다.
@@ -319,12 +325,17 @@ const DEFAULT_YAML: &str = include_str!("../../services.yaml");
 
 include!(concat!(env!("OUT_DIR"), "/adapters.rs"));
 
-/// 서비스 블록의 최상위 키(`YamlService` 필드). 모르는 키는 `LoadReport::warnings`로 간다.
-pub const KNOWN_SERVICE_KEYS: &[&str] = &[
-    "enabled", "label", "roots", "patterns", "format", "match", "mode", "key",
-    "input_includes", "fields", "context", "ctx_tokens", "ctx_window", "subagent",
-    "default_model", "vendor", "plan", "plan_probe", "endpoint", "endpoint_probe",
-    "live_chars", "duration_ms", "cost_usd", "rebase_on", "install",
+/// 소스 항목에 둘 수 있는 키(F11). 서비스 수준에 두면 모든 소스의 기본값이다.
+/// 모르는 키는 `LoadReport::warnings`로 간다.
+pub const KNOWN_SOURCE_KEYS: &[&str] = &[
+    "roots", "patterns", "format", "match", "mode", "key", "input_includes", "fields",
+    "context", "ctx_tokens", "ctx_window", "subagent", "duration_ms", "cost_usd", "rebase_on",
+];
+
+/// 서비스 수준에만 두는 키(F11). 소스 항목에 있으면 그 서비스가 빠진다.
+pub const SERVICE_ONLY_KEYS: &[&str] = &[
+    "enabled", "label", "default_model", "vendor", "plan", "plan_probe", "endpoint",
+    "endpoint_probe", "live_chars", "install", "sources",
 ];
 
 /// 로딩에서 빠진 서비스(id, 이유)와 모르는 키 경고. 데몬 로그와 `doctor`가 보인다.
@@ -511,25 +522,39 @@ fn load_specs(raw: &serde_yaml::Value) -> (Vec<ServiceSpec>, LoadReport) {
     let mut report = LoadReport::default();
     let mut specs = read_services(raw, &mut report);
     specs.retain(|s| {
-        let why = if !["jsonl", "json"].contains(&s.format.as_str()) {
-            format!("format: unknown value {:?} (jsonl, json)", s.format)
-        } else if !["delta", "cumulative"].contains(&s.mode.as_str()) {
-            format!("mode: unknown value {:?} (delta, cumulative)", s.mode)
+        // 소스가 있으면 서비스 수준은 식 파싱만 본다(형식·키 규칙은 병합한 소스마다)
+        let why = if s.sources.is_empty() {
+            check_source(s).err()
         } else {
-            match Compiled::new(s) {
-                Err(why) => why,
-                // 파일 안 위치로는 레코드를 가를 수 없다(F2)
-                Ok(x) if s.format == "json" && x.key.is_none() => crate::l10n!(
-                    "key: required when format is json",
-                    "key: format이 json이면 필요합니다"
-                ),
-                Ok(_) => return true,
-            }
+            Compiled::new(s).err().or_else(|| {
+                s.sources.iter().enumerate().find_map(|(i, src)| {
+                    check_source(src).err().map(|e| format!("sources[{i}].{e}"))
+                })
+            })
         };
+        let Some(why) = why else { return true };
         report.skipped.push((s.name.clone(), why));
         false
     });
     (specs, report)
+}
+
+/// 읽기 단위 하나의 검증(1절). 틀리면 "자리: 이유".
+fn check_source(s: &ServiceSpec) -> Result<(), String> {
+    if !["jsonl", "json"].contains(&s.format.as_str()) {
+        return Err(format!("format: unknown value {:?} (jsonl, json)", s.format));
+    }
+    if !["delta", "cumulative"].contains(&s.mode.as_str()) {
+        return Err(format!("mode: unknown value {:?} (delta, cumulative)", s.mode));
+    }
+    // 파일 안 위치로는 레코드를 가를 수 없다(F2)
+    if Compiled::new(s)?.key.is_none() && s.format == "json" {
+        return Err(crate::l10n!(
+            "key: required when format is json",
+            "key: format이 json이면 필요합니다"
+        ));
+    }
+    Ok(())
 }
 
 /// 서비스 블록마다 따로 `YamlService`로 읽는다. 실패하면 `skipped`, 모르는 키는 `warnings`.
@@ -542,21 +567,54 @@ fn read_services(raw: &serde_yaml::Value, report: &mut LoadReport) -> Vec<Servic
         let name = yaml_scalar(name);
         for key in block.as_mapping().into_iter().flat_map(|m| m.keys()) {
             let key = yaml_scalar(key);
-            if !KNOWN_SERVICE_KEYS.contains(&key.as_str()) {
+            if !KNOWN_SOURCE_KEYS.contains(&key.as_str()) && !SERVICE_ONLY_KEYS.contains(&key.as_str()) {
                 report.warnings.push(format!("{name}: unknown key {key}"));
             }
         }
-        // 글로 다시 읽어야 오류에 틀린 키 이름이 붙는다(`from_value`는 경로를 잃는다).
-        let text = serde_yaml::to_string(block).unwrap_or_default();
-        let raw = match serde_yaml::from_str::<YamlService>(&text) {
-            Ok(raw) => raw,
-            Err(e) => {
-                report.skipped.push((name, e.to_string()));
-                continue;
+        match read_service(&name, block, report) {
+            Ok(spec) => out.push(spec),
+            Err(why) => report.skipped.push((name, why)),
+        }
+    }
+    out
+}
+
+/// 서비스 블록 하나와 그 소스들. 소스 항목은 `sources`를 뺀 블록 위에 깊은 병합한다(2.0, F11).
+fn read_service(name: &str, block: &serde_yaml::Value, report: &mut LoadReport) -> Result<ServiceSpec, String> {
+    let (mut spec, entries) = parse_block(name, block)?;
+    let mut base = block.clone();
+    if let Some(m) = base.as_mapping_mut() {
+        m.remove("sources");
+    }
+    for (i, entry) in entries.into_iter().enumerate() {
+        for key in entry.keys().map(yaml_scalar) {
+            if SERVICE_ONLY_KEYS.contains(&key.as_str()) {
+                return Err(crate::l10n!(
+                    "sources[{i}].{key}: only allowed at the service level",
+                    "sources[{i}].{key}: 서비스 수준에만 둘 수 있습니다"
+                ));
             }
-        };
-        let enabled = raw.enabled != Some(false);
-        out.push(ServiceSpec {
+            if !KNOWN_SOURCE_KEYS.contains(&key.as_str()) {
+                report.warnings.push(format!("{name}: unknown key sources[{i}].{key}"));
+            }
+        }
+        let mut merged = base.clone();
+        deep_merge_yaml(&mut merged, entry.into());
+        let (source, _) = parse_block(name, &merged).map_err(|e| format!("sources[{i}].{e}"))?;
+        spec.sources.push(source);
+    }
+    Ok(spec)
+}
+
+/// 블록 하나를 `YamlService`로 읽어 스펙과 (병합 전) 소스 항목으로 나눈다.
+fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Vec<serde_yaml::Mapping>), String> {
+    // 글로 다시 읽어야 오류에 틀린 키 이름이 붙는다(`from_value`는 경로를 잃는다).
+    let text = serde_yaml::to_string(block).unwrap_or_default();
+    let raw = serde_yaml::from_str::<YamlService>(&text).map_err(|e| e.to_string())?;
+    let name = name.to_string();
+    let enabled = raw.enabled != Some(false);
+    Ok((
+        ServiceSpec {
             name: name.clone(),
             label: raw.label.unwrap_or(name),
             enabled,
@@ -583,9 +641,10 @@ fn read_services(raw: &serde_yaml::Value, report: &mut LoadReport) -> Vec<Servic
             cost_usd: raw.cost_usd,
             rebase_on: raw.rebase_on,
             install: raw.install.unwrap_or_default(),
-        });
-    }
-    out
+            sources: Vec::new(),
+        },
+        raw.sources,
+    ))
 }
 
 fn config_dir() -> PathBuf {

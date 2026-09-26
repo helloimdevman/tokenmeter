@@ -136,6 +136,91 @@ fn doctor_json_omits_home_paths_session_ids_and_prompts() {
     );
 }
 
+fn claude_line(uuid: &str, ts: &str, typ: &str, usage: Value) -> String {
+    format!("{}\n", json!({"type": typ, "uuid": uuid, "timestamp": ts, "sessionId": "s-1",
+                            "message": {"model": "claude-opus-5", "usage": usage}}))
+}
+
+#[test]
+fn doctor_since_groups_by_record_local_date() {
+    let root = sandbox("doctor-since");
+    let full = json!({"input_tokens": 2, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 10, "output_tokens": 8});
+    let text = [
+        claude_line("u1", "2026-09-20T10:00:00Z", "assistant", full.clone()),
+        claude_line("u1", "2026-09-20T10:00:00Z", "assistant", full.clone()),
+        // 서울 시각으로는 22일 08:30
+        claude_line("u2", "2026-09-21T23:30:00Z", "assistant", json!({"input_tokens": 1, "output_tokens": 4})),
+        claude_line("u3", "2026-09-10T00:00:00Z", "assistant", full.clone()),
+        claude_line("u4", "2026-09-20T11:00:00Z", "user", full),
+    ]
+    .concat();
+    write(&root.join("home/.claude/projects/slug/s.jsonl"), &text);
+    let out = command(&root, Path::new(BIN), &["doctor", "claude-code", "--since", "2026-09-15", "--until", "2026-09-30", "--json"])
+        .env("TZ", "Asia/Seoul")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut got: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    // 2*5 + 100*0.5 + 10*6.25 + 8*25 = 322.5 (백만 토큰당 달러, claude-opus-5)
+    let cost = got["days"]["2026-09-20"]["cost_usd"].take().as_f64().unwrap();
+    assert!((cost - 322.5e-6).abs() < 1e-12, "{cost}");
+    got["days"]["2026-09-22"]["cost_usd"].take();
+    assert_eq!(
+        got,
+        json!({"service": "claude-code", "verified": true, "records": 5, "dropped_by_match": 1,
+               "fields": {"input": 1.0, "cache_read": 0.75, "cache_write": 0.75, "output": 1.0},
+               "days": {
+                   "2026-09-20": {"input": 2, "cache_read": 100, "cache_write": 10, "output": 8, "calls": 1, "cost_usd": null,
+                                  "models": {"claude-opus-5": {"input": 2, "cache_read": 100, "cache_write": 10, "output": 8}}},
+                   "2026-09-22": {"input": 1, "cache_read": 0, "cache_write": 0, "output": 4, "calls": 1, "cost_usd": null,
+                                  "models": {"claude-opus-5": {"input": 1, "cache_read": 0, "cache_write": 0, "output": 4}}}}}),
+        "같은 uuid 는 한 번, 9월 10일은 기간 밖, user 줄은 match 에서 떨어진다"
+    );
+    let bad = tm(&root, &["doctor", "claude-code", "--since", "20260915"]);
+    assert_eq!(bad.status.code(), Some(1));
+}
+
+#[test]
+fn doctor_json_hides_env_and_registry_roots() {
+    let root = sandbox("doctor-private");
+    let home = root.join("home");
+    let secret = home.join("secret-proj");
+    let client = home.join("work/private-client");
+    let line = |id: &str| format!("{}\n", json!({"id": id, "o": 3, "m": "acme-internal-ft-7"}));
+    write(&secret.join("logs/a.jsonl"), &line("a"));
+    write(&client.join("b.jsonl"), &line("b"));
+    write(&home.join("reg.json"), &json!({"projects": [{"dir": client.display().to_string()}]}).to_string());
+    write(
+        &root.join("config/tokenmeter/services.yaml"),
+        "services:\n  mine:\n    roots: [\"${TM_SECRET_DIR}/logs\"]\n    roots_from: [{file: \"~/reg.json\", each: projects, path: dir, patterns: [\"*.jsonl\"]}]\n    key: id\n    fields: {output: o}\n    context: {model: m}\n  bad:\n    roots: [\"/Users/secret-bad/*\"]\n    fields: {output: o}\n",
+    );
+    write(&home.join(".claude/projects/slug/s.jsonl"), &claude_line("u1", "2026-09-20T10:00:00Z", "assistant", json!({"output_tokens": 1})));
+    let out = command(&root, Path::new(BIN), &["doctor", "--json"]).env("TM_SECRET_DIR", &secret).output().unwrap();
+    assert!(out.status.success());
+    let raw = stdout(&out);
+    for private in [home.display().to_string().as_str(), "secret-proj", "private-client", "secret-bad", "TM_SECRET_DIR", "acme-internal", "reg.json"] {
+        assert!(!raw.contains(private), "{private} 가 doctor --json 에 샜다: {raw}");
+    }
+    let payload: Value = serde_json::from_str(&raw).unwrap();
+    let service = |n: &str| payload["services"].as_array().unwrap().iter().find(|s| s["name"] == n).unwrap().clone();
+    assert_eq!(service("claude-code")["roots"], json!(["~/.claude/projects"]), "기본 어댑터의 글자 그대로 루트만 경로로");
+    let mine = service("mine");
+    assert_eq!((mine["roots"].clone(), mine["models"].clone(), mine["ok"].clone()), (json!(["mine#0"]), json!(["other"]), json!(true)), "{mine}");
+    assert_eq!(payload["skipped"], json!([{"service": "bad", "site": "roots"}]));
+}
+
+#[test]
+fn unverified_adapter_is_marked() {
+    let root = sandbox("doctor-unverified");
+    write(&root.join("home/x/a.jsonl"), "{\"o\": 1}\n");
+    write(&root.join("config/tokenmeter/services.yaml"), "services:\n  mine:\n    roots: [\"~/x\"]\n    verified: false\n    fields: {output: o}\n");
+    let out = command(&root, Path::new(BIN), &["doctor", "mine"]).env("TOKENMETER_LANG", "en").output().unwrap();
+    let text = stdout(&out);
+    assert!(text.contains("not verified against a real log"), "{text}");
+    assert!(text.contains("1 read · 0 dropped by match") && text.contains("output 100%"), "{text}");
+    assert_eq!(serde_json::from_str::<Value>(&stdout(&tm(&root, &["doctor", "mine", "--json"]))).unwrap()["services"][0]["verified"], false);
+}
+
 /// 화면이 없는 리눅스(서버·SSH)에서 자동으로 뜬 데몬은 오버레이 없이 측정을 이어 간다.
 #[cfg(target_os = "linux")]
 #[test]

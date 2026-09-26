@@ -28,6 +28,17 @@ pub struct ServiceReader {
     /// delta 키(없으면 레코드 해시)의 칸별 최댓값. 서비스에 하나, 소스들이 같이 쓴다(F2, F11).
     pub(super) ledger: Ledger,
     pub(super) live_out: HashMap<String, i64>,
+    /// 읽은 레코드 수와 필드마다 값이 잡힌 수(`doctor`).
+    pub stats: ReadStats,
+}
+
+/// `doctor`가 보이는 읽기 수. `hits`는 `TOKEN_FIELDS` 순서로 match를 지난 레코드 중 값이 잡힌 수.
+#[derive(Clone, Debug, Default)]
+pub struct ReadStats {
+    pub records: u64,
+    pub dropped_by_match: u64,
+    pub matched: u64,
+    pub hits: [u64; 4],
 }
 
 /// 읽기 단위 하나(F11): 병합한 스펙과 그 파일 상태.
@@ -45,6 +56,8 @@ pub(super) struct Source {
     /// 이번 파일 읽기에서 `rebase_on`이 바뀌었다: 기준값만 잡고 내지 않는다.
     pub(super) rolling: bool,
     pub(super) blind: HashSet<String>,
+    /// 파일마다 처음 파싱된 레코드 시각(match와 상관없이, 스펙 4.5). 저장은 2.9.
+    pub(super) first: HashMap<String, f64>,
 }
 
 impl Source {
@@ -111,7 +124,35 @@ impl ServiceReader {
             endpoint: HashMap::new(),
             ledger: Ledger::new(now_secs, LEDGER_CAP),
             live_out: HashMap::new(),
+            stats: ReadStats::default(),
         }
+    }
+
+    /// 어느 소스든 경로가 적힌 필드와 값이 잡힌 비율(match를 지난 레코드 기준).
+    pub fn field_hits(&self) -> Vec<(&'static str, f64)> {
+        let matched = self.stats.matched.max(1) as f64;
+        TOKEN_FIELDS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.sources.iter().any(|s| s.x.fields[*i].is_some()))
+            .map(|(i, name)| (*name, self.stats.hits[i] as f64 / matched))
+            .collect()
+    }
+
+    /// `since`(유닉스 초) 뒤에 바뀐 파일을 처음부터 읽어 모든 델타를 낸다. 문턱 없음(`doctor --since`).
+    /// 새 읽기 도구에서 부르므로 모든 키가 "지금 본 것"으로 적힌다(스펙 4.4).
+    pub fn read_since(&mut self, since: f64) -> Vec<TokenDelta> {
+        let mut all = Vec::new();
+        for i in 0..self.sources.len() {
+            self.with_source(i, |me, src| {
+                for path in src.files() {
+                    if fs::metadata(&path).is_ok_and(|m| mtime_of(&m) >= since) {
+                        all.extend(me.read_in(src, &path, true));
+                    }
+                }
+            });
+        }
+        all
     }
 
     /// 모든 소스가 찾는 파일. 두 소스가 같은 파일을 읽어도 한 번만 든다.

@@ -6,6 +6,7 @@ use super::expr::{Env, Pick};
 use super::ledger::{self, key_hash, record_hash, Vals};
 use super::probe::resolve_endpoint;
 use super::reader::{path_key, ServiceReader, Source};
+use super::time::parse_ts;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -55,12 +56,23 @@ impl ServiceReader {
         };
         let get = |name: &str| ctx_map.get(name).cloned();
         let env = Env::new(obj, &get);
+        self.stats.records += 1;
+        // 레코드 시각(F8). 파일의 첫 시각은 match와 상관없이 잡는다(4.5).
+        let at = src.x.timestamp.as_ref().and_then(|p| p.value(&env)).and_then(|v| parse_ts(&v));
+        if let Some(t) = at {
+            src.first.entry(key.clone()).or_insert(t);
+        }
         if !cond::all(&src.x.conds, &env) {
+            self.stats.dropped_by_match += 1;
             return;
         }
+        self.stats.matched += 1;
         // 필드와 토큰 의미(F5): input에 든 칸은 그 합이 input 이하일 때만 뺀다.
         let mut vals: Vals = [0.0; 6];
-        for (slot, pick) in vals.iter_mut().zip(&src.x.fields) {
+        for (i, (slot, pick)) in vals.iter_mut().zip(&src.x.fields).enumerate() {
+            if pick.as_ref().is_some_and(|p| p.num(&env).is_some()) {
+                self.stats.hits[i] += 1;
+            }
             *slot = val(pick.as_ref(), &env).trunc();
         }
         vals[4] = val(src.x.cost_usd.as_ref(), &env);
@@ -155,6 +167,7 @@ impl ServiceReader {
             ctx_window: ctx_win,
             subagent,
             duration_ms: d[5] as i64,
+            at: at.unwrap_or(0.0),
             calls: u32::from(calls),
             cost_usd: (d[4] > 0.0).then_some(d[4]),
             ..Default::default()

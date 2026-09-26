@@ -1154,3 +1154,66 @@ fn overlapping_roots_across_services_are_reported() {
     );
     assert!(load_report().overlaps.is_empty(), "기본 어댑터끼리는 겹치지 않는다");
 }
+
+#[test]
+fn record_time_goes_on_the_delta() {
+    let (_g, tmp) = crate::test_home("record-time");
+    let root = tmp.join("logs");
+    append(&root.join("a.jsonl"), &lines(&[
+        json!({"id": "a", "n": 5, "ts": "2026-09-20T10:00:00Z"}),
+        json!({"id": "b", "n": 3, "time": {"created": 1_789_898_400_123_i64}}),
+        json!({"id": "c", "n": 1}),
+    ]));
+    let mut reader = inline(&root, "key: id, timestamp: [ts, time.created], fields: {output: n}");
+    let at: Vec<f64> = reader.poll().iter().map(|d| d.at).collect();
+    // 2026-01-01T00:00Z = 1767225600, 9월 20일은 262일 뒤, 10시 = +36000
+    assert_eq!(at, [1_789_898_400.0, 1_789_898_400.123, 0.0], "밀리초는 크기로 가르고, 시각이 없으면 0(지금)");
+}
+
+#[test]
+fn first_is_the_first_parsed_timestamp_even_without_match() {
+    let (_g, tmp) = crate::test_home("first-ts");
+    let root = tmp.join("logs");
+    let path = root.join("fork.jsonl");
+    append(&path, &lines(&[
+        json!({"type": "note"}),
+        json!({"type": "session", "ts": "2026-09-20T10:00:00Z"}),
+        json!({"type": "m", "id": "x", "n": 1, "ts": "2026-09-19T00:00:00Z"}),
+    ]));
+    let mut reader = inline(&root, "match: {type: m}, key: id, timestamp: ts, fields: {output: n}");
+    let got = reader.poll();
+    assert_eq!(got.iter().map(|d| d.at).collect::<Vec<_>>(), [1_789_776_000.0]);
+    let first = reader.sources[0].first.get(&super::reader::path_key(&path)).copied();
+    assert_eq!(first, Some(1_789_898_400.0), "match 밖의 머리 줄 시각이 파일의 첫 시각이다(포크 시각)");
+}
+
+#[test]
+fn doctor_counts_match_drops_and_field_hits() {
+    let (_g, tmp) = crate::test_home("doctor-counts");
+    let root = tmp.join("logs");
+    append(&root.join("a.jsonl"), &lines(&[
+        json!({"type": "u"}),
+        json!({"type": "m", "id": "1", "i": 1, "o": 2}),
+        json!({"type": "m", "id": "2", "o": 3}),
+    ]));
+    append(&root.join("a.jsonl"), "not json\n");
+    append(&root.join("a.jsonl"), &lines(&[json!({"type": "m", "id": "3", "i": "4", "o": 1})]));
+    let mut reader = inline(&root, "match: {type: m}, key: id, fields: {input: i, output: o}");
+    reader.poll();
+    let st = &reader.stats;
+    assert_eq!((st.records, st.dropped_by_match, st.matched), (4, 1, 3), "깨진 줄은 레코드가 아니다");
+    assert_eq!(reader.field_hits(), vec![("input", 2.0 / 3.0), ("output", 1.0)], "적힌 필드만, 숫자 글자도 값이다");
+}
+
+#[test]
+fn verified_defaults_to_true_and_is_a_service_key() {
+    let (_g, root) = crate::test_home("verified");
+    write_user_services(
+        &root,
+        "services:\n  a:\n    roots: [\"~/a\"]\n    fields: {output: n}\n  b:\n    roots: [\"~/b\"]\n    verified: false\n    timestamp: ts\n    fields: {output: n}\n",
+    );
+    let specs = load_all_specs();
+    let get = |n: &str| specs.iter().find(|s| s.name == n).unwrap().verified;
+    assert!(get("a") && !get("b"));
+    assert!(load_report().warnings.is_empty(), "verified·timestamp는 아는 키");
+}

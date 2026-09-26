@@ -71,6 +71,12 @@ pub struct ServiceSpec {
     pub cost_usd: serde_yaml::Value,
     #[serde(default)]
     pub rebase_on: serde_yaml::Value,
+    /// 레코드 시각(F8). 없으면 읽은 시각.
+    #[serde(default)]
+    pub timestamp: serde_yaml::Value,
+    /// 실제 로그로 맞춰 본 어댑터인지. false면 `doctor`가 "검증 안 됨"으로 보인다.
+    #[serde(default = "default_true")]
+    pub verified: bool,
     #[serde(default)]
     pub install: InstallSpec,
     /// 읽기 단위(F11). 항목마다 서비스 수준 값 위에 깊은 병합한 스펙이다. 비면 서비스 자체가 소스 하나다.
@@ -112,6 +118,9 @@ fn default_format() -> String {
 fn default_mode() -> String {
     "delta".into()
 }
+fn default_true() -> bool {
+    true
+}
 
 /// 서비스의 식 자리를 한 번 파싱한 것(F3, F7). 로더가 검증에 쓰고 리더가 레코드마다 평가한다.
 #[derive(Default)]
@@ -128,6 +137,7 @@ pub struct Compiled {
     pub duration_ms: Option<Pick>,
     pub cost_usd: Option<Pick>,
     pub rebase_on: Option<Pick>,
+    pub timestamp: Option<Pick>,
     pub subagent: Option<Pick>,
     pub live_chars: Option<Pick>,
     pub plan_key: Option<Pick>,
@@ -225,6 +235,7 @@ impl Compiled {
             duration_ms: site("duration_ms", &spec.duration_ms)?,
             cost_usd: site("cost_usd", &spec.cost_usd)?,
             rebase_on: site("rebase_on", &spec.rebase_on)?,
+            timestamp: site("timestamp", &spec.timestamp)?,
             subagent: site("subagent", &spec.subagent)?,
             live_chars: site("live_chars", &spec.live_chars)?,
             plan_key: probe_key("plan_probe", &spec.plan_probe)?,
@@ -275,7 +286,8 @@ pub(super) fn upgrade_legacy(block: &mut serde_yaml::Value) {
     };
     for (name, v) in block.iter_mut() {
         match name.as_str().unwrap_or_default() {
-            "key" | "ctx_tokens" | "ctx_window" | "duration_ms" | "subagent" | "live_chars" => {
+            "key" | "ctx_tokens" | "ctx_window" | "duration_ms" | "subagent" | "live_chars"
+            | "timestamp" => {
                 paths(v)
             }
             "fields" | "context" => v
@@ -376,6 +388,10 @@ struct YamlService {
     #[serde(default)]
     rebase_on: serde_yaml::Value,
     #[serde(default)]
+    timestamp: serde_yaml::Value,
+    #[serde(default)]
+    verified: Option<bool>,
+    #[serde(default)]
     label: Option<String>,
     #[serde(default)]
     install: Option<InstallSpec>,
@@ -392,13 +408,13 @@ include!(concat!(env!("OUT_DIR"), "/adapters.rs"));
 /// 모르는 키는 `LoadReport::warnings`로 간다.
 pub const KNOWN_SOURCE_KEYS: &[&str] = &[
     "roots", "patterns", "exclude", "roots_from", "format", "match", "mode", "key", "input_includes", "fields",
-    "context", "ctx_tokens", "ctx_window", "subagent", "duration_ms", "cost_usd", "rebase_on",
+    "context", "ctx_tokens", "ctx_window", "subagent", "duration_ms", "cost_usd", "rebase_on", "timestamp",
 ];
 
 /// 서비스 수준에만 두는 키(F11). 소스 항목에 있으면 그 서비스가 빠진다.
 pub const SERVICE_ONLY_KEYS: &[&str] = &[
     "enabled", "label", "default_model", "vendor", "plan", "plan_probe", "endpoint",
-    "endpoint_probe", "live_chars", "install", "sources",
+    "endpoint_probe", "live_chars", "install", "sources", "verified",
 ];
 
 /// 로딩에서 빠진 서비스(id, 이유)와 모르는 키 경고. 데몬 로그와 `doctor`가 보인다.
@@ -444,6 +460,16 @@ fn source_views(spec: &ServiceSpec) -> &[ServiceSpec] {
     } else {
         &spec.sources
     }
+}
+
+/// 기본 어댑터 `id`가 글자 그대로(변수 없이) 적은 루트인지. `doctor --json`은 이런 루트만
+/// `short_path`로 보이고 나머지는 서비스 id와 번호로 가리킨다(1절 개인정보).
+pub fn is_static_builtin_root(id: &str, template: &str) -> bool {
+    !template.contains('$')
+        && load_specs(&builtin_services())
+            .0
+            .iter()
+            .any(|s| s.name == id && root_templates(s).contains(&template))
 }
 
 /// 서비스의 루트 틀. 소스들의 `roots`를 순서대로 합친다. 번호가 `doctor`의 루트 번호다.
@@ -765,6 +791,8 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             duration_ms: raw.duration_ms,
             cost_usd: raw.cost_usd,
             rebase_on: raw.rebase_on,
+            timestamp: raw.timestamp,
+            verified: raw.verified != Some(false),
             install: raw.install.unwrap_or_default(),
             sources: Vec::new(),
         },

@@ -224,9 +224,9 @@ pub fn due(s: &SyncState, now: f64, last_seen: f64) -> bool {
     now - s.last_ok >= wait
 }
 
-/// M1: 공유가 켜져 있을 때만 보낸다. M2에서 "리그에 로그인했을 때"가 더해진다.
+/// 공유가 켜져 있거나 리그에 로그인했을 때만 보낸다. 로그인만 했으면 칸마다 합계 셀 하나다(경기 계산용).
 pub fn wanted() -> bool {
-    crate::share::on() && !server::base().is_empty()
+    (crate::share::on() || crate::league::has_auth()) && !server::base().is_empty()
 }
 
 /// 데몬 루프에서 부른다. 5초에 한 번만 보고, 전송은 따로 스레드에서 한다.
@@ -269,8 +269,7 @@ pub fn run_once(state_now: &Value, timeout: Duration) -> Result<usize, ApiError>
     }
     let mut cursor = s.synced_through.clone();
     let result = server::ensure_device().and_then(|token| -> Result<Option<(usize, bool)>, ApiError> {
-        // M1은 공유가 켜져 있을 때만 보내므로 share=false 본문은 만들지 않는다(M2 로그인 때 합계 셀).
-        let (upload, next, more) = build(state_now, true, &s.synced_through, crate::share::since(), now as i64);
+        let (upload, next, more) = body(state_now, &s.synced_through, now);
         cursor = next;
         // config·기기 발급에 최대 30초가 걸린다. 그사이 공유를 껐으면 보내지 않는다.
         if !wanted() {
@@ -334,11 +333,26 @@ pub fn flush(state_now: &Value) {
     RUNNING.store(false, Ordering::SeqCst);
 }
 
-/// 다음 업로드에 들어갈 JSON. 공유가 꺼져 있으면 지금 켰을 때 보낼 것(켠 시각 = 지금)을 보여 준다.
+/// run_once가 보낼 본문. 공유가 꺼진 로그인 사용자는 로그인한 시각부터 합계 셀만 보낸다.
+/// ponytail: 커서는 하나라 공유를 켜고 끌 때 이미 지나간 칸은 다시 보내지 않는다.
+fn body(state_now: &Value, synced_through: &str, now: f64) -> (UsageUpload, String, bool) {
+    let share = crate::share::on();
+    let since = if share { crate::share::since() } else { crate::league::since() };
+    let (mut upload, next, more) = build(state_now, share, synced_through, since, now as i64);
+    upload.endpoint_id = crate::league::endpoint_id();
+    (upload, next, more)
+}
+
+/// 다음 업로드에 들어갈 JSON 그대로(스펙 3절). 로그인하지 않았고 공유가 꺼져 있으면
+/// 지금 켰을 때 보낼 것(켠 시각 = 지금)을 보여 준다.
 pub fn preview(state_now: &Value) -> String {
     let now = crate::watch::now_secs();
-    let since = if crate::share::on() { crate::share::since() } else { now };
-    let (upload, _, _) = build(state_now, true, &load().synced_through, since, now as i64);
+    let synced = load().synced_through;
+    let upload = if crate::share::on() || crate::league::has_auth() {
+        body(state_now, &synced, now).0
+    } else {
+        build(state_now, true, &synced, now, now as i64).0
+    };
     serde_json::to_string_pretty(&upload).unwrap_or_default()
 }
 
@@ -560,6 +574,27 @@ mod tests {
         assert_eq!(run_once(&state_now, crate::server::NORMAL), Ok(0));
         assert!(seen.recv_timeout(Duration::from_millis(300)).is_err(), "요청이 하나도 없어야 한다");
         assert!(!data_dir().join("league-sync.json").exists() && !data_dir().join("device.json").exists());
+    }
+
+    #[test]
+    fn logged_in_without_share_sends_one_total_cell_and_the_endpoint() {
+        let (_g, _tmp) = crate::test_home("sync-league");
+        forget();
+        let (url, seen) = crate::server::fake::serve(vec![(200, CONFIG), (204, "")]);
+        crate::server::fake::use_server(&url);
+        fs::create_dir_all(data_dir()).unwrap();
+        fs::write(data_dir().join("device.json"), r#"{"device_id":"d1","token":"tmd_x"}"#).unwrap();
+        let now = crate::watch::now_secs();
+        fs::write(data_dir().join("league-auth.json"), json!({"uid": "42", "handle": "alice", "since": now - 60.0}).to_string()).unwrap();
+        let state_now = json!({"hour": {"h": hour_key(now), "r": book("claude-opus-5", 7)}});
+        let shown: UsageUpload = serde_json::from_str(&preview(&state_now)).unwrap();
+        assert_eq!(run_once(&state_now, crate::server::NORMAL), Ok(1));
+        let put = seen.try_iter().find(|r| r.starts_with("PUT")).unwrap();
+        let body: UsageUpload = serde_json::from_str(&put[put.find('{').unwrap()..]).unwrap();
+        assert_eq!((body.share, body.hours[0].cells.len(), body.hours[0].cells[0].client.as_str()), (false, 1, ALL));
+        assert_eq!(body.endpoint_id, crate::league::endpoint_id());
+        assert!(body.endpoint_id.is_some());
+        assert_eq!(shown, body, "share preview는 보낼 본문 그대로(합계 셀, EndpointId)");
     }
 
     #[test]

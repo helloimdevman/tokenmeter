@@ -66,7 +66,6 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
-    use watch::MatchWant;
 
     fn tmp() -> PathBuf {
         let p = std::env::temp_dir().join(format!("tokenmeter-meter-{}", std::process::id()));
@@ -250,20 +249,20 @@ mod tests {
             roots: vec![dir.to_string_lossy().into_owned()],
             patterns: vec!["**/*.jsonl".into()],
             format: "jsonl".into(),
-            match_fields: [("type".into(), MatchWant::One("assistant".into()))].into(),
+            match_fields: serde_yaml::from_str("{type: assistant}").unwrap(),
             mode: "delta".into(),
-            key: Some("uuid".into()),
+            key: "uuid".into(),
             fields: [
-                ("input".into(), Some("message.usage.input_tokens".into())),
+                ("input".into(), "message.usage.input_tokens".into()),
                 (
                     "cache_read".into(),
-                    Some("message.usage.cache_read_input_tokens".into()),
+                    "message.usage.cache_read_input_tokens".into(),
                 ),
                 (
                     "cache_write".into(),
-                    Some("message.usage.cache_creation_input_tokens".into()),
+                    "message.usage.cache_creation_input_tokens".into(),
                 ),
-                ("output".into(), Some("message.usage.output_tokens".into())),
+                ("output".into(), "message.usage.output_tokens".into()),
             ]
             .into(),
             context: [

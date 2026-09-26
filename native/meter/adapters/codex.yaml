@@ -32,7 +32,7 @@ plan_probe:
 endpoint_probe:
   env: [OPENAI_BASE_URL]
   path: ~/.codex/config.toml           # [model_providers.<벤더>] base_url
-  key: model_providers.{vendor}.base_url
+  key: model_providers[$ctx.vendor].base_url
   # 구독(ChatGPT)과 종량제(API)는 애초에 다른 곳으로 간다
   default:
     subscription: https://chatgpt.com/backend-api/codex

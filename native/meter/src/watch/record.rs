@@ -1,15 +1,27 @@
 //! 레코드 하나의 처리 순서: 문맥, match, 토큰 벡터, 중복 제거, 델타.
 
+use super::cond;
 use super::delta::{TokenDelta, Vector};
-use super::expr::{dig, dig_string, is_truthy, num};
+use super::expr::{Env, Pick};
 use super::probe::resolve_endpoint;
-use super::reader::{path_key, ServiceReader, SEEN_CAP, TOKEN_FIELDS};
-use super::spec::MatchWant;
+use super::reader::{path_key, ServiceReader, SEEN_CAP};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
 use tokenmeter_hook::live_path;
+
+/// ponytail: Grok 프롬프트 경로가 박혀 있다. 2.12가 `live_chars.turn` 식으로 연다.
+static LIVE_PROMPT: LazyLock<Pick> = LazyLock::new(|| {
+    let paths = serde_yaml::from_str("[params._meta.promptId, params.update.prompt_id]");
+    Pick::from_yaml(&paths.expect("상수")).expect("상수")
+});
+
+/// 숫자 자리의 최종값. 없으면 0, 0 아래로 내리지 않는다.
+fn int(pick: Option<&Pick>, env: &Env) -> i64 {
+    pick.and_then(|p| p.num(env)).unwrap_or(0.0).max(0.0) as i64
+}
 
 impl ServiceReader {
     pub(super) fn handle(
@@ -21,28 +33,33 @@ impl ServiceReader {
         emit: bool,
     ) {
         let key = path_key(path);
-        let ctx = self.ctx.entry(key.clone()).or_default();
-        for (name, dot) in &self.spec.context {
-            if let Some(v) = dig_string(obj, dot) {
-                if !v.is_empty() {
-                    ctx.insert(name.clone(), v);
-                }
-            }
-        }
-        if !self.matches(obj) {
+        // 문맥 학습: 이 레코드에 값이 있으면 파일 문맥을 바꾼다. 문맥 식의 `$ctx`는 앞 레코드까지 배운 값.
+        let ctx_map = {
+            let learned = self.ctx.entry(key.clone()).or_default();
+            let found: Vec<(String, String)> = {
+                let get = |name: &str| learned.get(name).cloned();
+                let env = Env::new(obj, &get);
+                self.x
+                    .context
+                    .iter()
+                    .filter_map(|(name, p)| Some((name.clone(), p.text(&env)?)))
+                    .collect()
+            };
+            learned.extend(found);
+            learned.clone()
+        };
+        let get = |name: &str| ctx_map.get(name).cloned();
+        let env = Env::new(obj, &get);
+        if !cond::all(&self.x.conds, &env) {
             return;
         }
-        let vector: Vector = std::array::from_fn(|i| {
-            let field = TOKEN_FIELDS[i];
-            let path = self.spec.fields.get(field).and_then(|p| p.as_deref());
-            num(dig(obj, path.unwrap_or("")))
-        });
+        let vector: Vector = std::array::from_fn(|i| int(self.x.fields[i].as_ref(), &env));
         let diff: Vector = if self.spec.mode == "cumulative" {
             let record_key = self
-                .spec
+                .x
                 .key
                 .as_ref()
-                .and_then(|k| dig_string(obj, k))
+                .and_then(|k| k.text(&env))
                 .unwrap_or_else(|| key.clone());
             let bases = self.base.entry(key.clone()).or_default();
             let previous = bases.get(&record_key).copied();
@@ -64,8 +81,8 @@ impl ServiceReader {
                 }
             }
         } else {
-            if let Some(k) = &self.spec.key {
-                if let Some(raw) = dig_string(obj, k) {
+            if let Some(k) = &self.x.key {
+                if let Some(raw) = k.text(&env) {
                     if !raw.is_empty() && !self.seen_keys.insert(raw) {
                         return;
                     }
@@ -99,14 +116,11 @@ impl ServiceReader {
         if self.spec.input_includes_cache {
             input_tokens = (input_tokens - cache_read).max(0);
         }
-        let ctx_map = self.ctx.get(&key).cloned().unwrap_or_default();
+        // 이 레코드의 값은 위에서 배웠으므로 파일 문맥만 보면 된다.
         let pick_ctx = |name: &str, fallback: &str| {
-            self.spec
-                .context
+            ctx_map
                 .get(name)
-                .and_then(|dot| dig_string(obj, dot))
-                .filter(|s| !s.is_empty())
-                .or_else(|| ctx_map.get(name).cloned())
+                .cloned()
                 .unwrap_or_else(|| fallback.to_string())
         };
         let model = pick_ctx("model", &self.spec.default_model);
@@ -126,28 +140,14 @@ impl ServiceReader {
         let session = pick_ctx("session", "");
         let effort = pick_ctx("effort", "");
         let endpoint = self.endpoint_for(&session, &vendor);
-        output_tokens = self.adjust_live_output(obj, &session, output_tokens);
-        let duration_ms = self
-            .spec
-            .duration_ms
-            .as_ref()
-            .map(|p| num(dig(obj, p)))
-            .unwrap_or(0);
-        let subagent = self
-            .spec
-            .subagent
-            .as_ref()
-            .map(|p| dig(obj, p).map(is_truthy).unwrap_or(false))
-            .unwrap_or(false);
+        output_tokens = self.adjust_live_output(&env, &session, output_tokens);
+        let duration_ms = int(self.x.duration_ms.as_ref(), &env);
+        let subagent = self.x.subagent.as_ref().is_some_and(|p| p.truthy(&env));
         let (ctx_now, ctx_win) = if subagent {
             (0, 0)
-        } else if let Some(p) = &self.spec.ctx_tokens {
-            let current = num(dig(obj, p));
-            let window = self
-                .spec
-                .ctx_window
-                .as_ref()
-                .map(|w| num(dig(obj, w)))
+        } else if let Some(p) = &self.x.ctx_tokens {
+            let current = int(Some(p), &env);
+            let window = Some(int(self.x.ctx_window.as_ref(), &env))
                 .filter(|n| *n > 0)
                 .unwrap_or_else(|| crate::pricing::context_window(&model, current));
             (current, window)
@@ -185,25 +185,6 @@ impl ServiceReader {
         }
     }
 
-    fn matches(&self, obj: &Value) -> bool {
-        for (dot, want) in &self.spec.match_fields {
-            let got = dig_string(obj, dot).unwrap_or_else(|| "null".into());
-            match want {
-                MatchWant::Many(items) => {
-                    if !items.iter().any(|w| w == &got) {
-                        return false;
-                    }
-                }
-                MatchWant::One(w) => {
-                    if &got != w {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
-    }
-
     pub(super) fn endpoint_for(&mut self, session: &str, vendor: &str) -> String {
         let key = format!("{session}|{vendor}");
         if let Some(value) = self.endpoint.get(&key) {
@@ -223,7 +204,13 @@ impl ServiceReader {
                         .collect::<HashMap<_, _>>()
                 })
         };
-        let value = resolve_endpoint(&self.spec, env.as_ref(), vendor, &self.plan);
+        let value = resolve_endpoint(
+            &self.spec,
+            self.x.endpoint_key.as_ref(),
+            env.as_ref(),
+            vendor,
+            &self.plan,
+        );
         if self.endpoint.len() > 1000 {
             self.endpoint.clear();
         }
@@ -231,22 +218,15 @@ impl ServiceReader {
         value
     }
 
-    fn adjust_live_output(&mut self, obj: &Value, session: &str, output_tokens: i64) -> i64 {
-        let Some(path) = &self.spec.live_chars else {
+    fn adjust_live_output(&mut self, env: &Env, session: &str, output_tokens: i64) -> i64 {
+        let Some(text) = &self.x.live_chars else {
             return output_tokens;
         };
-        let extra = dig_string(obj, path)
-            .map(|t| {
-                if t.is_empty() {
-                    0
-                } else {
-                    t.chars().count().div_ceil(4).max(1) as i64
-                }
-            })
+        let extra = text
+            .text(env)
+            .map(|t| t.chars().count().div_ceil(4).max(1) as i64)
             .unwrap_or(0);
-        let prompt = dig_string(obj, "params._meta.promptId")
-            .or_else(|| dig_string(obj, "params.update.prompt_id"))
-            .unwrap_or_default();
+        let prompt = LIVE_PROMPT.text(env).unwrap_or_default();
         let turn = if prompt.is_empty() {
             session.to_string()
         } else {

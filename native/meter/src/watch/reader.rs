@@ -4,7 +4,7 @@ use super::delta::{TokenDelta, Vector};
 use super::now_secs;
 use super::probe::resolve_plan;
 use super::roots::expand_home;
-use super::spec::ServiceSpec;
+use super::spec::{Compiled, ServiceSpec};
 use glob::glob;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -19,6 +19,7 @@ pub(super) const SEEN_CAP: usize = 200_000;
 
 pub struct ServiceReader {
     pub spec: ServiceSpec,
+    pub(super) x: Compiled,
     pub(super) plan: String,
     pub(super) endpoint: HashMap<String, String>,
     offset: HashMap<String, u64>,
@@ -34,9 +35,12 @@ pub struct ServiceReader {
 
 impl ServiceReader {
     pub fn new(spec: ServiceSpec) -> Self {
-        let plan = resolve_plan(&spec);
+        // 로더가 이미 검증했다. 검증 없이 만든 스펙(adapter check)의 틀린 식은 아무것도 읽지 않는다.
+        let x = Compiled::new(&spec).unwrap_or_default();
+        let plan = resolve_plan(&spec, x.plan_key.as_ref());
         Self {
             spec,
+            x,
             plan,
             endpoint: HashMap::new(),
             offset: HashMap::new(),
@@ -140,7 +144,7 @@ impl ServiceReader {
         if size < offset {
             offset = 0;
             self.lines.remove(&key);
-            if self.spec.key.as_deref().unwrap_or("").is_empty() {
+            if self.x.key.is_none() {
                 self.seen.remove(&key);
             }
         }

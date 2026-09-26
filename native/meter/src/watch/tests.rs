@@ -1,3 +1,4 @@
+use super::expr::{Env, Pick};
 use super::probe::{probe_file, resolve_endpoint, resolve_plan};
 use super::*;
 use serde_json::{json, Value};
@@ -24,12 +25,9 @@ fn config_merge_and_toml_probe_match_python() {
     assert_eq!(roots[0].as_str(), Some("b"));
     let parsed =
         specs_from_yaml("services: {custom: {match: {enabled: true, code: 7}, roots: []}}");
-    assert!(
-        matches!(parsed[0].match_fields["enabled"], MatchWant::One(ref value) if value == "true")
-    );
-    assert!(
-        matches!(parsed[0].match_fields["code"], MatchWant::One(ref value) if value == "7")
-    );
+    let conds = Compiled::new(&parsed[0]).unwrap().conds;
+    let rec = json!({"enabled": true, "code": 7});
+    assert!(cond::all(&conds, &Env::new(&rec, &|_| None)), "YAML 불리언·숫자는 글자로 비교");
 
     let path =
         std::env::temp_dir().join(format!("tokenmeter-config-{}.toml", std::process::id()));
@@ -38,8 +36,9 @@ fn config_merge_and_toml_probe_match_python() {
         "[model_providers.openai]\nbase_url = \"https://example.test/v1\"\n",
     )
     .unwrap();
+    let key = Pick::from_yaml(&"model_providers[$ctx.vendor].base_url".into()).unwrap();
     assert_eq!(
-        probe_file(&path, "model_providers.openai.base_url")
+        probe_file(&path, &key, "openai")
             .and_then(|value| value.as_str().map(str::to_string)),
         Some("https://example.test/v1".into())
     );
@@ -137,7 +136,7 @@ fn grok_chunk(event: &str, text: &str, thought: bool, total: i64) -> Value {
 #[test]
 fn enabled_services_declare_token_fields() {
     for spec in default_specs() {
-        let has = |f: &str| spec.fields.get(f).cloned().flatten().is_some();
+        let has = |f: &str| spec.fields.get(f).is_some_and(|v| !v.is_null());
         assert!(has("output") || has("input"), "{}", spec.name);
     }
 }
@@ -343,6 +342,15 @@ fn context_tokens_follow_each_service_spec() {
     assert_eq!(creader.poll()[0].ctx_tokens, 12_000, "압축되면 그대로 내려간다");
 }
 
+/// 로더처럼 파싱한 프로브 키로 부른다.
+fn plan_of(spec: &ServiceSpec) -> String {
+    resolve_plan(spec, Compiled::new(spec).unwrap().plan_key.as_ref())
+}
+
+fn endpoint_of(spec: &ServiceSpec, env: Option<&HashMap<String, String>>, vendor: &str, plan: &str) -> String {
+    resolve_endpoint(spec, Compiled::new(spec).unwrap().endpoint_key.as_ref(), env, vendor, plan)
+}
+
 #[test]
 fn plan_and_endpoint_probes_follow_env_files_and_live_routing() {
     let (_g, tmp) = crate::test_home("probe");
@@ -352,11 +360,11 @@ fn plan_and_endpoint_probes_follow_env_files_and_live_routing() {
     let yaml = |text: String| serde_yaml::from_str::<serde_yaml::Value>(&text).unwrap();
     let env_probe = yaml("{env: [TP_FAKE_KEY], if_set: api, else: subscription}".into());
     let explicit = ServiceSpec { plan: "subscription".into(), plan_probe: env_probe.clone(), ..Default::default() };
-    assert_eq!(resolve_plan(&explicit), "subscription", "명시값이 항상 이긴다");
+    assert_eq!(plan_of(&explicit), "subscription", "명시값이 항상 이긴다");
     let by_env = ServiceSpec { plan_probe: env_probe, ..Default::default() };
-    assert_eq!(resolve_plan(&by_env), "subscription");
+    assert_eq!(plan_of(&by_env), "subscription");
     std::env::set_var("TP_FAKE_KEY", "sk-1");
-    assert_eq!(resolve_plan(&by_env), "api");
+    assert_eq!(plan_of(&by_env), "api");
     std::env::remove_var("TP_FAKE_KEY");
 
     let auth = tmp.join("auth.json");
@@ -368,14 +376,14 @@ fn plan_and_endpoint_probes_follow_env_files_and_live_routing() {
         ..Default::default()
     };
     fs::write(&auth, r#"{"auth_mode": "chatgpt"}"#).unwrap();
-    assert_eq!(resolve_plan(&by_file), "subscription");
+    assert_eq!(plan_of(&by_file), "subscription");
     fs::write(&auth, r#"{"auth_mode": "apikey"}"#).unwrap();
-    assert_eq!(resolve_plan(&by_file), "api");
+    assert_eq!(plan_of(&by_file), "api");
     fs::write(&auth, "깨진 파일").unwrap();
-    assert_eq!(resolve_plan(&by_file), "unknown", "프로브가 실패해도 죽으면 안 된다");
+    assert_eq!(plan_of(&by_file), "unknown", "프로브가 실패해도 죽으면 안 된다");
     fs::remove_file(&auth).unwrap();
-    assert_eq!(resolve_plan(&by_file), "unknown");
-    assert_eq!(resolve_plan(&ServiceSpec::default()), "unknown");
+    assert_eq!(plan_of(&by_file), "unknown");
+    assert_eq!(plan_of(&ServiceSpec::default()), "unknown");
 
     for (model, vendor) in [("claude-opus-5", "anthropic"), ("gpt-5.6-sol", "openai"),
                             ("nemotron-3-ultra-free", "nvidia"), ("무슨-모델", "unknown"), ("", "unknown")] {
@@ -386,12 +394,12 @@ fn plan_and_endpoint_probes_follow_env_files_and_live_routing() {
     let env = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     };
-    assert_eq!(resolve_endpoint(&claude, Some(&env(&[])), "anthropic", "api"), "https://api.anthropic.com");
+    assert_eq!(endpoint_of(&claude, Some(&env(&[])), "anthropic", "api"), "https://api.anthropic.com");
     assert_eq!(
-        resolve_endpoint(&claude, Some(&env(&[("ANTHROPIC_BASE_URL", "https://llm.mycorp.com/v1")])), "anthropic", "api"),
+        endpoint_of(&claude, Some(&env(&[("ANTHROPIC_BASE_URL", "https://llm.mycorp.com/v1")])), "anthropic", "api"),
         "https://llm.mycorp.com/v1"
     );
-    assert_eq!(resolve_endpoint(&claude, Some(&env(&[("CLAUDE_CODE_USE_BEDROCK", "1")])), "anthropic", "api"), "bedrock");
+    assert_eq!(endpoint_of(&claude, Some(&env(&[("CLAUDE_CODE_USE_BEDROCK", "1")])), "anthropic", "api"), "bedrock");
 
     fs::create_dir_all(tokenmeter_hook::live_dir()).unwrap();
     fs::write(live_path("claude-code", "s-bedrock"), r#"{"routing_env": {"CLAUDE_CODE_USE_BEDROCK": "1"}}"#).unwrap();
@@ -489,4 +497,155 @@ fn builtin_adapters_have_no_unknown_keys() {
     let report = load_report();
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+}
+
+/// 사용자 덮어쓰기처럼 옛 형식을 바꿔 봐서 무언가 바뀌면 옛 형식이다.
+fn uses_legacy(text: &str) -> bool {
+    let block: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
+    let mut upgraded = block.clone();
+    upgrade_legacy(&mut upgraded);
+    upgraded != block
+}
+
+#[test]
+fn builtin_adapters_use_current_syntax() {
+    for (id, text) in ADAPTERS {
+        assert!(!uses_legacy(text), "adapters/{id}.yaml: 옛 형식(a.0.b, X: null, {{vendor}})");
+    }
+}
+
+#[test]
+fn every_path_site_takes_an_expression() {
+    let (_g, root) = crate::test_home("expr-sites");
+    let data = root.join("data");
+    write_user_services(
+        &root,
+        &format!(
+            r#"services:
+  t:
+    roots: [{data:?}]
+    match: {{data@json.role: assistant}}
+    key: "message.id & requestId"
+    fields:
+      input: u.in
+      cache_read: u.cached
+      output: "u.a + u.b"
+    context:
+      model: [x.model, $.model]
+      session: sid
+    ctx_tokens: "u.in * 100"
+    duration_ms: "t.end - t.start"
+    subagent: meta@json.side
+"#
+        ),
+    );
+    let spec = load_all_specs().into_iter().find(|s| s.name == "t").expect("t가 로딩된다");
+    let mut reader = ServiceReader::new(spec);
+    let assistant = r#"{"role": "assistant"}"#;
+    append(&data.join("s.jsonl"), &lines(&[
+        json!({"data": assistant, "message": {"id": "m1"}, "requestId": "r1", "sid": "s-1", "model": "top",
+               "u": {"in": 4, "cached": 6, "a": 2, "b": 3}, "t": {"start": 1000, "end": 1250},
+               "meta": r#"{"side": false}"#}),
+        json!({"data": assistant, "message": {"id": "m1"}, "requestId": "r1", "u": {"a": 50}}),
+        json!({"data": r#"{"role": "user"}"#, "message": {"id": "m9"}, "requestId": "r9", "u": {"a": 70}}),
+        json!({"data": assistant, "message": {"id": "m2"}, "requestId": "r1", "x": {"model": "inner"}, "model": "top",
+               "u": {"a": 1}, "meta": r#"{"side": true}"#}),
+    ]));
+    let got = reader.poll();
+    assert_eq!(got.len(), 2, "같은 `message.id & requestId`는 한 번, role user는 match 밖");
+    assert_eq!(vec4(&got[0]), (4, 6, 0, 5), "output = u.a + u.b");
+    assert_eq!((got[0].model.as_str(), got[0].session.as_str()), ("top", "s-1"), "x.model이 없으면 $.model");
+    assert_eq!((got[0].ctx_tokens, got[0].duration_ms, got[0].subagent), (400, 250, false));
+    assert_eq!(vec4(&got[1]), (0, 0, 0, 1));
+    assert_eq!((got[1].model.as_str(), got[1].session.as_str()), ("inner", "s-1"), "session은 파일 문맥에서");
+    assert_eq!((got[1].subagent, got[1].ctx_tokens), (true, 0));
+}
+
+#[test]
+fn a_bad_expression_drops_only_that_service() {
+    let (_g, root) = crate::test_home("bad-expr");
+    write_user_services(
+        &root,
+        r#"services:
+  bad:
+    roots: ["~/x"]
+    fields: {input: "a[", output: n}
+  bad-match:
+    roots: ["~/x"]
+    match: {"a[": x}
+    fields: {output: n}
+  bad-probe:
+    roots: ["~/x"]
+    fields: {output: n}
+    endpoint_probe: {path: "~/x.json", key: "a +"}
+  good:
+    roots: ["~/x"]
+    fields: {output: "a + b"}
+"#,
+    );
+    let names = loaded_names();
+    for bad in ["bad", "bad-match", "bad-probe"] {
+        assert!(!names.contains(&bad.to_string()), "{bad}");
+    }
+    assert!(names.contains(&"good".to_string()) && names.contains(&"claude-code".to_string()));
+    let skipped = load_report().skipped;
+    for (id, site) in [("bad", "fields.input"), ("bad-match", "match"), ("bad-probe", "endpoint_probe.key")] {
+        assert!(skipped.iter().any(|(s, why)| s == id && why.starts_with(site)), "{id}: {skipped:?}");
+    }
+}
+
+#[test]
+fn legacy_forms_only_from_user_override() {
+    let (_g, root) = crate::test_home("legacy");
+    let data = root.join("old");
+    let toml = root.join("config.toml");
+    fs::write(&toml, "[model_providers.acme]\nbase_url = \"https://gw.acme.test/v1\"\n").unwrap();
+    write_user_services(
+        &root,
+        &format!(
+            "services:\n  old:\n    roots: [{data:?}]\n    match: {{kind: done, gone: null}}\n    fields: {{output: usage.0.out}}\n    endpoint_probe:\n      path: {toml:?}\n      key: model_providers.{{vendor}}.base_url\n"
+        ),
+    );
+    let spec = load_all_specs().into_iter().find(|s| s.name == "old").expect("옛 형식도 로딩된다");
+    let mut reader = ServiceReader::new(spec);
+    append(&data.join("s.jsonl"), &lines(&[
+        json!({"kind": "done", "usage": [{"out": 7}]}),
+        json!({"kind": "done", "gone": 1, "usage": [{"out": 100}]}),
+        json!({"kind": "done", "gone": null, "usage": [{"out": 20}]}),
+    ]));
+    let outs: Vec<i64> = reader.poll().iter().map(|d| d.output_tokens).collect();
+    assert_eq!(outs, [7, 20], "a.0.b는 번호, X: null은 없거나 null");
+    assert_eq!(reader.endpoint_for("", "acme"), "https://gw.acme.test/v1", "{{vendor}} → [$ctx.vendor]");
+
+    for legacy in [
+        "fields: {output: usage.0.out}",
+        "match: {gone: null}",
+        "endpoint_probe:\n  key: model_providers.{vendor}.base_url",
+        "context:\n  model: [a.model, a.1.model]",
+    ] {
+        assert!(uses_legacy(legacy), "adapters/에 넣으면 builtin_adapters_use_current_syntax가 막는다: {legacy}");
+    }
+    assert!(!uses_legacy(
+        "fields: {output: \"usage[0].out\"}\nmatch: {gone: {$exists: false}, $any: [{a: b}]}\nendpoint_probe:\n  key: model_providers[$ctx.vendor].base_url"
+    ));
+}
+
+#[test]
+fn builtin_probe_keys_take_the_vendor_from_ctx() {
+    let (_g, root) = crate::test_home("probe-keys");
+    std::env::remove_var("OPENAI_BASE_URL");
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::write(home.join(".codex/config.toml"), "[model_providers.ollama]\nbase_url = \"http://localhost:11434/v1\"\n").unwrap();
+    fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    fs::write(
+        home.join(".config/opencode/opencode.json"),
+        r#"{"provider": {"acme": {"options": {"baseURL": "https://gw.acme.test/v1"}}}}"#,
+    )
+    .unwrap();
+    let mut codex = ServiceReader::new(spec_at("codex", &root));
+    assert_eq!(codex.endpoint_for("", "ollama"), "http://localhost:11434/v1");
+    let mut opencode = ServiceReader::new(spec_at("opencode", &root));
+    assert_eq!(opencode.endpoint_for("", "acme"), "https://gw.acme.test/v1");
+    assert_eq!(opencode.endpoint_for("", "nope"), "", "벤더 항목이 없으면 비어 있다(opencode는 default가 없다)");
 }

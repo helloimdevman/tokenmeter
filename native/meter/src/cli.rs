@@ -626,7 +626,7 @@ fn doctor_one(spec: &ServiceSpec) {
         spec.name,
         spec.format,
         spec.mode,
-        spec.key.as_deref().unwrap_or("-")
+        spec.key.as_str().unwrap_or("-")
     );
     let roots: Vec<_> = spec.roots.iter().map(|r| expand_home(r)).filter(|p| p.exists()).collect();
     if roots.is_empty() {

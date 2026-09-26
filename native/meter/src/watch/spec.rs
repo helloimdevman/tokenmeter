@@ -1,5 +1,8 @@
-//! 서비스 스펙: YAML 로딩, 사용자 덮어쓰기 병합, 설정 읽기.
+//! 서비스 스펙: YAML 로딩, 사용자 덮어쓰기 병합, 식 자리 파싱과 검증, 설정 읽기.
 
+use super::cond::{self, Cond};
+use super::expr::{legacy_path, Pick};
+use super::reader::TOKEN_FIELDS;
 use super::roots::home_dir;
 use serde::Deserialize;
 use serde_json::Value;
@@ -22,24 +25,25 @@ pub struct ServiceSpec {
     pub patterns: Vec<String>,
     #[serde(default = "default_format")]
     pub format: String,
+    /// 식 자리(스펙 2.0)는 YAML 그대로 두고 `Compiled::new`가 파싱한다. null은 자리가 없는 것.
     #[serde(default)]
-    pub match_fields: HashMap<String, MatchWant>,
+    pub match_fields: serde_yaml::Mapping,
     #[serde(default = "default_mode")]
     pub mode: String,
     #[serde(default)]
-    pub key: Option<String>,
+    pub key: serde_yaml::Value,
     #[serde(default)]
     pub input_includes_cache: bool,
     #[serde(default)]
-    pub fields: HashMap<String, Option<String>>,
+    pub fields: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
-    pub context: HashMap<String, String>,
+    pub context: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
-    pub ctx_tokens: Option<String>,
+    pub ctx_tokens: serde_yaml::Value,
     #[serde(default)]
-    pub ctx_window: Option<String>,
+    pub ctx_window: serde_yaml::Value,
     #[serde(default)]
-    pub subagent: Option<String>,
+    pub subagent: serde_yaml::Value,
     #[serde(default)]
     pub default_model: String,
     #[serde(default)]
@@ -53,9 +57,9 @@ pub struct ServiceSpec {
     #[serde(default)]
     pub endpoint_probe: serde_yaml::Value,
     #[serde(default)]
-    pub live_chars: Option<String>,
+    pub live_chars: serde_yaml::Value,
     #[serde(default)]
-    pub duration_ms: Option<String>,
+    pub duration_ms: serde_yaml::Value,
     #[serde(default)]
     pub install: InstallSpec,
 }
@@ -80,22 +84,130 @@ fn default_mode() -> String {
     "delta".into()
 }
 
-#[derive(Clone, Debug)]
-pub enum MatchWant {
-    One(String),
-    Many(Vec<String>),
+/// 서비스의 식 자리를 한 번 파싱한 것(F3, F7). 로더가 검증에 쓰고 리더가 레코드마다 평가한다.
+#[derive(Default)]
+pub struct Compiled {
+    /// `TOKEN_FIELDS` 순서.
+    pub fields: [Option<Pick>; 4],
+    pub context: Vec<(String, Pick)>,
+    pub key: Option<Pick>,
+    pub conds: Vec<Cond>,
+    pub ctx_tokens: Option<Pick>,
+    pub ctx_window: Option<Pick>,
+    pub duration_ms: Option<Pick>,
+    pub subagent: Option<Pick>,
+    pub live_chars: Option<Pick>,
+    pub plan_key: Option<Pick>,
+    pub endpoint_key: Option<Pick>,
 }
 
-impl<'de> Deserialize<'de> for MatchWant {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_yaml::Value::deserialize(deserializer)?;
-        if let Some(items) = value.as_sequence() {
-            Ok(Self::Many(items.iter().map(yaml_scalar).collect()))
-        } else {
-            Ok(Self::One(yaml_scalar(&value)))
+impl Compiled {
+    /// 틀린 자리가 하나라도 있으면 "자리: 이유"(1절 검증, 그 서비스만 빠진다).
+    pub fn new(spec: &ServiceSpec) -> Result<Self, String> {
+        const NONE: serde_yaml::Value = serde_yaml::Value::Null;
+        // null·빈 글자는 자리가 없는 것(`cwd: null`로 기본 어댑터의 자리를 지운다)
+        let site = |name: &str, v: &serde_yaml::Value| {
+            if v.is_null() || v.as_str() == Some("") {
+                return Ok(None);
+            }
+            Pick::from_yaml(v)
+                .map(Some)
+                .map_err(|e| format!("{name}: {e}"))
+        };
+        let probe_key = |probe: &str, v: &serde_yaml::Value| {
+            site(
+                &format!("{probe}.key"),
+                yaml_at(v, &["key"]).unwrap_or(&NONE),
+            )
+        };
+        let mut fields: [Option<Pick>; 4] = Default::default();
+        for (slot, name) in fields.iter_mut().zip(TOKEN_FIELDS) {
+            *slot = site(
+                &format!("fields.{name}"),
+                spec.fields.get(name).unwrap_or(&NONE),
+            )?;
+        }
+        let mut context = Vec::new();
+        for (name, v) in &spec.context {
+            if let Some(p) = site(&format!("context.{name}"), v)? {
+                context.push((name.clone(), p));
+            }
+        }
+        Ok(Self {
+            fields,
+            context,
+            key: site("key", &spec.key)?,
+            conds: cond::parse(&spec.match_fields, false).map_err(|e| format!("match: {e}"))?,
+            ctx_tokens: site("ctx_tokens", &spec.ctx_tokens)?,
+            ctx_window: site("ctx_window", &spec.ctx_window)?,
+            duration_ms: site("duration_ms", &spec.duration_ms)?,
+            subagent: site("subagent", &spec.subagent)?,
+            live_chars: site("live_chars", &spec.live_chars)?,
+            plan_key: probe_key("plan_probe", &spec.plan_probe)?,
+            endpoint_key: probe_key("endpoint_probe", &spec.endpoint_probe)?,
+        })
+    }
+}
+
+/// 사용자 덮어쓰기 블록의 옛 형식을 새 형식으로(스펙 1절): 식 자리의 `a.0.b` → `a[0].b`,
+/// match의 `X: null` → `{$exists: false}`, 프로브 키의 `{vendor}` → `[$ctx.vendor]`.
+/// 새 형식은 바꾸지 않는다. 기본 어댑터는 이것이 아무것도 바꾸지 않아야 한다(테스트).
+pub(super) fn upgrade_legacy(block: &mut serde_yaml::Value) {
+    use serde_yaml::Value as Y;
+    fn paths(v: &mut Y) {
+        match v {
+            Y::String(s) => *s = legacy_path(s),
+            Y::Sequence(items) => items.iter_mut().for_each(paths),
+            _ => {}
+        }
+    }
+    fn conds(m: &mut serde_yaml::Mapping) {
+        *m = std::mem::take(m)
+            .into_iter()
+            .map(|(k, mut v)| {
+                if k.as_str() == Some("$any") {
+                    for group in v.as_sequence_mut().into_iter().flatten() {
+                        if let Y::Mapping(g) = group {
+                            conds(g);
+                        }
+                    }
+                    return (k, v);
+                }
+                if v.is_null() {
+                    v = serde_yaml::Mapping::from_iter([("$exists".into(), false.into())]).into();
+                }
+                match k {
+                    Y::String(k) => (Y::String(legacy_path(&k)), v),
+                    k => (k, v),
+                }
+            })
+            .collect();
+    }
+    let Some(block) = block.as_mapping_mut() else {
+        return;
+    };
+    for (name, v) in block.iter_mut() {
+        match name.as_str().unwrap_or_default() {
+            "key" | "ctx_tokens" | "ctx_window" | "duration_ms" | "subagent" | "live_chars" => {
+                paths(v)
+            }
+            "fields" | "context" => v
+                .as_mapping_mut()
+                .into_iter()
+                .flat_map(|m| m.values_mut())
+                .for_each(paths),
+            "match" => v.as_mapping_mut().into_iter().for_each(conds),
+            "plan_probe" | "endpoint_probe" => {
+                if let Some(key) = v.get_mut("key") {
+                    if let Y::String(s) = key {
+                        *s = s
+                            .replace(".{vendor}", "[$ctx.vendor]")
+                            .replace("{vendor}", "[$ctx.vendor]");
+                    }
+                    paths(key);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -124,23 +236,23 @@ struct YamlService {
     #[serde(default)]
     format: Option<String>,
     #[serde(default, rename = "match")]
-    match_fields: HashMap<String, MatchWant>,
+    match_fields: serde_yaml::Mapping,
     #[serde(default)]
     mode: Option<String>,
     #[serde(default)]
-    key: Option<String>,
+    key: serde_yaml::Value,
     #[serde(default)]
     input_includes_cache: Option<bool>,
     #[serde(default)]
-    fields: HashMap<String, Option<String>>,
+    fields: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
-    context: HashMap<String, Option<String>>,
+    context: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
-    ctx_tokens: Option<String>,
+    ctx_tokens: serde_yaml::Value,
     #[serde(default)]
-    ctx_window: Option<String>,
+    ctx_window: serde_yaml::Value,
     #[serde(default)]
-    subagent: Option<String>,
+    subagent: serde_yaml::Value,
     #[serde(default)]
     default_model: Option<String>,
     #[serde(default)]
@@ -154,9 +266,9 @@ struct YamlService {
     #[serde(default)]
     endpoint_probe: serde_yaml::Value,
     #[serde(default)]
-    live_chars: Option<String>,
+    live_chars: serde_yaml::Value,
     #[serde(default)]
-    duration_ms: Option<String>,
+    duration_ms: serde_yaml::Value,
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -249,7 +361,10 @@ pub fn load_merged_yaml() -> serde_yaml::Value {
     deep_merge_yaml(&mut raw, builtin_services());
     let user_path = config_dir().join("services.yaml");
     if let Ok(text) = fs::read_to_string(user_path) {
-        if let Ok(user) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
+        if let Ok(mut user) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
+            if let Some(services) = user.get_mut("services").and_then(|s| s.as_mapping_mut()) {
+                services.values_mut().for_each(upgrade_legacy);
+            }
             deep_merge_yaml(&mut raw, user);
         }
     }
@@ -361,6 +476,8 @@ fn load_specs(raw: &serde_yaml::Value) -> (Vec<ServiceSpec>, LoadReport) {
             format!("format: unknown value {:?} (jsonl, json)", s.format)
         } else if !["delta", "cumulative"].contains(&s.mode.as_str()) {
             format!("mode: unknown value {:?} (delta, cumulative)", s.mode)
+        } else if let Err(why) = Compiled::new(s) {
+            why
         } else {
             return true;
         };
@@ -406,8 +523,7 @@ fn read_services(raw: &serde_yaml::Value, report: &mut LoadReport) -> Vec<Servic
             key: raw.key,
             input_includes_cache: raw.input_includes_cache.unwrap_or(false),
             fields: raw.fields,
-            // `cwd: null` 같은 빈 자리는 경로가 아니다 (serde_yaml 은 String 에 "null" 을 넣는다)
-            context: raw.context.into_iter().filter_map(|(k, v)| Some((k, v?))).collect(),
+            context: raw.context,
             ctx_tokens: raw.ctx_tokens,
             ctx_window: raw.ctx_window,
             subagent: raw.subagent,

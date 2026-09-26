@@ -1,14 +1,14 @@
 //! 요금제·엔드포인트 프로브: 환경 변수, 설정 파일(JSON·TOML), 세션 라우팅.
 
-use super::expr::dig;
-use super::roots::expand_home;
+use super::expr::{Env, Pick};
+use super::roots::{expand_home, read_outside};
 use super::spec::{yaml_at, yaml_string, yaml_strings, ServiceSpec};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 
-pub(super) fn resolve_plan(spec: &ServiceSpec) -> String {
+/// `key`는 `plan_probe.key`를 파싱한 것(`Compiled::plan_key`).
+pub(super) fn resolve_plan(spec: &ServiceSpec, key: Option<&Pick>) -> String {
     if !spec.plan.is_empty() {
         return spec.plan.clone();
     }
@@ -26,7 +26,6 @@ pub(super) fn resolve_plan(spec: &ServiceSpec) -> String {
         };
     }
     let path = yaml_string(probe, "path");
-    let key = yaml_string(probe, "key");
     let default = {
         let value = yaml_string(probe, "default");
         if value.is_empty() {
@@ -35,10 +34,10 @@ pub(super) fn resolve_plan(spec: &ServiceSpec) -> String {
             value
         }
     };
-    if path.is_empty() || key.is_empty() {
+    let (false, Some(key)) = (path.is_empty(), key) else {
         return default;
-    }
-    let Some(value) = probe_file(&expand_home(&path), &key) else {
+    };
+    let Some(value) = probe_file(&expand_home(&path), key, &spec.vendor) else {
         return default;
     };
     let text = json_text(&value);
@@ -50,8 +49,10 @@ pub(super) fn resolve_plan(spec: &ServiceSpec) -> String {
         .to_string()
 }
 
+/// `key`는 `endpoint_probe.key`를 파싱한 것(`Compiled::endpoint_key`).
 pub(super) fn resolve_endpoint(
     spec: &ServiceSpec,
+    key: Option<&Pick>,
     session_env: Option<&HashMap<String, String>>,
     vendor: &str,
     plan: &str,
@@ -79,9 +80,8 @@ pub(super) fn resolve_endpoint(
         }
     }
     let path = yaml_string(probe, "path");
-    let key = yaml_string(probe, "key").replace("{vendor}", vendor);
-    if !path.is_empty() && !key.is_empty() {
-        if let Some(value) = probe_file(&expand_home(&path), &key) {
+    if let (false, Some(key)) = (path.is_empty(), key) {
+        if let Some(value) = probe_file(&expand_home(&path), key, vendor) {
             let text = json_text(&value);
             if !text.is_empty() {
                 return text;
@@ -104,52 +104,11 @@ pub(super) fn resolve_endpoint(
     spec.endpoint.clone()
 }
 
-pub(super) fn probe_file(path: &Path, key: &str) -> Option<Value> {
-    let text = fs::read_to_string(path).ok()?;
-    if path.extension().and_then(|value| value.to_str()) == Some("toml") {
-        return probe_toml(&text, key);
-    }
-    let value = serde_json::from_str::<Value>(&text).ok()?;
-    dig(&value, key).cloned()
-}
-
-fn probe_toml(text: &str, key: &str) -> Option<Value> {
-    let (section, field) = key.rsplit_once('.')?;
-    let mut current = "";
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            current = line.trim_matches(&['[', ']'][..]).trim();
-            continue;
-        }
-        if current != section {
-            continue;
-        }
-        let Some((name, value)) = line.split_once('=') else {
-            continue;
-        };
-        if name.trim() != field {
-            continue;
-        }
-        let value = value.trim();
-        if (value.starts_with('"') && value.ends_with('"'))
-            || (value.starts_with('\'') && value.ends_with('\''))
-        {
-            return Some(Value::String(value[1..value.len() - 1].to_string()));
-        }
-        if let Ok(value) = value.parse::<bool>() {
-            return Some(Value::Bool(value));
-        }
-        if let Ok(value) = value.parse::<i64>() {
-            return Some(Value::Number(value.into()));
-        }
-        return value
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map(Value::Number);
-    }
-    None
+/// 설정 파일(TOML·JSON) 안의 값 하나. 키는 경로식이고 `$ctx.vendor`가 벤더다.
+pub(super) fn probe_file(path: &Path, key: &Pick, vendor: &str) -> Option<Value> {
+    let doc = read_outside(path)?;
+    let ctx = |name: &str| (name == "vendor").then(|| vendor.to_string());
+    key.value(&Env::new(&doc, &ctx))
 }
 
 fn json_text(value: &Value) -> String {

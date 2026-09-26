@@ -244,13 +244,14 @@ pub fn check_adapter(path: &Path) -> (bool, Vec<String>) {
         errors.push("mode: delta 또는 cumulative 중 하나를 선택하세요".into());
     }
     for (field, dot) in &spec.fields {
-        if let Some(dot) = dot {
+        if let Some(dot) = dot.as_str() {
             if !dot.is_empty() && dig(&fixture, dot).is_none() {
                 errors.push(format!("fields.{field}: {dot} 경로가 fixture.json에 없습니다"));
             }
         }
     }
     for (field, dot) in &spec.context {
+        let dot = dot.as_str().unwrap_or_default();
         if !dot.is_empty() && dig(&fixture, dot).is_none() {
             errors.push(format!("context.{field}: {dot} 경로가 fixture.json에 없습니다"));
         }
@@ -258,7 +259,7 @@ pub fn check_adapter(path: &Path) -> (bool, Vec<String>) {
     if errors.is_empty() {
         let connected = ["input", "cache_read", "cache_write", "output"]
             .iter()
-            .filter_map(|k| Some(format!("{k}={}", spec.fields.get(*k)?.as_ref()?)))
+            .filter_map(|k| Some(format!("{k}={}", spec.fields.get(*k)?.as_str()?)))
             .collect::<Vec<_>>()
             .join(", ");
         (

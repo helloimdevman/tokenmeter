@@ -1,5 +1,5 @@
 //! 경로식(F3). 스펙을 읽을 때 한 번 파싱해 트리로 두고, 레코드마다 평가한다.
-//! 옛 `dig`·`dig_string`·`num`·`is_truthy`는 W2가 모든 자리를 옮길 때까지 둔다.
+//! 옛 `dig`는 `adapter.rs`(2.14)와 `roots_from`(2.4)이 옮길 때까지 둔다.
 
 use serde_json::Value;
 use std::cell::RefCell;
@@ -29,7 +29,22 @@ pub struct Env<'a> {
     pub json: RefCell<HashMap<String, Rc<Value>>>,
 }
 
-impl Env<'_> {
+impl<'a> Env<'a> {
+    /// 레코드 하나의 자리. `each`·파일 변수·`$root`·사이드카는 2.8이 채운다.
+    pub fn new(outer: &'a Value, ctx: &'a dyn Fn(&str) -> Option<String>) -> Self {
+        Env {
+            outer,
+            elem: None,
+            key: None,
+            index: None,
+            file: None,
+            root_dir: None,
+            ctx,
+            side: &|_| None,
+            json: Default::default(),
+        }
+    }
+
     fn parsed(&self, s: &str) -> Option<Rc<Value>> {
         if let Some(v) = self.json.borrow().get(s) {
             return Some(v.clone());
@@ -565,24 +580,6 @@ pub fn dig<'a>(obj: &'a Value, path: &str) -> Option<&'a Value> {
         };
     }
     Some(cur)
-}
-
-pub(super) fn dig_string(obj: &Value, path: &str) -> Option<String> {
-    match dig(obj, path)? {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Null => None,
-        other => Some(other.to_string()),
-    }
-}
-
-pub(super) fn num(v: Option<&Value>) -> i64 {
-    match v {
-        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0).max(0.0) as i64,
-        Some(Value::String(s)) => s.parse::<f64>().ok().unwrap_or(0.0).max(0.0) as i64,
-        _ => 0,
-    }
 }
 
 pub(super) fn is_truthy(v: &Value) -> bool {

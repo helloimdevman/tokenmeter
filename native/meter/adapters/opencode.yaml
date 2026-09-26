@@ -24,9 +24,9 @@ default_model: default
 # 프로바이더 키를 직접 넣어 쓰는 구조라 종량제로 본다 (구독 게이트웨이면 subscription 으로)
 plan: api
 endpoint_probe:
-  # 프로바이더마다 URL 이 다르다 → {vendor} 에 providerID 가 들어간다
+  # 프로바이더마다 URL 이 다르다 → $ctx.vendor 에 providerID 가 들어간다
   path: ~/.config/opencode/opencode.json
-  key: provider.{vendor}.options.baseURL
+  key: provider[$ctx.vendor].options.baseURL
 install:
   target: opencode_plugin
   path: ~/.config/opencode/plugin/tokenmeter.js

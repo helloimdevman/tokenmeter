@@ -125,7 +125,7 @@ pub fn run(no_window: bool) -> i32 {
                 .get("live_count")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
-            let room_open = crate::league::enabled() && league_room_open();
+            let room_open = crate::league::room_open();
             if live > 0 || room_open || idle_limit.is_zero() {
                 idle_since = None;
             } else if idle_since.is_none() {
@@ -145,9 +145,7 @@ pub fn run(no_window: bool) -> i32 {
                 let _ = crate::quota::refresh(false);
                 last_quota_check = Instant::now();
             }
-            if room_open {
-                crate::league::tick(&status, rate.rate);
-            }
+            crate::league::tick(&status, rate.rate);
             crate::sync::tick(&status);
             if crate::board::online() && last_board.elapsed().as_secs_f64() >= crate::board::sync_seconds()
             {
@@ -184,25 +182,6 @@ pub fn run(no_window: bool) -> i32 {
     0
 }
 
-fn league_room_open() -> bool {
-    let Ok(text) = fs::read_to_string(data_dir().join("league.json")) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return false;
-    };
-    value
-        .get("room_id")
-        .and_then(serde_json::Value::as_str)
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-        || value
-            .get("rooms")
-            .and_then(serde_json::Value::as_array)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-}
-
 fn prune_live(ttl: Duration) {
     if ttl.is_zero() {
         return;
@@ -228,7 +207,7 @@ fn prune_live(ttl: Duration) {
     }
 }
 
-fn notify(title: &str, message: &str) {
+pub fn notify(title: &str, message: &str) {
     #[cfg(target_os = "macos")]
     {
         let clean = |value: &str| {

@@ -1278,11 +1278,11 @@ fn cmd_league(args: &Args) -> i32 {
     match args.rest.first().map(String::as_str) {
         Some("login") => league::login(),
         Some("logout") => league::logout(),
-        Some("open") => league::open_room(flag(args, "rule").unwrap_or("cost")),
+        Some("open") => league::open_room(""),
         Some("join") => league::join_room(args.rest.get(1).map(String::as_str).unwrap_or("")),
         Some("leave") => league::leave(args.rest.get(1).map(String::as_str)),
         Some("close") => league::close_room(args.rest.get(1).map(String::as_str)),
-        _ => league::soon(),
+        _ => league::show(),
     }
 }
 

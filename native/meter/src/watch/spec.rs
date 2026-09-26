@@ -100,7 +100,7 @@ impl<'de> Deserialize<'de> for MatchWant {
     }
 }
 
-fn yaml_scalar(value: &serde_yaml::Value) -> String {
+pub(super) fn yaml_scalar(value: &serde_yaml::Value) -> String {
     match value {
         serde_yaml::Value::Null => "null".into(),
         serde_yaml::Value::Bool(value) => value.to_string(),

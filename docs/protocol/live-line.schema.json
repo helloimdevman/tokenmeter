@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LiveLine",
+  "description": "멤버끼리 단방향 스트림에 보내는 한 줄(JSON + '\\n'). 이름은 보내지 않는다:\n받는 쪽이 연결 상대의 EndpointId를 멤버 목록에 맞춘다. 모르는 필드는 무시한다.",
+  "type": "object",
+  "properties": {
+    "tps": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    }
+  }
+}

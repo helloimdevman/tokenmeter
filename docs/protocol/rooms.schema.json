@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RoomList",
+  "type": "object",
+  "properties": {
+    "rooms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Room"
+      }
+    }
+  },
+  "required": [
+    "rooms"
+  ],
+  "$defs": {
+    "Member": {
+      "type": "object",
+      "properties": {
+        "endpoints": {
+          "description": "로그인한 기기마다 하나.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "login": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "user_id",
+        "login",
+        "endpoints"
+      ]
+    },
+    "Room": {
+      "type": "object",
+      "properties": {
+        "host_id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "id": {
+          "description": "URL에 쓸 수 있는 12자(`[A-Za-z0-9_-]`).",
+          "type": "string"
+        },
+        "members": {
+          "description": "들어온 순서.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Member"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "host_id",
+        "members"
+      ]
+    }
+  }
+}

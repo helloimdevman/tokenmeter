@@ -88,7 +88,7 @@ impl Expr {
         };
         let node = p.expr()?;
         if p.i < p.s.len() {
-            return p.err("unexpected text");
+            return p.err(&crate::l10n!("unexpected text", "뜻밖의 글자"));
         }
         Ok(Expr(node))
     }
@@ -111,7 +111,12 @@ impl Pick {
     pub fn from_yaml(v: &serde_yaml::Value) -> Result<Pick, String> {
         let one = |v: &serde_yaml::Value| {
             v.as_str()
-                .ok_or_else(|| format!("expected a path expression, got {v:?}"))
+                .ok_or_else(|| {
+                    crate::l10n!(
+                        "expected a path expression, got {v:?}",
+                        "경로식이 와야 하는데 {v:?}가 왔습니다"
+                    )
+                })
                 .and_then(Expr::parse)
         };
         match v {
@@ -142,7 +147,11 @@ impl Pick {
 }
 
 /// 옛 `a.0.b`를 `a[0].b`로. 사용자 덮어쓰기에서만 부른다(스펙 1절).
+/// 옛 `dig` 경로에 없던 `[]"$@`나 공백이 있으면 새 문법이라 그대로 둔다(`x * 1.5` 같은 상수).
 pub fn legacy_path(s: &str) -> String {
+    if s.contains(|c: char| "[]\"$@".contains(c) || c.is_whitespace()) {
+        return s.to_string();
+    }
     let mut out = String::new();
     for part in s.split('.') {
         if !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()) {
@@ -164,9 +173,11 @@ struct Parser<'s> {
 
 impl Parser<'_> {
     fn err<T>(&self, what: &str) -> Result<T, String> {
-        Err(format!(
-            "path expression `{}`: {what} at byte {}",
-            self.s, self.i
+        Err(crate::l10n!(
+            "path expression `{s}`: {what} at byte {i}",
+            "경로식 `{s}`: {i}바이트째에서 {what}",
+            s = self.s,
+            i = self.i
         ))
     }
 
@@ -219,7 +230,10 @@ impl Parser<'_> {
             };
             self.i += 1;
             if self.spaces() == 0 {
-                return self.err("operator needs spaces on both sides and a right side");
+                return self.err(&crate::l10n!(
+                    "operator needs spaces on both sides and a right side",
+                    "연산자는 양쪽 공백과 오른쪽 항이 있어야 합니다"
+                ));
             }
             let right = match op {
                 Op::Mul => self.number()?,
@@ -236,7 +250,10 @@ impl Parser<'_> {
             let sub = |p: &mut Self| {
                 let n = if p.eat(".") { p.name() } else { String::new() };
                 if n.is_empty() {
-                    return p.err(&format!("`${var}` needs `.name`"));
+                    return p.err(&crate::l10n!(
+                        "`${var}` needs `.name`",
+                        "`${var}` 뒤에 `.이름`이 있어야 합니다"
+                    ));
                 }
                 Ok(n)
             };
@@ -249,16 +266,26 @@ impl Parser<'_> {
                 "side" => Base::Side(sub(self)?),
                 "file" => match sub(self)?.as_str() {
                     f @ ("path" | "name" | "stem" | "dir") => Base::File(f.into()),
-                    _ => return self.err("`$file` has path, name, stem, dir"),
+                    _ => {
+                        return self.err(&crate::l10n!(
+                            "`$file` has path, name, stem, dir",
+                            "`$file`에는 path, name, stem, dir이 있습니다"
+                        ))
+                    }
                 },
-                _ => return self.err(&format!("unknown variable `${var}`")),
+                _ => {
+                    return self.err(&crate::l10n!(
+                        "unknown variable `${var}`",
+                        "모르는 변수 `${var}`"
+                    ))
+                }
             }
         } else if self.peek() == Some(b'[') {
             Base::Cur // 맨 앞 대괄호는 뿌리 객체의 키
         } else {
             let n = self.name();
             if n.is_empty() {
-                return self.err("expected a path");
+                return self.err(&crate::l10n!("expected a path", "경로가 와야 합니다"));
             }
             steps.push(Step::Key(n));
             Base::Cur
@@ -269,7 +296,10 @@ impl Parser<'_> {
                     self.i += 1;
                     let n = self.name();
                     if n.is_empty() {
-                        return self.err("expected a key after `.`");
+                        return self.err(&crate::l10n!(
+                            "expected a key after `.`",
+                            "`.` 뒤에 키가 와야 합니다"
+                        ));
                     }
                     steps.push(Step::Key(n));
                 }
@@ -279,7 +309,8 @@ impl Parser<'_> {
                 }
                 Some(b'@') => {
                     if !self.eat("@json") {
-                        return self.err("only `@json` is known");
+                        return self
+                            .err(&crate::l10n!("only `@json` is known", "`@json`만 압니다"));
                     }
                     steps.push(Step::Json);
                 }
@@ -303,7 +334,7 @@ impl Parser<'_> {
             Some(b'"') => {
                 self.i += 1;
                 let Some(len) = self.s[self.i..].find('"') else {
-                    return self.err("unclosed `\"`");
+                    return self.err(&crate::l10n!("unclosed `\"`", "`\"`가 닫히지 않았습니다"));
                 };
                 let key = self.s[self.i..self.i + len].to_string();
                 self.i += len + 1;
@@ -317,12 +348,17 @@ impl Parser<'_> {
                 }
                 match self.s[start..self.i].parse() {
                     Ok(n) => Step::Index(n),
-                    Err(_) => return self.err("expected an index, \"key\", $expr, * or ?expr"),
+                    Err(_) => {
+                        return self.err(&crate::l10n!(
+                            "expected an index, \"key\", $expr, * or ?expr",
+                            "번호, \"키\", $식, * 또는 ?식이 와야 합니다"
+                        ))
+                    }
                 }
             }
         };
         if !self.eat("]") {
-            return self.err("expected `]`");
+            return self.err(&crate::l10n!("expected `]`", "`]`가 와야 합니다"));
         }
         Ok(step)
     }
@@ -340,7 +376,10 @@ impl Parser<'_> {
             Ok(f) if f.is_finite() => Ok(Node::Const(f)),
             _ => {
                 self.i = start;
-                self.err("`*` takes a number on the right")
+                self.err(&crate::l10n!(
+                    "`*` takes a number on the right",
+                    "`*` 오른쪽은 숫자여야 합니다"
+                ))
             }
         }
     }
@@ -419,7 +458,13 @@ fn walk(cur: &Value, steps: &[Step], env: &Env, out: &mut Vec<Value>) {
             }
         }
         Step::Index(n) => {
-            if let Some(v) = cur.as_array().and_then(|a| nth(a, *n)) {
+            let v = match cur {
+                Value::Array(a) => nth(a, *n),
+                // 옛 `dig("a.0.b")`는 맵의 "0" 키도 읽었다(legacy_path가 `a[0].b`로 바꾼다)
+                _ if *n >= 0 => cur.get(n.to_string()),
+                _ => None,
+            };
+            if let Some(v) = v {
                 walk(v, rest, env, out)
             }
         }
@@ -479,7 +524,11 @@ fn nth<T>(items: &[T], n: i64) -> Option<&T> {
     items.get(i)
 }
 
+/// 정수로 떨어지면 정수(`3`, `"3"`), 아니면 실수.
 fn number(f: f64) -> Option<Value> {
+    if f.fract() == 0.0 && f.abs() < (1u64 << 53) as f64 {
+        return Some((f as i64).into());
+    }
     serde_json::Number::from_f64(f).map(Value::Number)
 }
 
@@ -557,7 +606,7 @@ mod tests {
                "attributes": {"gen_ai.usage.input_tokens": 7},
                "ws": {"workspaces": {"w1": {"root": "/r"}}},
                "modelUsage": {"m-a": {"outputTokens": 2}, "m-b": {"outputTokens": 4}},
-               "nodes": [{"u": {"o": 0}}, {"u": {"o": 9}}, {"u": {"o": 0}}],
+               "nodes": [{"u": {"o": 0}}, {"u": {"o": 9}}, {"u": {"o": 4}}],
                "text": "{\"tokensIn\": 11}", "time": {"created": 100, "completed": 250},
                "usage": {"input": 1, "orchestration": {"input": 2}, "costUsdTicks": 30000000000i64},
                "empty": "", "nothing": null})
@@ -631,7 +680,12 @@ mod tests {
             Some(6.0),
             "숫자 자리는 합"
         );
-        assert_eq!(num(&e, "nodes[?u.o][-1].u.o"), Some(9.0));
+        assert_eq!(num(&e, "nodes[?u.o][-1].u.o"), Some(4.0));
+        assert_eq!(
+            num(&e, "nodes[?u.o][1].u.o"),
+            Some(4.0),
+            "번호는 걸러진 것 중에서"
+        );
         assert_eq!(v("text@json.tokensIn"), Some(json!(11)));
         assert_eq!(v("$.requestId"), Some(json!("r1")));
         assert_eq!(v("$file.dir[-1]"), Some(json!("sess-9")));
@@ -646,6 +700,17 @@ mod tests {
             "+는 한쪽이 없으면 0"
         );
         assert_eq!(num(&e, "time.completed - time.created"), Some(150.0));
+        assert_eq!(
+            v("usage.input + usage.orchestration.input"),
+            Some(json!(3)),
+            "정수 결과는 정수"
+        );
+        assert_eq!(
+            one("usage.input + usage.orchestration.input")
+                .text(&e)
+                .as_deref(),
+            Some("3")
+        );
         assert_eq!(
             num(&e, "time.completed - time.missing"),
             None,
@@ -776,6 +841,13 @@ mod tests {
         assert_eq!(ev(&e, "data@json.b@json.c"), Some(json!(2)));
         assert_eq!(e.json.borrow().len(), 2, "data 한 번, b 한 번");
         assert_eq!(ev(&e, "data@json.a@json"), None, "문자열이 아니면 값 없음");
+        let raw = r["data"].as_str().unwrap().to_string();
+        e.json.borrow_mut().insert(raw, Rc::new(json!({"a": 99})));
+        assert_eq!(
+            ev(&e, "data@json.a"),
+            Some(json!(99)),
+            "다시 풀지 않고 캐시에서"
+        );
     }
 
     #[test]
@@ -806,5 +878,16 @@ mod tests {
             legacy_path("message.usage.input_tokens"),
             "message.usage.input_tokens"
         );
+        for new in ["x * 1.5", r#"a["g.0.x"]"#, "$file.dir[-1]", "a.b@json.0"] {
+            assert_eq!(legacy_path(new), new, "새 문법은 그대로");
+        }
+    }
+
+    #[test]
+    fn index_reads_a_digit_key_of_a_map() {
+        let r = json!({"a": {"0": {"b": 5}}});
+        let e = env(&r);
+        assert_eq!(ev(&e, &legacy_path("a.0.b")), Some(json!(5)), "옛 dig처럼");
+        assert_eq!(ev(&e, "a[-1].b"), None);
     }
 }

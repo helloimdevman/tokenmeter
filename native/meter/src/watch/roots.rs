@@ -258,7 +258,10 @@ pub fn roots_from(spec: &RootsFrom, vars: &Vars) -> (Vec<(PathBuf, Vec<String>)>
                 continue;
             };
             let base = spec.base.as_ref().and_then(|b| text(&doc, elem, b));
-            let root = base.as_deref().unwrap_or(dir).join(path);
+            // 상대 base도 레지스트리 파일의 디렉터리 기준이다. 절대 경로는 join이 그대로 둔다.
+            let root = base
+                .map_or_else(|| dir.to_path_buf(), |b| dir.join(b))
+                .join(path);
             let canon = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
             if canon.parent().is_none() || home.as_ref().is_some_and(|h| h.starts_with(&canon)) {
                 dropped += 1;
@@ -701,6 +704,35 @@ mod tests {
             ..spec
         };
         assert_eq!(roots_from(&spec, &plain()), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn roots_from_relative_base_is_under_registry_dir() {
+        let (_g, root) = crate::test_home("roots-from-rel");
+        let reg = root.join("home/reg");
+        fs::create_dir_all(&reg).unwrap();
+        fs::write(
+            reg.join("projects.json"),
+            r#"{"projects": [{"path": "../code/C#/app", "data_dir": ".crush"}]}"#,
+        )
+        .unwrap();
+        let spec = RootsFrom {
+            file: "~/reg/projects.json".into(),
+            each: Some(pick("projects")),
+            path: pick("data_dir"),
+            base: Some(pick("path")),
+            patterns: vec!["crush.db".into()],
+        };
+        assert_eq!(
+            roots_from(&spec, &plain()),
+            (
+                vec![(
+                    reg.join("../code/C#/app/.crush"),
+                    vec!["crush.db".to_string()]
+                )],
+                0
+            )
+        );
     }
 
     #[test]

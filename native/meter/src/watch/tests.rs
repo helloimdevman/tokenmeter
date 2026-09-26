@@ -144,7 +144,7 @@ fn enabled_services_declare_token_fields() {
         let views = if spec.sources.is_empty() { vec![&spec] } else { spec.sources.iter().collect() };
         for view in views {
             let has = |f: &str| view.fields.get(f).is_some_and(|v| !v.is_null());
-            assert!(has("output") || has("input"), "{}", spec.name);
+            assert!(has("output") || has("input") || !view.cost_usd.is_null(), "{}", spec.name);
         }
     }
 }

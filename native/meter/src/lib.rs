@@ -9,6 +9,7 @@ pub mod history;
 pub mod i18n;
 pub mod install;
 pub mod league;
+pub mod live;
 pub mod live_rate;
 #[cfg(target_os = "macos")]
 pub mod macos;

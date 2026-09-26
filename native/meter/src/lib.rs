@@ -4,6 +4,7 @@ pub mod board;
 pub mod cli;
 pub mod daemon;
 pub mod engine;
+pub mod github;
 pub mod history;
 pub mod i18n;
 pub mod install;

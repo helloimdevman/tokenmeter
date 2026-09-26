@@ -94,6 +94,9 @@ pub struct ServiceSpec {
     pub verified: bool,
     #[serde(default)]
     pub install: InstallSpec,
+    /// 일부러 같은 루트를 읽는 서비스 id. `overlaps`가 그 쌍을 알리지 않는다(F10, 6.1).
+    #[serde(default)]
+    pub shares_roots: Vec<String>,
     /// 읽기 단위(F11). 항목마다 서비스 수준 값 위에 깊은 병합한 스펙이다. 비면 서비스 자체가 소스 하나다.
     #[serde(default)]
     pub sources: Vec<ServiceSpec>,
@@ -472,6 +475,8 @@ struct YamlService {
     #[serde(default)]
     install: Option<InstallSpec>,
     #[serde(default)]
+    shares_roots: Vec<String>,
+    #[serde(default)]
     sources: Vec<serde_yaml::Mapping>,
 }
 
@@ -491,6 +496,7 @@ pub const KNOWN_SOURCE_KEYS: &[&str] = &[
 /// 서비스 수준에만 두는 키(F11). 소스 항목에 있으면 그 서비스가 빠진다.
 pub const SERVICE_ONLY_KEYS: &[&str] = &[
     "enabled", "label", "default_model", "vendor", "plan", "plan_probe", "endpoint_probe", "live_chars", "install", "sources", "verified",
+    "shares_roots",
 ];
 
 /// 로딩에서 빠진 서비스(id, 이유)와 모르는 키 경고. 데몬 로그와 `doctor`가 보인다.
@@ -564,12 +570,13 @@ pub fn root_templates(spec: &ServiceSpec) -> Vec<&str> {
 pub fn overlaps(specs: &[ServiceSpec]) -> Vec<[(String, usize); 2]> {
     let vars = Vars { root: None, ctx: &|_| None };
     let canon = |p: PathBuf| fs::canonicalize(&p).unwrap_or(p);
-    let roots: Vec<(&str, usize, Vec<PathBuf>)> = specs
+    let roots: Vec<(&ServiceSpec, usize, Vec<PathBuf>)> = specs
         .iter()
         .flat_map(|s| {
-            root_templates(s).into_iter().enumerate().map(|(i, t)| {
-                let paths = roots::expand(t, &vars).ok().flatten().unwrap_or_default();
-                (s.name.as_str(), i, paths.into_iter().map(canon).collect())
+            let vars = &vars;
+            root_templates(s).into_iter().enumerate().map(move |(i, t)| {
+                let paths = roots::expand(t, vars).ok().flatten().unwrap_or_default();
+                (s, i, paths.into_iter().map(canon).collect())
             })
         })
         .collect();
@@ -579,8 +586,9 @@ pub fn overlaps(specs: &[ServiceSpec]) -> Vec<[(String, usize); 2]> {
     let mut out = Vec::new();
     for (n, (sa, ia, pa)) in roots.iter().enumerate() {
         for (sb, ib, pb) in &roots[n + 1..] {
-            if sa != sb && meet(pa, pb) {
-                out.push([(sa.to_string(), *ia), (sb.to_string(), *ib)]);
+            let shared = sa.shares_roots.contains(&sb.name) || sb.shares_roots.contains(&sa.name);
+            if sa.name != sb.name && !shared && meet(pa, pb) {
+                out.push([(sa.name.clone(), *ia), (sb.name.clone(), *ib)]);
             }
         }
     }
@@ -916,6 +924,7 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             replay_gate,
             verified: raw.verified != Some(false),
             install: raw.install.unwrap_or_default(),
+            shares_roots: raw.shares_roots,
             sources: Vec::new(),
         },
         raw.sources,

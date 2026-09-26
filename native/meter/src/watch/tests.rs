@@ -420,8 +420,8 @@ fn json_without_key_is_rejected() {
 #[test]
 fn opencode_message_file_counts_once_when_completed() {
     let (_g, tmp) = crate::test_home("opencode");
-    let root = tmp.join("message");
-    let path = root.join("ses_1/msg_1.json");
+    let root = tmp.join("opencode");
+    let path = root.join("storage/message/ses_1/msg_1.json");
     let mut rec = json!({
         "id": "msg_1", "role": "assistant", "sessionID": "ses_1",
         "modelID": "nemotron-3-ultra-free", "providerID": "opencode",
@@ -436,7 +436,7 @@ fn opencode_message_file_counts_once_when_completed() {
     write_json(&path, &rec, 2);
     let got = reader.poll();
     assert_eq!(got.len(), 1);
-    assert_eq!(vec4(&got[0]), (3265, 25344, 0, 88));
+    assert_eq!(vec4(&got[0]), (3265, 25344, 0, 156), "reasoning 68은 output 88에 더한다(스펙 3.3, F5)");
     assert_eq!(
         (got[0].model.as_str(), got[0].project.as_str(), got[0].session.as_str(),
          got[0].vendor.as_str(), got[0].plan.as_str()),
@@ -1234,6 +1234,14 @@ fn overlapping_roots_across_services_are_reported() {
         "서비스 사이만, 같은 서비스 안(mine)은 아니다. 조상 루트도 겹친다"
     );
     assert!(load_report().overlaps.is_empty(), "기본 어댑터끼리는 겹치지 않는다");
+}
+
+#[test]
+fn declared_shared_roots_are_not_overlaps() {
+    let (_g, _tmp) = crate::test_home("root-share");
+    let specs = specs_from_yaml("services:\n  a: {roots: [\"~/.s\"], fields: {output: n}}\n  b: {roots: [\"~/.s\"], shares_roots: [a], fields: {output: n}}\n  c: {roots: [\"~/.s\"], fields: {output: n}}\n");
+    let pair = |a: &str, i, b: &str, j| [(a.to_string(), i), (b.to_string(), j)];
+    assert_eq!(overlaps(&specs), vec![pair("a", 0, "c", 0), pair("b", 0, "c", 0)]);
 }
 
 #[test]

@@ -34,6 +34,8 @@ pub struct Row {
 
 type Peers = HashMap<EndpointId, Peer>;
 type Rows = Arc<Mutex<HashMap<EndpointId, Row>>>;
+/// 받은 경기 신호 중 가장 큰 id 하나.
+type Signals = Arc<Mutex<Option<i64>>>;
 
 /// 떨어뜨리면(drop) 엔드포인트가 닫히고 스레드가 끝난다.
 pub struct Live {
@@ -41,8 +43,10 @@ pub struct Live {
     addr: EndpointAddr,
     peers: watch::Sender<Peers>,
     tps: watch::Sender<f64>,
+    signal: watch::Sender<Option<i64>>,
     rows: Rows,
     unknown: Arc<AtomicBool>,
+    matches: Signals,
 }
 
 impl Live {
@@ -51,9 +55,11 @@ impl Live {
         let (ready, is_ready) = std::sync::mpsc::channel();
         let (peers, peers_rx) = watch::channel(Peers::new());
         let (tps, tps_rx) = watch::channel(0.0);
+        let (signal, signal_rx) = watch::channel(None);
         let rows = Rows::default();
         let unknown = Arc::new(AtomicBool::new(false));
-        let (rows_in, unknown_in) = (rows.clone(), unknown.clone());
+        let matches = Signals::default();
+        let inbox = Inbox { rows: rows.clone(), unknown: unknown.clone(), matches: matches.clone() };
         std::thread::Builder::new()
             .name("league-live".into())
             .spawn(move || {
@@ -78,7 +84,7 @@ impl Live {
                     match bound {
                         Ok(ep) => {
                             let _ = ready.send(Ok((ep.id(), ep.addr())));
-                            run(ep, peers_rx, tps_rx, rows_in, unknown_in).await;
+                            run(ep, peers_rx, Out { tps: tps_rx, signal: signal_rx }, inbox).await;
                         }
                         Err(e) => drop(ready.send(Err(e.to_string()))),
                     }
@@ -86,7 +92,7 @@ impl Live {
             })
             .map_err(|e| e.to_string())?;
         let (id, addr) = is_ready.recv().map_err(|e| e.to_string())??;
-        Ok(Live { id, addr, peers, tps, rows, unknown })
+        Ok(Live { id, addr, peers, tps, signal, rows, unknown, matches })
     }
 
     pub fn id(&self) -> EndpointId {
@@ -122,15 +128,40 @@ impl Live {
     pub fn take_unknown(&self) -> bool {
         self.unknown.swap(false, Ordering::Relaxed)
     }
+
+    /// 경기를 열었다고 멤버들에게 알린다. 새로 붙는 연결에도 한 번씩 간다.
+    pub fn signal_match(&self, id: i64) {
+        self.signal.send_if_modified(|cur| cur.replace(id) != Some(id));
+    }
+
+    /// 멤버에게서 받은 경기 신호 중 가장 큰 id. 한 번 읽으면 지운다.
+    pub fn take_match(&self) -> Option<i64> {
+        self.matches.lock().unwrap().take()
+    }
 }
 
-async fn run(ep: Endpoint, mut peers: watch::Receiver<Peers>, tps: watch::Receiver<f64>, rows: Rows, unknown: Arc<AtomicBool>) {
+/// 보내는 쪽이 보는 값.
+#[derive(Clone)]
+struct Out {
+    tps: watch::Receiver<f64>,
+    signal: watch::Receiver<Option<i64>>,
+}
+
+/// 받는 쪽이 채우는 곳.
+#[derive(Clone)]
+struct Inbox {
+    rows: Rows,
+    unknown: Arc<AtomicBool>,
+    matches: Signals,
+}
+
+async fn run(ep: Endpoint, mut peers: watch::Receiver<Peers>, out_now: Out, inbox: Inbox) {
     let mut out: HashMap<EndpointId, tokio::task::AbortHandle> = HashMap::new();
     loop {
         tokio::select! {
             incoming = ep.accept() => {
                 let Some(incoming) = incoming else { break };
-                tokio::spawn(receive(incoming, peers.clone(), rows.clone(), unknown.clone()));
+                tokio::spawn(receive(incoming, peers.clone(), inbox.clone()));
             }
             changed = peers.changed() => {
                 if changed.is_err() {
@@ -145,7 +176,7 @@ async fn run(ep: Endpoint, mut peers: watch::Receiver<Peers>, tps: watch::Receiv
                     keep
                 });
                 for (id, peer) in now {
-                    out.entry(id).or_insert_with(|| tokio::spawn(send(ep.clone(), peer.addr, tps.clone())).abort_handle());
+                    out.entry(id).or_insert_with(|| tokio::spawn(send(ep.clone(), peer.addr, out_now.clone())).abort_handle());
                 }
             }
         }
@@ -157,32 +188,41 @@ async fn run(ep: Endpoint, mut peers: watch::Receiver<Peers>, tps: watch::Receiv
 }
 
 /// 내가 건 연결로 내 tok/s를 보낸다. 끊기면 1초에서 60초까지 늘려 가며 다시 붙는다.
-async fn send(ep: Endpoint, addr: EndpointAddr, tps: watch::Receiver<f64>) {
+async fn send(ep: Endpoint, addr: EndpointAddr, now: Out) {
     let mut wait = 1;
     loop {
         if let Ok(conn) = ep.connect(addr.clone(), LIVE_ALPN).await {
             wait = 1;
-            stream(&conn, &tps).await;
+            stream(&conn, &now).await;
         }
         tokio::time::sleep(Duration::from_secs(wait)).await;
         wait = (wait * 2).min(60);
     }
 }
 
-/// tok/s가 1 이상 바뀌면 최대 초당 한 번, 그대로면 5초마다 한 줄. 10초 뒤 경로(직접·릴레이)를 한 번 적는다.
-async fn stream(conn: &Connection, tps: &watch::Receiver<f64>) {
+/// tok/s가 1 이상 바뀌면 최대 초당 한 번, 그대로면 5초마다 한 줄. 경기 신호는 바뀔 때(연결마다 처음 한 번 포함).
+/// 10초 뒤 경로(직접·릴레이)를 한 번 적는다.
+async fn stream(conn: &Connection, src: &Out) {
     let Ok(mut out) = conn.open_uni().await else { return };
     let started = Instant::now();
-    let (mut last, mut sent_at, mut logged) = (f64::NAN, started, false);
+    let (mut last, mut sent_at, mut logged, mut signaled) = (f64::NAN, started, false, None);
     loop {
-        let now = *tps.borrow();
+        let now = *src.tps.borrow();
+        let signal = *src.signal.borrow();
+        let mut line = LiveLine::default();
         if last.is_nan() || (now - last).abs() >= 1.0 || sent_at.elapsed() >= RESEND {
-            let mut line = serde_json::to_vec(&LiveLine { tps: Some(now), match_id: None }).unwrap_or_default();
-            line.push(b'\n');
-            if out.write_all(&line).await.is_err() {
+            line.tps = Some(now);
+            (last, sent_at) = (now, Instant::now());
+        }
+        if signal != signaled {
+            (line.match_id, signaled) = (signal, signal);
+        }
+        if line != LiveLine::default() {
+            let mut bytes = serde_json::to_vec(&line).unwrap_or_default();
+            bytes.push(b'\n');
+            if out.write_all(&bytes).await.is_err() {
                 return;
             }
-            (last, sent_at) = (now, Instant::now());
         }
         if !logged && started.elapsed() >= Duration::from_secs(10) {
             logged = true;
@@ -194,11 +234,11 @@ async fn stream(conn: &Connection, tps: &watch::Receiver<f64>) {
 }
 
 /// 상대가 건 연결에서 줄을 읽는다. 방 목록을 새로 받고도 멤버가 아니면 끊고, 1 KB 넘는 줄에서도 끊는다.
-async fn receive(incoming: Incoming, mut peers: watch::Receiver<Peers>, rows: Rows, unknown: Arc<AtomicBool>) {
+async fn receive(incoming: Incoming, mut peers: watch::Receiver<Peers>, inbox: Inbox) {
     let Ok(conn) = incoming.await else { return };
     let id = conn.remote_id();
     if !peers.borrow().contains_key(&id) {
-        unknown.store(true, Ordering::Relaxed);
+        inbox.unknown.store(true, Ordering::Relaxed);
         let known = tokio::time::timeout(UNKNOWN_WAIT, peers.wait_for(|p| p.contains_key(&id))).await.is_ok_and(|r| r.is_ok());
         if !known {
             conn.close(1u32.into(), b"not a member");
@@ -222,9 +262,14 @@ async fn receive(incoming: Incoming, mut peers: watch::Receiver<Peers>, rows: Ro
             conn.close(1u32.into(), b"not a member");
             return;
         };
-        let tps = serde_json::from_slice::<LiveLine>(&line).ok().and_then(|l| l.tps);
-        if let Some(tps) = tps.filter(|t| t.is_finite() && *t >= 0.0) {
-            rows.lock().unwrap().insert(id, Row { uid, tps, at: crate::watch::now_secs() });
+        let Ok(msg) = serde_json::from_slice::<LiveLine>(&line) else { continue };
+        if let Some(tps) = msg.tps.filter(|t| t.is_finite() && *t >= 0.0) {
+            inbox.rows.lock().unwrap().insert(id, Row { uid, tps, at: crate::watch::now_secs() });
+        }
+        if let Some(m) = msg.match_id {
+            // 가장 큰 id 하나만 둔다. 줄 수는 1 KB 제한이 막지 못하므로 쌓지 않는다.
+            let mut slot = inbox.matches.lock().unwrap();
+            *slot = (*slot).max(Some(m));
         }
     }
 }
@@ -258,6 +303,18 @@ mod tests {
         assert!(a.rows().iter().all(|r| r.uid != "1"), "나 자신에게는 붙지 않는다");
         b.set_peers(Vec::new());
         assert!(b.rows().is_empty(), "빠진 멤버의 행은 지운다");
+    }
+
+    #[test]
+    fn a_match_signal_reaches_members_once_per_connection() {
+        let a = Live::start(SecretKey::generate(), None).unwrap();
+        let b = Live::start(SecretKey::generate(), None).unwrap();
+        b.set_peers(vec![peer("1", &a)]);
+        a.set_peers(vec![peer("2", &b)]);
+        a.signal_match(7);
+        wait_until("b가 경기 신호를 받음", || b.take_match() == Some(7));
+        std::thread::sleep(Duration::from_secs(2));
+        assert_eq!(b.take_match(), None, "같은 신호를 되풀이하지 않는다");
     }
 
     #[test]

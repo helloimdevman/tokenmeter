@@ -1,0 +1,12 @@
+# 손본 가격 행. 생성 행을 이긴다(스펙 7.2의 5단계). USD / 1M 토큰. prices.tsv와 칸이 같고 src 칸만 없다.
+# id	vendor	input	output	cache_read	cache_write	context	[tier_at	t_in	t_out	t_cr	t_cw]
+# 별칭은 `id<TAB>=대상 id`다. 대상 행의 값과 vendor를 그대로 쓰고 라벨은 id다.
+#
+# ccusage rust/crates/ccusage-core/src/pricing.rs:2673-2680 (pricing_alias),
+# rust/adapters/codex/src/codex-auto-review-fallbacks.json(가장 새 대체 모델)
+gpt-reserve	=gpt-5.6-luna
+codex-auto-review	=gpt-5.6-luna
+gpt-5.3-spark	=gpt-5.3-codex-spark
+# Sakana: LiteLLM openrouter/sakana/fugu-max, openrouter/sakana/fugu-ultra
+fugu-max	sakana	2	6	0.25		1000000
+fugu-ultra	sakana	5	30	0.5		1000000	272000	10	45	1

@@ -421,7 +421,7 @@ fn json_without_key_is_rejected() {
 fn opencode_message_file_counts_once_when_completed() {
     let (_g, tmp) = crate::test_home("opencode");
     let root = tmp.join("message");
-    let path = root.join("ses_1/msg_1.json");
+    let path = root.join("storage/message/ses_1/msg_1.json");
     let mut rec = json!({
         "id": "msg_1", "role": "assistant", "sessionID": "ses_1",
         "modelID": "nemotron-3-ultra-free", "providerID": "opencode",
@@ -436,7 +436,7 @@ fn opencode_message_file_counts_once_when_completed() {
     write_json(&path, &rec, 2);
     let got = reader.poll();
     assert_eq!(got.len(), 1);
-    assert_eq!(vec4(&got[0]), (3265, 25344, 0, 88));
+    assert_eq!(vec4(&got[0]), (3265, 25344, 0, 88 + 68), "추론은 output 밖이라 더한다");
     assert_eq!(
         (got[0].model.as_str(), got[0].project.as_str(), got[0].session.as_str(),
          got[0].vendor.as_str(), got[0].plan.as_str()),

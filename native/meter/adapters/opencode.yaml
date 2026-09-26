@@ -1,27 +1,18 @@
 label: OpenCode
+# 1.2부터 사용량은 opencode*.db(SQLite, WAL)에 있다. 그 전 기록은 storage/message JSON(스펙 3.3, 5절)
 roots:
-  - "~/.local/share/opencode/storage/message"
-  - "~/.opencode/storage/message"
-patterns: ["**/*.json"]
-format: json
-match:
-  role: assistant
-# 메시지 파일은 생성 시점(토큰 0)과 완료 시점에 각각 쓰인다 → 누적 모드로 차이만 반영
-mode: cumulative
+  - "${OPENCODE_DATA_DIR:-${XDG_DATA_HOME:-~/.local/share}/opencode}"
+  - "~/.opencode"
+# 행은 스트림을 시작할 때 토큰 0으로 들어가 끝날 때 고쳐 쓰인다 → delta + 키, 큰 값 유지(F2).
+# 채널 DB 여러 개, v1·v2 표, 옛 JSON이 같은 id를 가지므로 서비스 장부 하나가 거른다.
+mode: delta
 key: id
-fields:
-  input: tokens.input
-  cache_read: tokens.cache.read
-  cache_write: tokens.cache.write
-  output: tokens.output
-context:
-  cwd: path.cwd
-  model: modelID
-  session: sessionID
-  vendor: providerID
 default_model: default
-# 프로바이더 키를 직접 넣어 쓰는 구조라 종량제로 본다 (구독 게이트웨이면 subscription 으로)
-plan: api
+plan_probe:
+  path: "${XDG_DATA_HOME:-~/.local/share}/opencode/auth.json"
+  key: "[$ctx.vendor].type"
+  map: { oauth: subscription, api: api }
+  default: api
 endpoint_probe:
   # 프로바이더마다 URL 이 다르다 → $ctx.vendor 에 providerID 가 들어간다
   path: ~/.config/opencode/opencode.json
@@ -30,3 +21,82 @@ install:
   target: opencode_plugin
   path: ~/.config/opencode/plugin/tokenmeter.js
   events: [SessionStart]
+sources:
+  # v1 message 표(1.2+). -wal·-shm은 패턴에 맞지 않는다
+  - patterns: ["opencode.db", "opencode-*.db"]
+    format: sqlite
+    cursor: updated
+    query:
+      # 포크는 부모 메시지를 time.*째 복사한다: 세션보다 이른 메시지는 복사본이다(tokscale MiMo owns_turn)
+      - |
+        SELECT m.id, m.session_id, m.time_updated AS updated, m.data, s.parent_id, s.directory
+        FROM message m LEFT JOIN session s ON s.id = m.session_id
+        WHERE m.time_updated >= ?1
+          AND (s.time_created IS NULL OR json_extract(m.data,'$.time.created') >= s.time_created)
+      - "SELECT id, session_id, time_updated AS updated, data FROM message WHERE time_updated >= ?1"
+      # message 표가 없는 DB(v2만): 아무것도 읽지 않는다(쿼리 실패 경고를 내지 않게)
+      - "SELECT NULL AS id LIMIT 0"
+    match: { data@json.role: assistant, data@json.tokens: { $exists: true } }
+    timestamp: data@json.time.created
+    fields: &db_fields
+      input: data@json.tokens.input
+      cache_read: data@json.tokens.cache.read
+      cache_write: data@json.tokens.cache.write
+      # 추론은 output 밖이다(total = input + output + reasoning + cache, 스펙 3.3)
+      output: "data@json.tokens.output + data@json.tokens.reasoning"
+    cost_usd: data@json.cost
+    duration_ms: "data@json.time.completed - data@json.time.created"
+    # 하위 에이전트 세션은 부모 세션으로 합친다(Claude 사이드체인과 같음)
+    subagent: parent_id
+    context:
+      session: [parent_id, session_id]
+      cwd: [directory, data@json.path.cwd]
+      model: [data@json.modelID, data@json.model.id]
+      vendor: [data@json.providerID, data@json.model.providerID]
+      effort: data@json.variant
+  # v2 session_message 표: 역할은 type 열, 모델은 $.model 아래. 세션 표는 session_v2 또는 session
+  - patterns: ["opencode.db", "opencode-*.db"]
+    format: sqlite
+    cursor: updated
+    query:
+      - |
+        SELECT sm.id, sm.session_id, sm.type, sm.time_updated AS updated, sm.data, s.directory
+        FROM session_message sm LEFT JOIN session_v2 s ON s.id = sm.session_id
+        WHERE sm.time_updated >= ?1
+          AND (s.time_created IS NULL OR json_extract(sm.data,'$.time.created') >= s.time_created)
+      - |
+        SELECT sm.id, sm.session_id, sm.type, sm.time_updated AS updated, sm.data, s.directory
+        FROM session_message sm LEFT JOIN session s ON s.id = sm.session_id
+        WHERE sm.time_updated >= ?1
+          AND (s.time_created IS NULL OR json_extract(sm.data,'$.time.created') >= s.time_created)
+      - "SELECT id, session_id, type, time_updated AS updated, data FROM session_message WHERE time_updated >= ?1"
+      # v2 이전 DB: session_message가 없다
+      - "SELECT NULL AS id LIMIT 0"
+    match: { type: assistant, data@json.tokens: { $exists: true } }
+    timestamp: data@json.time.created
+    fields: *db_fields
+    cost_usd: data@json.cost
+    duration_ms: "data@json.time.completed - data@json.time.created"
+    context:
+      session: session_id
+      cwd: [directory, data@json.path.cwd]
+      model: [data@json.modelID, data@json.model.id]
+      vendor: [data@json.providerID, data@json.model.providerID]
+      effort: data@json.variant
+  # 1.2 이전 storage/message/<세션>/<메시지>.json. 옛 JSON에만 있는 기록이 있다(스펙 3.3)
+  - patterns: ["storage/message/**/*.json"]
+    format: json
+    match: { role: assistant }
+    timestamp: time.created
+    fields:
+      input: tokens.input
+      cache_read: tokens.cache.read
+      cache_write: tokens.cache.write
+      output: "tokens.output + tokens.reasoning"
+    cost_usd: cost
+    duration_ms: "time.completed - time.created"
+    context:
+      cwd: path.cwd
+      model: modelID
+      session: sessionID
+      vendor: providerID

@@ -1,0 +1,55 @@
+label: ZCode
+# Z.ai ZCode(OpenCode 포크). 사용량은 model_usage 표(API 시도마다 한 행, running → completed)에 있다.
+# ~/.zcode/projects/*.jsonl은 글자 수로 추정한 값이고 이 표와 겹쳐서 읽지 않는다(tokscale만 읽음)
+roots:
+  - "${ZCODE_HOME:-~/.zcode}/cli/db"
+patterns: ["db.sqlite"]
+format: sqlite
+cursor: updated
+# 카운터는 포함형이다: input = 새 input + 두 캐시, output = 보이는 output + 추론(ccusage zcode/README.md:54-58).
+# 다섯 칸의 합이 total이면 배타형으로 보고 그대로 둔다(tokscale zcode.rs:227-245). 가르기는 SQL에서 한다.
+# 함께 든 claude-code·codex·gemini-cli 하위 에이전트(프로바이더 anthropic·openai·google)는 제 로그로 센다(TokenTracker rollout.js:5256-5285)
+query:
+  - |
+    WITH mu AS (
+      SELECT *, COALESCE(input_tokens,0) AS i, COALESCE(output_tokens,0) AS o, COALESCE(reasoning_tokens,0) AS r,
+             COALESCE(cache_read_input_tokens,0) AS cr, COALESCE(cache_creation_input_tokens,0) AS cw
+      FROM model_usage
+      WHERE status = 'completed' AND trim(COALESCE(model_id,'')) != '' AND COALESCE(completed_at, started_at) >= ?1
+        AND lower(COALESCE(provider_id,'')) NOT LIKE '%anthropic%'
+        AND lower(COALESCE(provider_id,'')) NOT LIKE '%openai%'
+        AND lower(COALESCE(provider_id,'')) NOT LIKE '%google%')
+    SELECT mu.id, mu.session_id, mu.model_id, mu.started_at, mu.duration_ms,
+           COALESCE(mu.completed_at, mu.started_at) AS updated, NULLIF(s.directory,'') AS directory,
+           CASE WHEN mu.provider_id LIKE 'builtin:%' THEN substr(mu.provider_id, 9) END AS vendor,
+           mu.cr AS cache_read, mu.cw AS cache_write,
+           CASE WHEN mu.cr + mu.cw + mu.r > 0 AND mu.computed_total_tokens = mu.i + mu.o + mu.cr + mu.cw + mu.r
+                THEN mu.i ELSE max(mu.i - mu.cr - mu.cw, 0) END AS input,
+           CASE WHEN mu.cr + mu.cw + mu.r > 0 AND mu.computed_total_tokens = mu.i + mu.o + mu.cr + mu.cw + mu.r
+                THEN mu.o + mu.r ELSE mu.o END AS output
+    FROM mu LEFT JOIN session s ON s.id = mu.session_id
+  # 옛 스키마(provider_id·cache_creation·reasoning·completed_at 없음, ccusage loader.rs:327-353): 커서 없이 전체
+  - |
+    SELECT mu.id, mu.session_id, mu.model_id, mu.started_at, NULLIF(s.directory,'') AS directory,
+           COALESCE(mu.cache_read_input_tokens,0) AS cache_read, 0 AS cache_write,
+           max(COALESCE(mu.input_tokens,0) - COALESCE(mu.cache_read_input_tokens,0), 0) AS input,
+           COALESCE(mu.output_tokens,0) AS output
+    FROM model_usage mu LEFT JOIN session s ON s.id = mu.session_id
+    WHERE mu.status = 'completed' AND trim(COALESCE(mu.model_id,'')) != ''
+# ponytail: model_usage 이전의 OpenCode message 표 행(TokenTracker만 읽음)은 읽지 않는다. 옛 설치에서 기록이 비면 더한다
+mode: delta
+key: id
+timestamp: started_at
+fields:
+  input: input
+  cache_read: cache_read
+  cache_write: cache_write
+  output: output
+duration_ms: duration_ms
+context:
+  session: session_id
+  cwd: directory
+  model: model_id
+  # builtin:zai-coding-plan 같은 내장 프로바이더 이름. 사용자 프로바이더는 UUID라 벤더가 아니다
+  vendor: vendor
+default_model: default

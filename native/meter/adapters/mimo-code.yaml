@@ -1,0 +1,54 @@
+label: MiMo Code
+# Xiaomi mimocode CLI(OpenCode 포크). 데스크톱 앱(mimo-desktop)과 같은 mimocode*.db를 쓰고
+# session.version이 desktop-…이 아닌 세션만 여기서 센다(tokscale sessions/micode.rs:11-38)
+roots:
+  - "${XDG_DATA_HOME:-~/.local/share}/mimocode"
+  # orca 훅 샌드박스 사본(macOS). 같은 메시지는 data.id 키가 한 번만 센다
+  - "~/Library/Application Support/orca/mimocode-hooks/shared/data"
+patterns: ["mimocode.db", "mimocode-*.db"]
+format: sqlite
+cursor: updated
+# 거르기는 SQL에서: providerID가 mimo·xiaomi인 행만(나머지는 Claude 기록 복사본, TokenTracker rollout.js:5226-5254),
+# 포크 복사본(세션보다 이른 메시지)은 뺀다. 시각은 초로 적는 빌드가 있어 밀리초로 맞춘다(tokscale opencode_schema.rs:673-684)
+query:
+  - |
+    WITH m AS (
+      SELECT id, session_id, time_updated, data,
+             json_extract(data,'$.time.created') * (CASE WHEN json_extract(data,'$.time.created') <= 1e12 THEN 1000 ELSE 1 END) AS created_ms,
+             json_extract(data,'$.time.completed') * (CASE WHEN json_extract(data,'$.time.completed') <= 1e12 THEN 1000 ELSE 1 END) AS completed_ms
+      FROM message
+      WHERE time_updated >= ?1 AND json_valid(data)
+        AND lower(COALESCE(json_extract(data,'$.providerID'), json_extract(data,'$.model.providerID'), '')) IN ('mimo','xiaomi'))
+    SELECT m.id, m.session_id, m.time_updated AS updated, m.data, m.created_ms, m.completed_ms, s.directory
+    FROM m LEFT JOIN session s ON s.id = m.session_id
+    WHERE lower(trim(COALESCE(s.version,''))) NOT LIKE 'desktop-%'
+      AND (s.time_created IS NULL
+           OR m.created_ms >= s.time_created * (CASE WHEN s.time_created <= 1e12 THEN 1000 ELSE 1 END))
+  # session 표가 없는 빌드: 데스크톱 구분과 포크 거르기 없이
+  - |
+    SELECT id, session_id, time_updated AS updated, data,
+           json_extract(data,'$.time.created') * (CASE WHEN json_extract(data,'$.time.created') <= 1e12 THEN 1000 ELSE 1 END) AS created_ms,
+           json_extract(data,'$.time.completed') * (CASE WHEN json_extract(data,'$.time.completed') <= 1e12 THEN 1000 ELSE 1 END) AS completed_ms
+    FROM message
+    WHERE time_updated >= ?1 AND json_valid(data)
+      AND lower(COALESCE(json_extract(data,'$.providerID'), json_extract(data,'$.model.providerID'), '')) IN ('mimo','xiaomi')
+# 행은 스트림 시작 때 토큰 0으로 들어가 끝날 때 고쳐 쓰인다 → delta + 키, 큰 값 유지(F2).
+# data.id는 채널 DB 사이에서 같은 메시지를 합치고, 없으면 행 id를 DB 파일마다 따로 센다(tokscale micode.rs:632-735)
+mode: delta
+key: [data@json.id, "$file.path & id"]
+match: { data@json.role: assistant, data@json.tokens: { $exists: true } }
+timestamp: created_ms
+fields:
+  input: data@json.tokens.input
+  cache_read: data@json.tokens.cache.read
+  cache_write: data@json.tokens.cache.write
+  # 추론은 output 밖이다(TokenTracker mimo-parser.test.js:69-74)
+  output: "data@json.tokens.output + data@json.tokens.reasoning"
+cost_usd: data@json.cost
+duration_ms: "completed_ms - created_ms"
+context:
+  session: session_id
+  cwd: [directory, data@json.path.root, data@json.path.cwd]
+  model: [data@json.modelID, data@json.model.id]
+  vendor: [data@json.providerID, data@json.model.providerID]
+default_model: mimo-auto

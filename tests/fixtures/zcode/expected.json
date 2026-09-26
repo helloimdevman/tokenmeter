@@ -1,0 +1,18 @@
+{
+  "source": "usage_1/usage_cache_incl/usage_cache_excl: tokscale sessions/zcode.rs:851-909, 1032-1068, 1177-1214 (MIT; status, provider_id, started_at added, usage_cache_incl model GLM-5.2); usage-1/usage-2: ccusage rust/adapters/zcode/src/loader.rs:360-414 (MIT © 2025 ryoppippi; cwd changed); usage_anth synthetic after TokenTracker rollout.js:5256-5285",
+  "steps": [
+    {"calls": 4, "input": 185, "cache_read": 192, "cache_write": 33, "output": 115,
+     "by_model": {"GLM-5.2": {"input": 105, "cache_read": 87, "cache_write": 8, "output": 70},
+                  "claude-sonnet-5": {"input": 20, "cache_read": 80, "cache_write": 10, "output": 35},
+                  "GLM-5.3": {"input": 60, "cache_read": 25, "cache_write": 15, "output": 10}},
+     "sessions": ["sess_1", "sess_cache", "sess_excl", "session-1"],
+     "project": "work/zcode"},
+    {"calls": 5, "input": 245, "cache_read": 217, "cache_write": 48, "output": 125,
+     "by_model": {"GLM-5.2": {"input": 105, "output": 70},
+                  "claude-sonnet-5": {"input": 20, "output": 35},
+                  "GLM-5.3": {"input": 120, "cache_read": 50, "cache_write": 30, "output": 20}}}
+  ],
+  "differs": "ccusage input 275, output 125, cache 157/38: it counts the anthropic sub-agent row usage_anth (50/5; TokenTracker drops it, Claude Code logs it itself) and always treats counters as inclusive, so the exclusive row usage_cache_excl becomes input 0, cache 20/0, output 30 (+95 extra). We keep exclusive rows as they are (tokscale shape check) and count its reasoning 5 in output.",
+  "ccusage": {"cmd": "zcode", "env": {"ZCODE_HOME": "$HOME/.zcode"},
+              "totals": {"input": 275, "output": 125, "cache_read": 157, "cache_write": 38}}
+}

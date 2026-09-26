@@ -1,0 +1,1 @@
+{"id": "db-msg-1", "role": "assistant", "sessionID": "ses_a", "providerID": "anthropic", "modelID": "claude-sonnet-4-20250514", "path": {"cwd": "/work/app"}, "time": {"created": 1767312000000, "completed": 1767312004000}, "tokens": {"input": 120, "output": 60, "reasoning": 30, "cache": {"read": 12, "write": 24}}, "cost": 0.03}

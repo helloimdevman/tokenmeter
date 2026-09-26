@@ -1,0 +1,39 @@
+label: Kilo CLI
+# kilo.ai CLI(OpenCode 포크). kilo.db는 OpenCode v1 message 표다(tokscale opencode_schema.rs, ccusage kilo/loader.rs:60)
+roots:
+  - "${KILO_DATA_DIR:-${XDG_DATA_HOME:-~/.local/share}/kilo}"
+patterns: ["kilo.db"]
+format: sqlite
+cursor: updated
+query:
+  # OpenCode 모양 session 표가 있으면 포크 복사본을 거르고 하위 세션을 부모로
+  - |
+    SELECT m.id, m.session_id, m.time_updated AS updated, m.data, s.parent_id, s.directory
+    FROM message m LEFT JOIN session s ON s.id = m.session_id
+    WHERE m.time_updated >= ?1 AND json_valid(m.data)
+      AND (s.time_created IS NULL OR json_extract(m.data,'$.time.created') >= s.time_created)
+  - "SELECT id, session_id, time_updated AS updated, data FROM message WHERE time_updated >= ?1 AND json_valid(data)"
+  # upstream이 확인한 최소 스키마 message(id, session_id, data): 커서 없이 전체
+  - "SELECT id, session_id, data FROM message WHERE json_valid(data)"
+# 행은 토큰 0으로 들어가 끝날 때 고쳐 쓰인다 → delta + 키, 큰 값 유지(F2)
+mode: delta
+key: [data@json.id, id]
+match: { data@json.role: assistant, data@json.tokens: { $exists: true } }
+timestamp: data@json.time.created
+fields:
+  input: data@json.tokens.input
+  cache_read: data@json.tokens.cache.read
+  cache_write: data@json.tokens.cache.write
+  # 추론은 output 밖이다(total = input + output + reasoning + cache, TokenTracker kilo-parser.test.js:57-62)
+  output: "data@json.tokens.output + data@json.tokens.reasoning"
+cost_usd: data@json.cost
+duration_ms: "data@json.time.completed - data@json.time.created"
+subagent: parent_id
+context:
+  session: [parent_id, session_id]
+  cwd: [directory, data@json.path.cwd]
+  model: [data@json.modelID, data@json.model.id]
+  vendor: [data@json.providerID, data@json.model.providerID]
+default_model: default
+# Kilo Gateway 크레딧과 직접 넣은 키는 쓴 만큼 낸다
+plan: api

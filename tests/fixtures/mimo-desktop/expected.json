@@ -1,0 +1,11 @@
+{
+  "source": "same DB as mimo-code: TokenTracker test/mimo-parser.test.js:76-130 and tokscale sessions/micode.rs:924-1010 (MIT); only the desktop-5198ff5 session counts here",
+  "steps": [
+    {"calls": 1, "input": 1000, "cache_read": 0, "cache_write": 0, "output": 200, "cost_usd": 0,
+     "by_model": {"mimo-x-pro-preview": {"input": 1000, "cache_read": 0, "cache_write": 0, "output": 200}},
+     "sessions": ["ses_desktop"],
+     "project": "work/desktop-repo",
+     "vendor": "xiaomi"}
+  ],
+  "differs": "msg_c1 sits in the desktop session but is a mirrored Claude row (providerID anthropic), so it is dropped here too (TokenTracker filter; tokscale would count it)."
+}

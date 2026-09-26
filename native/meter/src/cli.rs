@@ -1282,6 +1282,7 @@ fn cmd_league(args: &Args) -> i32 {
         Some("join") => league::join_room(args.rest.get(1).map(String::as_str).unwrap_or("")),
         Some("leave") => league::leave(args.rest.get(1).map(String::as_str)),
         Some("close") => league::close_room(args.rest.get(1).map(String::as_str)),
+        Some("match") => league::match_cmd(args.rest.get(1).map(String::as_str), flag(args, "minutes"), flag(args, "rule")),
         _ => league::show(),
     }
 }

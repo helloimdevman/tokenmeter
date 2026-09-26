@@ -9,7 +9,7 @@ use crate::server::{self, ApiError};
 use iroh::{EndpointAddr, RelayUrl, SecretKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokenmeter_hook::data_dir;
-use tokenmeter_protocol::{room_id_ok, AuthRequest, AuthResponse, Member, Room, RoomList};
+use tokenmeter_protocol::{room_id_ok, AuthRequest, AuthResponse, MatchInfo, MatchRequest, MatchResult, Member, Room, RoomList};
 
 const DEFAULT_INVITE: &str = "https://tokenmeter.online/j/";
 const REFRESH_S: f64 = 900.0;
@@ -25,7 +25,7 @@ const REFRESH_S: f64 = 900.0;
 const UNKNOWN_REFRESH_S: f64 = 60.0;
 /// 오버레이는 15초 넘은 행을 숨긴다. 여러 기기의 합도 같은 기준으로 센다.
 const FRESH_S: f64 = 15.0;
-const PRIVACY: &str = "Members see your GitHub login and live output rate. While you are in a room, anyone who knows your endpoint id (current or past members) gets your public IP and local addresses when they connect; leaving a room or logging out changes the key.";
+const PRIVACY: &str = "Members see your GitHub login, live output rate and, in matches the host starts, the output tokens or estimated cost you add. While you are in a room, anyone who knows your endpoint id (current or past members) gets your public IP and local addresses when they connect; leaving a room or logging out changes the key.";
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -42,6 +42,8 @@ pub struct LocalRoom {
     pub room_id: String,
     pub host: bool,
     pub members: Vec<Member>,
+    #[serde(rename = "match", skip_serializing_if = "Option::is_none")]
+    pub latest: Option<MatchInfo>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
@@ -211,7 +213,7 @@ fn reason(e: &ApiError) -> String {
 }
 
 fn local(r: Room, uid: &str) -> LocalRoom {
-    LocalRoom { host: r.host_id.to_string() == uid, room_id: r.id, members: r.members }
+    LocalRoom { host: r.host_id.to_string() == uid, room_id: r.id, members: r.members, latest: r.latest }
 }
 
 /// 서버에서 설정과 방 목록을 받아 league.json을 새로 쓴다. 포커스는 남아 있으면 그대로다.
@@ -228,15 +230,49 @@ pub fn refresh() -> Result<(), ApiError> {
         other => other?,
     };
     // ponytail: CLI가 방을 여는 사이에 데몬이 옛 목록을 쓰면 다음 새로 고침(15분)까지 그 방이 빠진다. 드물다.
+    let old = book();
     let b = Book {
         rooms: list.rooms.into_iter().map(|r| local(r, &me.uid)).collect(),
-        focus: book().focus,
+        focus: old.focus.clone(),
         relay: cfg.relay,
         invite: cfg.invite,
         live: cfg.live,
     };
     save_book(&b);
+    // 지난번에 진행 중이던 경기가 이번에 확정됐으면 순위를 한 번 알린다.
+    let open: HashSet<i64> = old.rooms.iter().filter_map(|r| r.latest.as_ref()).filter(|m| !m.finalized).map(|m| m.id).collect();
+    for r in &b.rooms {
+        if r.latest.as_ref().is_some_and(|m| m.finalized && open.contains(&m.id)) {
+            if let Ok(res) = server::json::<MatchResult>("GET", &format!("/v1/rooms/{}/matches/latest", r.room_id), &token, None) {
+                let text = format!("Match #{} over — {}", res.info.id, podium(&res));
+                eprintln!("[league] {text}");
+                if !cfg!(test) {
+                    crate::daemon::notify("Token League", &text);
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+fn score_text(rule: &str, score: f64) -> String {
+    if rule == "cost" {
+        format!("${score:.2}")
+    } else {
+        crate::compact_num(score)
+    }
+}
+
+/// 알림 한 줄: "1. alice 12.3k · 2. bob 8.1k · 3. …"
+fn podium(res: &MatchResult) -> String {
+    let top: Vec<String> = res
+        .standings
+        .iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, s)| format!("{}. {} {}", i + 1, s.login, score_text(&res.info.rule, s.score)))
+        .collect();
+    top.join(" · ")
 }
 
 /// 로그인 확인과 기기 토큰. 안 됐으면 안내를 찍는다.
@@ -460,7 +496,109 @@ pub fn show() -> i32 {
         println!("  invite : {}", invite_link(&focus));
     }
     println!("  usage  : tokenmeter league login | logout | open | join <id|link> | leave [id] | close [id]");
+    println!("           tokenmeter league match [start --minutes 120 --rule output|cost]");
     0
+}
+
+/// `league match`: 포커스된 방의 최근 경기 순위(진행 중이면 잠정). `league match start`: 호스트가 경기를 연다.
+pub fn match_cmd(sub: Option<&str>, minutes: Option<&str>, rule: Option<&str>) -> i32 {
+    let rid = current_focus();
+    if rid.is_empty() {
+        println!("  You are not in a room. tokenmeter league open, or join an invite link.");
+        return 1;
+    }
+    let Some(token) = ready() else { return 1 };
+    match sub {
+        Some("start") => {
+            let Some(minutes) = minutes.unwrap_or("120").parse().ok() else {
+                println!("  usage: tokenmeter league match start [--minutes 10..10080] [--rule output|cost]");
+                return 1;
+            };
+            let req = MatchRequest { minutes, rule: rule.unwrap_or("output").into() };
+            let path = format!("/v1/rooms/{rid}/matches");
+            match server::json::<MatchInfo>("POST", &path, &token, serde_json::to_value(&req).ok()) {
+                Ok(m) => {
+                    let _ = refresh(); // 데몬이 league.json에서 새 경기를 보고 P2P로 알리고 곧바로 동기화한다.
+                    let end = crate::history::civil_of(m.ends_at as f64);
+                    println!("  Match #{} started in {rid}: {} for {minutes} min, ends {:02}:{:02}.", m.id, m.rule, end.hour, end.minute);
+                    0
+                }
+                Err(ApiError::Status(_, code)) if code == "match_active" => {
+                    println!("  The last match in {rid} is still running or not final yet (final an hour after it ends): tokenmeter league match");
+                    1
+                }
+                Err(ApiError::Status(400, _)) => {
+                    println!("  usage: tokenmeter league match start [--minutes 10..10080] [--rule output|cost]");
+                    1
+                }
+                Err(e) => {
+                    println!("  Couldn't start a match: {}", reason(&e));
+                    1
+                }
+            }
+        }
+        None => match server::json::<MatchResult>("GET", &format!("/v1/rooms/{rid}/matches/latest"), &token, None) {
+            Ok(res) => {
+                print!("{}", standings(&res, crate::watch::now_secs()));
+                0
+            }
+            Err(ApiError::Status(404, _)) => {
+                println!("  No match in {rid} yet. The host starts one: tokenmeter league match start");
+                1
+            }
+            Err(e) => {
+                println!("  Couldn't read the match: {}", reason(&e));
+                1
+            }
+        },
+        Some(_) => {
+            println!("  usage: tokenmeter league match [start --minutes 120 --rule output|cost]");
+            1
+        }
+    }
+}
+
+fn standings(res: &MatchResult, now: f64) -> String {
+    let m = &res.info;
+    let state = if m.finalized {
+        "final".to_string()
+    } else if now < m.ends_at as f64 {
+        format!("provisional · {} left", clock(m.ends_at as f64 - now))
+    } else {
+        "provisional · ended, final within the hour".to_string()
+    };
+    let mut out = format!("  Match #{} · {} · {state}\n", m.id, m.rule);
+    for (i, s) in res.standings.iter().enumerate() {
+        let note = if s.started { "" } else { "  (no sync yet)" };
+        out += &format!("  {:>2}. {:<20} {:>10}{note}\n", i + 1, s.login, score_text(&m.rule, s.score));
+    }
+    out
+}
+
+fn clock(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
+/// 오버레이 리그 줄의 남은 시간("T-12:34"). 포커스된 방에 진행 중인 경기가 없으면 빈 문자열.
+pub fn match_left() -> String {
+    if !has_auth() {
+        return String::new();
+    }
+    let b = book();
+    let focus = focus_of(&b);
+    let now = crate::watch::now_secs();
+    b.rooms
+        .iter()
+        .filter(|r| r.room_id == focus)
+        .filter_map(|r| r.latest.as_ref())
+        .find(|m| !m.finalized && now < m.ends_at as f64)
+        .map(|m| format!("T-{}", clock(m.ends_at as f64 - now)))
+        .unwrap_or_default()
 }
 
 /// 오버레이의 로그인 버튼. 터미널이 없으니 login이 코드를 클립보드와 알림으로도 알린다.
@@ -492,11 +630,17 @@ struct Ticker {
     next_look: f64,
     refresh_at: f64,
     unknown_at: f64,
+    final_at: f64,
     me: Option<Auth>,
     in_room: bool,
     names: HashMap<String, String>,
     relay: Option<RelayUrl>,
     live: Option<Live>,
+    /// 진행 중이거나 확정을 기다리는 경기와 내가 그 방의 호스트인지.
+    matches: Vec<(MatchInfo, bool)>,
+    /// 시작 동기화를 재촉한 경기, 끝 동기화를 재촉한 경기.
+    started: HashSet<i64>,
+    ended: HashSet<i64>,
 }
 
 fn ticker() -> &'static Mutex<Ticker> {
@@ -558,9 +702,22 @@ pub fn tick(_status: &Value, tps: f64) {
             (t.live, t.relay, t.in_room) = (None, None, false);
             return;
         };
-        let stranger = now - t.unknown_at >= UNKNOWN_REFRESH_S && t.live.as_ref().is_some_and(Live::take_unknown);
-        if now >= t.refresh_at || stranger {
-            (t.refresh_at, t.unknown_at) = (now + REFRESH_S, now);
+        // 낯선 상대와 경기 신호는 방 목록 새로 고침(과 즉시 동기화)을 부른다. 둘 다 60초에 한 번까지다.
+        // 그사이 온 표시는 지우지 않고 남겨 두었다가(take를 부르지 않는다) 다음 차례에 처리한다.
+        let quiet = now - t.unknown_at >= UNKNOWN_REFRESH_S;
+        let stranger = quiet && t.live.as_ref().is_some_and(Live::take_unknown);
+        // 멤버가 연 경기 신호: 처음 보는 id면 방 목록(끝 시각)을 받고 곧바로 동기화한다.
+        // ponytail: t.started는 비우지 않는다. 신호로 늘어나는 것은 60초에 하나라 하루 1,440개가 끝이다.
+        let signal = if quiet { t.live.as_ref().and_then(Live::take_match) } else { None };
+        let signaled = signal.is_some_and(|id| t.started.insert(id));
+        if signaled {
+            crate::sync::kick();
+        }
+        // 끝난 지 1시간이 넘도록 확정되지 않은 경기가 있으면 2분마다 확인한다(확정 알림).
+        let waiting = t.matches.iter().any(|(m, _)| now > m.ends_at as f64 + 3660.0);
+        let for_final = waiting && now >= t.final_at;
+        if now >= t.refresh_at || stranger || signaled || for_final {
+            (t.refresh_at, t.unknown_at, t.final_at) = (now + REFRESH_S, now, now + 120.0);
             std::thread::spawn(|| {
                 if let Err(e) = refresh() {
                     eprintln!("[league] rooms: {e:?}");
@@ -571,6 +728,7 @@ pub fn tick(_status: &Value, tps: f64) {
         }
         let b = book();
         t.in_room = !b.rooms.is_empty();
+        t.matches = b.rooms.iter().filter_map(|r| r.latest.clone().filter(|m| !m.finalized).map(|m| (m, r.host))).collect();
         t.names = b.rooms.iter().flat_map(|r| &r.members).map(|m| (m.user_id.to_string(), m.login.clone())).collect();
         let relay = relay_for(&b).filter(|_| t.in_room);
         if relay != t.relay {
@@ -583,6 +741,10 @@ pub fn tick(_status: &Value, tps: f64) {
         if t.live.is_none() {
             if let Some(url) = t.relay.clone() {
                 t.live = key().map_err(|e| e.to_string()).and_then(|k| Live::start(k, Some(url))).map_err(|e| eprintln!("[league] live: {e}")).ok();
+                if t.live.is_some() {
+                    // 키를 바꾼 뒤(방 나가기·로그아웃)의 새 EndpointId를 곧바로 올린다. 멤버의 방 목록과 릴레이 접근이 이것을 본다.
+                    crate::sync::kick();
+                }
             }
         }
         if let (Some(live), Some(url)) = (&t.live, &t.relay) {
@@ -590,6 +752,19 @@ pub fn tick(_status: &Value, tps: f64) {
         }
     }
     let (Some(me), true) = (t.me.clone(), t.in_room) else { return };
+    // 경기: 새 경기는 곧바로 동기화하고(호스트는 P2P로 알린다), 끝나면 0~10초 사이에 한 번 더 보낸다.
+    let jitter = (std::process::id() % 1000) as f64 / 100.0;
+    for (m, host) in t.matches.clone() {
+        let running = now < m.ends_at as f64;
+        if running && host {
+            if let Some(live) = &t.live {
+                live.signal_match(m.id);
+            }
+        }
+        if (running && t.started.insert(m.id)) || (now >= m.ends_at as f64 + jitter && t.ended.insert(m.id)) {
+            crate::sync::kick();
+        }
+    }
     let rows = t.live.as_ref().map(|l| {
         l.set_tps(tps);
         l.rows()
@@ -726,7 +901,7 @@ mod tests {
     fn peers_are_the_focused_room_minus_my_devices() {
         let relay: RelayUrl = "https://relay.example".parse().unwrap();
         let (a, b) = (SecretKey::generate().public().to_string(), SecretKey::generate().public().to_string());
-        let room = |id: &str, members: Vec<Member>| LocalRoom { room_id: id.into(), host: false, members };
+        let room = |id: &str, members: Vec<Member>| LocalRoom { room_id: id.into(), members, ..LocalRoom::default() };
         let m = |uid: i64, e: &[&str]| Member { user_id: uid, login: format!("u{uid}"), endpoints: e.iter().map(|s| s.to_string()).collect() };
         let book = Book {
             rooms: vec![room("r1", vec![m(1, &[&a]), m(2, &[&b, "bad"])]), room("r2", vec![m(3, &[&b])])],
@@ -768,6 +943,42 @@ mod tests {
         write_private("league-cache.json", &cache(&me, 0.0, &b.rows(), &names, crate::watch::now_secs()).to_string()).unwrap();
         let v: Value = serde_json::from_str(&fs::read_to_string(path("league-cache.json")).unwrap()).unwrap();
         assert_eq!((v["members"]["1"]["handle"].as_str(), v["members"]["1"]["tps"].as_f64()), (Some("alice"), Some(21.0)));
+    }
+
+    fn result(finalized: bool) -> MatchResult {
+        let s = |login: &str, score: f64, started: bool| tokenmeter_protocol::Standing { user_id: 1, login: login.into(), score, started };
+        MatchResult {
+            info: MatchInfo { id: 5, rule: "output".into(), starts_at: 0, ends_at: 4000, finalized },
+            standings: vec![s("bob", 12_300.0, true), s("alice", 900.0, true), s("carol", 0.0, false)],
+        }
+    }
+
+    #[test]
+    fn standings_show_state_scores_and_who_never_synced() {
+        let live = standings(&result(false), 400.0);
+        assert!(live.contains("Match #5 · output · provisional · 1:00:00 left"), "{live}");
+        assert!(live.contains(" 1. bob") && live.contains("12.3k") && live.contains("carol") && live.contains("(no sync yet)"), "{live}");
+        assert!(standings(&result(true), 9000.0).contains("final"));
+        assert_eq!(podium(&result(true)), "1. bob 12.3k · 2. alice 900 · 3. carol 0");
+        assert_eq!(score_text("cost", 1.234), "$1.23");
+        assert_eq!((clock(59.0), clock(3599.0), clock(3600.0)), ("0:59".into(), "59:59".into(), "1:00:00".into()));
+    }
+
+    #[test]
+    fn match_start_asks_the_server_and_the_overlay_counts_down() {
+        let (_g, _tmp) = crate::test_home("league-match");
+        logged_in("42", "alice");
+        const ROOM_WITH_MATCH: &str = r#"{"rooms":[{"id":"aZ0_-aZ0_-aZ","host_id":42,"members":[],"match":{"id":5,"rule":"output","starts_at":0,"ends_at":4102444800,"finalized":false}}]}"#;
+        let (url, seen) = serve(vec![(201, r#"{"id":5,"rule":"output","starts_at":0,"ends_at":600,"finalized":false}"#), (200, CONFIG), (200, ROOM_WITH_MATCH)]);
+        use_server(&url);
+        let mut b = Book::default();
+        b.rooms.push(LocalRoom { room_id: "aZ0_-aZ0_-aZ".into(), host: true, ..LocalRoom::default() });
+        save_book(&b);
+        assert_eq!(match_cmd(Some("start"), Some("10"), None), 0);
+        let req = seen.recv().unwrap();
+        assert!(req.starts_with("POST /v1/rooms/aZ0_-aZ0_-aZ/matches") && req.contains(r#""minutes":10"#) && req.contains(r#""rule":"output""#), "{req}");
+        assert!(match_left().starts_with("T-"), "진행 중인 경기의 남은 시간: {}", match_left());
+        assert_eq!(match_cmd(Some("start"), Some("ten"), None), 1, "숫자가 아니면 보내지 않는다");
     }
 
     #[test]

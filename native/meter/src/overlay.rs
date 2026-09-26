@@ -4372,11 +4372,12 @@ fn paint_days(p: &mut Paint, app: &mut OverlayApp, snap: &MeterSnapshot, x: f32,
 fn paint_board(p: &mut Paint, app: &mut OverlayApp, x: f32, y: f32, w: f32) -> f32 {
     let s = p.s();
     let rows = league_racers();
+    let left = crate::league::match_left();
     if rows.is_empty() {
-        app.note.clear();
+        app.note = left;
         return paint_empty(p, app, x, y, w);
     }
-    app.note = format!("{}명", rows.len());
+    app.note = if left.is_empty() { format!("{}명", rows.len()) } else { format!("{}명 · {left}", rows.len()) };
     for (i, (handle, tps, color, _)) in rows.iter().enumerate() {
         let ry = y + i as f32 * ROW_H * s;
         let h = (ROW_H - 3.0) * s;

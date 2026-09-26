@@ -383,6 +383,16 @@ impl ServiceReader {
         (file, self.ledger.take_dirty())
     }
 
+    /// 커밋 때만: 오래된 키를 버린다(F2). 데몬이 `export` 앞에서 부른다.
+    pub fn prune_keys(&mut self) {
+        self.ledger.prune();
+    }
+
+    /// `.keys` 압축(4.1)에 쓸 살아 있는 키.
+    pub fn live_keys(&self) -> Vec<(u64, [f64; 7])> {
+        self.ledger.live()
+    }
+
     /// 다음 폴이 같은 DB 쿼리 간격(2초)을 기다리지 않게 한다. 하네스가 step-2 앞에서 부른다.
     #[doc(hidden)]
     pub fn forget_sqlite_gap(&mut self) {

@@ -3,7 +3,9 @@
 use crate::engine::{lock_file, pid_file, Meter};
 use crate::live_rate::LiveRate;
 use crate::overlay::{snapshot_from_scale, SharedMeter};
-use crate::watch::{load_report, load_runtime_config, ServiceReader};
+use crate::watch::checkpoint::Store;
+use crate::watch::{load_report, load_runtime_config, now_secs, ServiceReader};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::process::{Command, Stdio};
@@ -16,6 +18,11 @@ use tokenmeter_hook::data_dir;
 static STOP: AtomicBool = AtomicBool::new(false);
 /// 바뀐 것이 있으면 이만큼에 한 번 state.json을 커밋한다(스펙 4.2).
 const COMMIT_EVERY: Duration = Duration::from_secs(30);
+/// `.keys` 압축 주기(스펙 4.1).
+const COMPACT_EVERY: Duration = Duration::from_secs(3600);
+/// 문턱 여유와 밀린 기록 상한(스펙 4.4).
+const GATE_SLACK: f64 = 600.0;
+const BACKLOG_SECS: f64 = 7.0 * 86400.0;
 
 pub fn stopping() -> bool {
     STOP.load(Ordering::Relaxed)
@@ -55,9 +62,31 @@ pub fn run(no_window: bool) -> i32 {
         let _ = fs::remove_file(pid_file());
         return 1;
     }
+    // 뜰 때(스펙 4.2): 복구 → 읽기 상태 되살리기 → .keys 압축 → 처음 읽기 → 커밋
+    let store = Store { dir: data_dir().join("readers") };
+    let seq = meter.next_seq() - 1;
+    store.recover(seq);
+    let toggle = crate::cli::load_toggle();
+    let last_commit_at = meter.state.get("updated_at").and_then(Value::as_f64).unwrap_or(0.0);
+    let now = now_secs();
     for reader in &mut readers {
-        reader.prime();
+        let id = reader.spec.name.clone();
+        let keys = store.keys(&id, seq);
+        let _ = store.compact(&id, &keys, seq);
+        let file = store.load(&id);
+        // 처음 실행(readers 없음, 측정을 다시 켬)이면 문턱은 지금이다(4.3)
+        let gate = if file.is_some() {
+            (last_commit_at - GATE_SLACK)
+                .max(now - BACKLOG_SECS)
+                .max(measure_since(&toggle, &id))
+        } else {
+            now
+        };
+        reader.set_gate(gate);
+        reader.restore(file, keys);
     }
+    let mut staged: HashMap<String, Vec<u8>> = HashMap::new();
+    commit(&mut meter, &mut readers, &store, &mut staged);
     eprintln!(
         "[TokenMeter] 네이티브 데몬 시작 pid={} 서비스=[{}]",
         std::process::id(),
@@ -94,6 +123,7 @@ pub fn run(no_window: bool) -> i32 {
         let mut last_quota_check = Instant::now() - Duration::from_secs(180);
         let mut last_board = Instant::now() - Duration::from_secs(60);
         let mut last_commit = Instant::now();
+        let mut last_compact = Instant::now();
         while !STOP.load(Ordering::Relaxed) {
             if last_poll.elapsed() >= poll_every {
                 for reader in &mut readers {
@@ -103,11 +133,19 @@ pub fn run(no_window: bool) -> i32 {
                 }
                 last_poll = Instant::now();
             }
-            // ponytail: state.json만 커밋한다. 2.10이 readers와 묶은 커밋으로 바꾼다.
+            // ponytail: 델타 없이 배우기만 한 읽기 상태는 다음 커밋까지 기다린다. 그사이 죽으면 다시 배운다.
             let rolled = meter.state.pointer("/hour/h") != meter.committed().pointer("/hour/h");
             if meter.dirty() && (rolled || last_commit.elapsed() >= COMMIT_EVERY) {
-                let _ = meter.commit(meter.next_seq());
+                commit(&mut meter, &mut readers, &store, &mut staged);
                 last_commit = Instant::now();
+                if last_compact.elapsed() >= COMPACT_EVERY {
+                    // 커밋 바로 뒤라 메모리의 키는 모두 커밋됐다
+                    let seq = meter.next_seq() - 1;
+                    for reader in &readers {
+                        let _ = store.compact(&reader.spec.name, &reader.live_keys(), seq);
+                    }
+                    last_compact = Instant::now();
+                }
             }
             let status = meter.status();
             if notify_attention {
@@ -166,9 +204,7 @@ pub fn run(no_window: bool) -> i32 {
             }
             thread::sleep(tick);
         }
-        if meter.dirty() {
-            let _ = meter.commit(meter.next_seq());
-        }
+        commit(&mut meter, &mut readers, &store, &mut staged);
         crate::sync::flush(meter.committed());
         let _ = fs::remove_file(pid_file());
     });
@@ -195,6 +231,44 @@ pub fn run(no_window: bool) -> i32 {
     STOP.store(true, Ordering::Relaxed);
     let _ = watch.join();
     0
+}
+
+/// 커밋 N(스펙 4.2): 바뀐 서비스마다 `stage` → `state.json`(커밋 지점) → `finish`.
+/// `staged`는 서비스마다 마지막으로 커밋한 파일 항목이다. 같고 새 키가 없으면 쓰지 않는다.
+fn commit(meter: &mut Meter, readers: &mut [ServiceReader], store: &Store, staged: &mut HashMap<String, Vec<u8>>) {
+    let seq = meter.next_seq();
+    let mut done = Vec::new();
+    for reader in readers.iter_mut() {
+        reader.prune_keys();
+        let (mut file, keys) = reader.export();
+        let files = serde_json::to_vec(&file.files).unwrap_or_default();
+        if keys.is_empty() && staged.get(&reader.spec.name) == Some(&files) {
+            continue;
+        }
+        file.seq = seq;
+        if let Err(err) = store.stage(&reader.spec.name, &file, &keys) {
+            eprintln!("{}", crate::l10n!("[TokenMeter] failed to save readers/{}: {}", "[TokenMeter] readers/{} 저장 실패: {}", reader.spec.name, err));
+            continue;
+        }
+        done.push((reader.spec.name.clone(), files));
+    }
+    if let Err(err) = meter.commit(seq) {
+        eprintln!("{}", crate::l10n!("[TokenMeter] failed to save state.json: {}", "[TokenMeter] state.json 저장 실패: {}", err));
+        return;
+    }
+    for (id, files) in done {
+        let _ = store.finish(&id);
+        staged.insert(id, files);
+    }
+}
+
+/// `toggle.json`의 `measure_since`(`"*"` = 전체, 아니면 서비스 id)에서 큰 값(4.4).
+fn measure_since(toggle: &Value, id: &str) -> f64 {
+    let book = toggle.get("measure_since");
+    ["*", id]
+        .iter()
+        .filter_map(|k| book?.get(k)?.as_f64())
+        .fold(0.0, f64::max)
 }
 
 fn prune_live(ttl: Duration) {

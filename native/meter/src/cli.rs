@@ -414,13 +414,15 @@ fn toggle_measure(on_flag: bool, services: &[String]) -> i32 {
             println!("  모르는 서비스: {}", unknown.join(", "));
             return 1;
         }
-        let book = data
-            .as_object_mut()
-            .unwrap()
-            .entry("services")
-            .or_insert(json!({}));
         for name in services {
-            book.as_object_mut()
+            if on_flag && data.pointer(&format!("/services/{name}")) == Some(&json!(false)) {
+                restart_measure(&mut data, name);
+            }
+            data.as_object_mut()
+                .unwrap()
+                .entry("services")
+                .or_insert(json!({}))
+                .as_object_mut()
                 .unwrap()
                 .insert(name.clone(), json!(on_flag));
         }
@@ -430,6 +432,9 @@ fn toggle_measure(on_flag: bool, services: &[String]) -> i32 {
             if on_flag { "켰습니" } else { "껐습니" }
         );
     } else {
+        if on_flag && data.get("enabled") == Some(&json!(false)) {
+            restart_measure(&mut data, "*");
+        }
         data.as_object_mut()
             .unwrap()
             .insert("enabled".into(), json!(on_flag));
@@ -445,6 +450,26 @@ fn toggle_measure(on_flag: bool, services: &[String]) -> i32 {
         println!("  데몬을 띄웠습니다.");
     }
     0
+}
+
+/// 꺼 두었던 측정을 다시 켠다(스펙 4.4): `measure_since = 지금`을 적고 읽기 상태를 지워
+/// 그 서비스(`*`면 전체)를 처음 실행으로 만든다. 꺼진 동안의 기록은 세지 않는다.
+fn restart_measure(data: &mut Value, id: &str) {
+    data.as_object_mut()
+        .unwrap()
+        .entry("measure_since")
+        .or_insert(json!({}))
+        .as_object_mut()
+        .unwrap()
+        .insert(id.into(), json!(now_secs()));
+    let dir = data_dir().join("readers");
+    if id == "*" {
+        let _ = fs::remove_dir_all(dir);
+    } else {
+        for ext in ["json", "next.json", "keys"] {
+            let _ = fs::remove_file(dir.join(format!("{id}.{ext}")));
+        }
+    }
 }
 
 fn cmd_meter(args: &Args) -> i32 {

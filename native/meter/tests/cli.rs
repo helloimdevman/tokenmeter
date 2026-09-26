@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -415,4 +415,131 @@ fn closed_stdout_is_a_clean_exit() {
     let out = command(&root, Path::new(BIN), &["price"]).stdout(writer).stderr(Stdio::piped()).output().unwrap();
     assert!(out.status.success(), "exit {:?}: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
     assert!(out.stderr.is_empty());
+}
+
+/// 지금 UTC 시각의 RFC 3339(초 단위). 레코드 시각이 데몬 문턱(뜬 시각)보다 늦게 한다.
+fn utc_now() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
+    // 날짜 ← 1970-01-01부터의 일수(Howard Hinnant civil_from_days)
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+fn sleep_secs(s: f64) {
+    std::thread::sleep(std::time::Duration::from_secs_f64(s));
+}
+
+fn state_seq(root: &Path) -> u64 {
+    fs::read_to_string(root.join("state/state.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["seq"].as_u64())
+        .unwrap_or(0)
+}
+
+/// 창 없는 데몬을 띄우고 뜰 때의 커밋(seq 증가)을 기다린 뒤 1초 더 쉰다(레코드 시각 > 문턱).
+fn start_daemon(root: &Path) -> std::process::Child {
+    let before = state_seq(root);
+    let child = command(root, Path::new(BIN), &["daemon", "--no-window"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!((0..100).any(|_| {
+        sleep_secs(0.1);
+        state_seq(root) > before
+    }), "데몬이 뜰 때 커밋하지 않았다");
+    sleep_secs(1.1);
+    child
+}
+
+/// SIGTERM(종료 커밋)을 보내고 끝나기를 기다린다.
+fn stop_daemon(mut child: std::process::Child) {
+    Command::new("kill").args(["-TERM", &child.id().to_string()]).status().unwrap();
+    assert!((0..100).any(|_| {
+        sleep_secs(0.1);
+        child.try_wait().unwrap().is_some()
+    }), "데몬이 SIGTERM에 끝나지 않았다");
+}
+
+fn append_claude(root: &Path, uuid: &str, output: u64) {
+    let path = root.join("home/.claude/projects/slug/s.jsonl");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let line = claude_line(uuid, &utc_now(), "assistant", json!({"input_tokens": 1, "output_tokens": output}));
+    fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(line.as_bytes()).unwrap();
+}
+
+fn status_output(root: &Path) -> u64 {
+    let snap: Value = serde_json::from_str(&stdout(&tm(root, &["status", "--json"]))).unwrap();
+    snap["total"]["totals"]["output_tokens"].as_u64().unwrap()
+}
+
+fn doctor_output(root: &Path) -> u64 {
+    let since = utc_now()[..10].to_string();
+    let out = command(root, Path::new(BIN), &["doctor", "claude-code", "--since", &since, "--json"]).env("TZ", "UTC").output().unwrap();
+    let got: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    got["days"].as_object().unwrap().values().map(|d| d["output"].as_u64().unwrap()).sum()
+}
+
+#[test]
+fn daemon_resumes_after_kill_without_loss_or_double_count() {
+    let root = sandbox("daemon-resume");
+    let d = start_daemon(&root);
+    append_claude(&root, "a", 1);
+    sleep_secs(5.0); // 폴 두 번
+    stop_daemon(d);
+    let mut d = start_daemon(&root);
+    append_claude(&root, "b", 10);
+    sleep_secs(3.0); // 폴 한 번, 30초 커밋 전
+    d.kill().unwrap(); // SIGKILL: B는 커밋되지 않았다
+    d.wait().unwrap();
+    append_claude(&root, "c", 100);
+    let d = start_daemon(&root);
+    stop_daemon(d);
+    assert_eq!(status_output(&root), 111, "A+B+C 한 번씩");
+    assert_eq!(doctor_output(&root), 111);
+}
+
+#[test]
+fn measure_off_then_on_counts_nothing_in_between() {
+    let root = sandbox("measure-off");
+    let d = start_daemon(&root);
+    append_claude(&root, "a", 1);
+    sleep_secs(3.0);
+    stop_daemon(d);
+    assert!(tm(&root, &["off"]).status.success());
+    append_claude(&root, "b", 10);
+    assert!(tm(&root, &["on"]).status.success());
+    let toggle = read(&root.join("state/toggle.json"));
+    assert!(toggle["measure_since"]["*"].as_f64().is_some(), "{toggle}");
+    let d = start_daemon(&root);
+    append_claude(&root, "c", 100);
+    sleep_secs(3.0);
+    stop_daemon(d);
+    assert_eq!(status_output(&root), 101, "끈 동안의 B는 세지 않는다");
+}
+
+#[test]
+fn recover_finishes_or_drops_next_json() {
+    let root = sandbox("recover");
+    write(&root.join("state/state.json"), &json!({"seq": 5}).to_string());
+    let readers = root.join("state/readers");
+    write(&readers.join("x.next.json"), &json!({"v": 1, "seq": 5, "at": 1.0, "files": {}, "est": {}}).to_string());
+    write(&readers.join("y.json"), &json!({"v": 1, "seq": 4, "at": 1.0, "files": {}, "est": {}}).to_string());
+    write(&readers.join("y.next.json"), &json!({"v": 1, "seq": 6, "at": 1.0, "files": {}, "est": {}}).to_string());
+    let d = start_daemon(&root);
+    stop_daemon(d);
+    assert_eq!(read(&readers.join("x.json"))["seq"], 5, "커밋된 next는 마저 옮긴다");
+    assert!(!readers.join("x.next.json").exists());
+    assert_eq!(read(&readers.join("y.json"))["seq"], 4, "커밋 안 된 next는 버린다");
+    assert!(!readers.join("y.next.json").exists());
 }

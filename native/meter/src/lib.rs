@@ -444,6 +444,7 @@ mod tests {
             ctx_window: 200_000,
             ..TokenDelta::default()
         });
+        meter.commit(meter.next_seq()).unwrap();
         let saved: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(

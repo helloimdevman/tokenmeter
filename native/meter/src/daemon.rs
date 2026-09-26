@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use tokenmeter_hook::data_dir;
 
 static STOP: AtomicBool = AtomicBool::new(false);
+/// 바뀐 것이 있으면 이만큼에 한 번 state.json을 커밋한다(스펙 4.2).
+const COMMIT_EVERY: Duration = Duration::from_secs(30);
 
 pub fn stopping() -> bool {
     STOP.load(Ordering::Relaxed)
@@ -91,6 +93,7 @@ pub fn run(no_window: bool) -> i32 {
         let mut notified_at: HashMap<String, f64> = HashMap::new();
         let mut last_quota_check = Instant::now() - Duration::from_secs(180);
         let mut last_board = Instant::now() - Duration::from_secs(60);
+        let mut last_commit = Instant::now();
         while !STOP.load(Ordering::Relaxed) {
             if last_poll.elapsed() >= poll_every {
                 for reader in &mut readers {
@@ -99,6 +102,12 @@ pub fn run(no_window: bool) -> i32 {
                     }
                 }
                 last_poll = Instant::now();
+            }
+            // ponytail: state.json만 커밋한다. 2.10이 readers와 묶은 커밋으로 바꾼다.
+            let rolled = meter.state.pointer("/hour/h") != meter.committed().pointer("/hour/h");
+            if meter.dirty() && (rolled || last_commit.elapsed() >= COMMIT_EVERY) {
+                let _ = meter.commit(meter.next_seq());
+                last_commit = Instant::now();
             }
             let status = meter.status();
             if notify_attention {
@@ -156,6 +165,9 @@ pub fn run(no_window: bool) -> i32 {
                 last_board = Instant::now();
             }
             thread::sleep(tick);
+        }
+        if meter.dirty() {
+            let _ = meter.commit(meter.next_seq());
         }
         crate::sync::flush(&meter.state);
         let _ = fs::remove_file(pid_file());

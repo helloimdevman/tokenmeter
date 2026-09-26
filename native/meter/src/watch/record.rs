@@ -5,12 +5,11 @@ use super::delta::TokenDelta;
 use super::expr::{Env, Pick};
 use super::ledger::{self, key_hash, record_hash, Vals};
 use super::probe::{resolve_endpoint, resolve_plan};
-use super::reader::{path_key, ServiceReader, Source};
+use super::reader::{FileCtx, ServiceReader, Source};
 use super::time::parse_ts;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 use std::sync::LazyLock;
 use tokenmeter_hook::live_path;
 
@@ -29,40 +28,102 @@ fn int(pick: Option<&Pick>, env: &Env) -> i64 {
     val(pick, env) as i64
 }
 
+/// 파일 자리(`$file.*`, `$root`, `$side`)를 채운 바깥 레코드의 자리.
+fn file_env<'a>(
+    outer: &'a Value,
+    file: &'a FileCtx,
+    ctx: &'a dyn Fn(&str) -> Option<String>,
+    side: &'a dyn Fn(&str) -> Option<Value>,
+) -> Env<'a> {
+    Env {
+        file: Some(&file.vars),
+        root_dir: file.root.as_deref(),
+        side,
+        ..Env::new(outer, ctx)
+    }
+}
+
 impl ServiceReader {
+    /// 문맥 학습(펼치기 전 레코드) → `each` → 원소마다 `element`.
     pub(super) fn handle(
         &mut self,
         src: &mut Source,
         obj: &Value,
-        path: &Path,
+        file: &FileCtx,
         out: &mut Vec<TokenDelta>,
         emit: bool,
     ) {
-        let key = path_key(path);
-        // 문맥 학습: 이 레코드에 값이 있으면 파일 문맥을 바꾼다. 문맥 식의 `$ctx`는 앞 레코드까지 배운 값.
-        let ctx_map = {
+        let key = &file.key;
+        let side = |name: &str| file.side.get(name).cloned();
+        // 이 레코드에 값이 있으면 파일 문맥을 바꾼다. `when`이 있으면 맞는 레코드에서만 배운다.
+        // 문맥 식의 `$ctx`는 앞 레코드까지 배운 값.
+        let learned = {
             let learned = src.ctx.entry(key.clone()).or_default();
             let found: Vec<(String, String)> = {
                 let get = |name: &str| learned.get(name).cloned();
-                let env = Env::new(obj, &get);
+                let env = file_env(obj, file, &get, &side);
                 src.x
                     .context
                     .iter()
-                    .filter_map(|(name, p)| Some((name.clone(), p.text(&env)?)))
+                    .filter(|c| c.when.as_ref().is_none_or(|w| cond::all(w, &env)))
+                    .filter_map(|c| Some((c.name.clone(), c.pick.text(&env)?)))
                     .collect()
             };
             learned.extend(found);
             learned.clone()
         };
-        let get = |name: &str| ctx_map.get(name).cloned();
-        let env = Env::new(obj, &get);
+        let get = |name: &str| learned.get(name).cloned();
+        let env = file_env(obj, file, &get, &side);
         self.stats.records += 1;
-        // 레코드 시각(F8). 파일의 첫 시각은 match와 상관없이 잡는다(4.5).
-        let at = src.x.timestamp.as_ref().and_then(|p| p.value(&env)).and_then(|v| parse_ts(&v));
+        // 파일의 첫 시각은 match와 상관없이 잡는다(4.5).
+        if let Some(t) = src.x.timestamp.as_ref().and_then(|p| p.value(&env)).and_then(|v| parse_ts(&v)) {
+            src.first.entry(key.clone()).or_insert(t);
+        }
+        let Some(each) = &src.x.each else {
+            return self.element(src, &env, &learned, out, emit);
+        };
+        // 배열은 원소마다, 맵은 (키, 값)마다(F4). 원소가 없으면 델타도 없다.
+        let elems: Vec<(Option<String>, Value)> = match each.value(&env) {
+            Some(Value::Array(a)) => a.into_iter().map(|v| (None, v)).collect(),
+            Some(Value::Object(m)) => m.into_iter().map(|(k, v)| (Some(k), v)).collect(),
+            _ => Vec::new(),
+        };
+        for (i, (k, v)) in elems.iter().enumerate() {
+            let env = Env {
+                elem: Some(v),
+                key: k.as_deref(),
+                index: Some(i),
+                ..file_env(obj, file, &get, &side)
+            };
+            self.element(src, &env, &learned, out, emit);
+        }
+    }
+
+    /// 원소(펼치지 않으면 레코드) 하나: match, 필드, 토큰 의미(F5), 키와 모드(F2), 델타.
+    fn element(
+        &mut self,
+        src: &mut Source,
+        env: &Env,
+        learned: &HashMap<String, String>,
+        out: &mut Vec<TokenDelta>,
+        emit: bool,
+    ) {
+        let key = env.file.map(|f| f.path.clone()).unwrap_or_default();
+        // 펼쳤으면 원소에서 나온 문맥 값이 먼저, 없으면 배운 값(F4). `when` 문맥은 배운 값만.
+        let mut ctx_map = learned.clone();
+        if env.elem.is_some() {
+            for c in src.x.context.iter().filter(|c| c.when.is_none()) {
+                if let Some(v) = c.pick.text(env) {
+                    ctx_map.insert(c.name.clone(), v);
+                }
+            }
+        }
+        // 레코드 시각(F8). 원소 기준 경로일 수 있어 여기서도 첫 시각을 본다.
+        let at = src.x.timestamp.as_ref().and_then(|p| p.value(env)).and_then(|v| parse_ts(&v));
         if let Some(t) = at {
             src.first.entry(key.clone()).or_insert(t);
         }
-        if !cond::all(&src.x.conds, &env) {
+        if !cond::all(&src.x.conds, env) {
             self.stats.dropped_by_match += 1;
             return;
         }
@@ -70,19 +131,19 @@ impl ServiceReader {
         // 필드와 토큰 의미(F5): input에 든 칸은 그 합이 input 이하일 때만 뺀다.
         let mut vals: Vals = [0.0; 6];
         for (i, (slot, pick)) in vals.iter_mut().zip(&src.x.fields).enumerate() {
-            if pick.as_ref().is_some_and(|p| p.num(&env).is_some()) {
+            if pick.as_ref().is_some_and(|p| p.num(env).is_some()) {
                 self.stats.hits[i] += 1;
             }
-            *slot = val(pick.as_ref(), &env).trunc();
+            *slot = val(pick.as_ref(), env).trunc();
         }
-        vals[4] = val(src.x.cost_usd.as_ref(), &env);
-        vals[5] = val(src.x.duration_ms.as_ref(), &env);
+        vals[4] = val(src.x.cost_usd.as_ref(), env);
+        vals[5] = val(src.x.duration_ms.as_ref(), env);
         let inside: f64 = src.x.input_includes.iter().map(|i| vals[*i]).sum();
         if inside <= vals[0] {
             vals[0] -= inside;
         }
         if let Some(p) = &src.x.rebase_on {
-            let h = key_hash(&p.text(&env).unwrap_or_default());
+            let h = key_hash(&p.text(env).unwrap_or_default());
             if src.roll.insert(key.clone(), h).is_some_and(|old| old != h) {
                 src.rolling = true;
             }
@@ -92,7 +153,7 @@ impl ServiceReader {
             .x
             .key
             .as_ref()
-            .and_then(|k| k.text(&env))
+            .and_then(|k| k.text(env))
             .map(|k| key_hash(&k));
         let (d, calls, fresh) = if src.spec.mode == "cumulative" {
             let Some((d, calls)) = self.cumulative(src, &key, stream, vals) else {
@@ -100,7 +161,7 @@ impl ServiceReader {
             };
             (d, calls, true)
         } else {
-            let k = stream.unwrap_or_else(|| record_hash(obj));
+            let k = stream.unwrap_or_else(|| record_hash(env.elem.unwrap_or(env.outer)));
             let fresh = !self.ledger.has(k);
             let (d, calls) = self.ledger.grow(k, vals);
             (d, calls, fresh)
@@ -138,13 +199,13 @@ impl ServiceReader {
             e if e.trim().is_empty() => self.endpoint_for(&session, &vendor),
             e => tokenmeter_hook::normalize_endpoint(&e),
         };
-        output_tokens = self.adjust_live_output(&env, &session, output_tokens, fresh);
-        let subagent = src.x.subagent.as_ref().is_some_and(|p| p.truthy(&env));
+        output_tokens = self.adjust_live_output(env, &session, output_tokens, fresh);
+        let subagent = src.x.subagent.as_ref().is_some_and(|p| p.truthy(env));
         let (ctx_now, ctx_win) = if subagent {
             (0, 0)
         } else if let Some(p) = &src.x.ctx_tokens {
-            let current = int(Some(p), &env);
-            let window = Some(int(src.x.ctx_window.as_ref(), &env))
+            let current = int(Some(p), env);
+            let window = Some(int(src.x.ctx_window.as_ref(), env))
                 .filter(|n| *n > 0)
                 .unwrap_or_else(|| crate::pricing::context_window(&model, current));
             (current, window)

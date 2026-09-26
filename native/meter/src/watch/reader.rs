@@ -1,9 +1,10 @@
 //! 파일 찾기, 폴, JSON·JSONL 읽기. 소스(F11)마다 파일 상태, 서비스마다 장부·프로브 캐시.
 
 use super::delta::TokenDelta;
+use super::expr::FileVars;
 use super::ledger::{Ledger, Vals};
 use super::now_secs;
-use super::roots::{dedup, excluded, expand, glob_under, roots_from, Vars};
+use super::roots::{dedup, excluded, expand, glob_under, read_outside, roots_from, Vars};
 use super::spec::{Compiled, ServiceSpec};
 use super::sqlite::{self, DbStamp, SqlErr};
 use serde_json::Value;
@@ -80,6 +81,16 @@ pub(super) struct Source {
     pub(super) first: HashMap<String, f64>,
     /// `format: sqlite`의 DB마다 도장·커서.
     pub(super) db: HashMap<String, DbState>,
+    /// 사이드카 경로 → (mtime, 파싱한 값). mtime이 바뀌면 다시 읽는다(F6).
+    side: HashMap<PathBuf, (f64, Option<Value>)>,
+}
+
+/// 파일 하나를 읽는 동안의 자리: `$file.*`, `$root`, 사이드카 값(F6).
+pub(super) struct FileCtx {
+    pub(super) key: String,
+    pub(super) vars: FileVars,
+    pub(super) root: Option<String>,
+    pub(super) side: HashMap<String, Value>,
 }
 
 impl Source {
@@ -89,9 +100,9 @@ impl Source {
         Self { spec, x, ..Default::default() }
     }
 
-    /// 루트 틀을 펴고(B4: 못 펴면 버림) 정규화한 경로로 합친 뒤 패턴으로 찾는다(F10).
+    /// 루트 틀을 펴고(B4: 못 펴면 버림) 정규화한 경로로 합친 것과 루트마다의 패턴(F10).
     /// ponytail: `roots_from` 레지스트리(1 MB 상한)를 훑을 때마다 다시 읽는다. 폴 비용이 보이면 mtime 캐시(2.11).
-    fn files(&self) -> Vec<PathBuf> {
+    fn roots(&self) -> Vec<(PathBuf, Vec<String>)> {
         let vars = Vars { root: None, ctx: &|_| None };
         let fixed = self.spec.roots.iter().filter_map(|r| expand(r, &vars).ok().flatten()).flatten();
         let mut roots: Vec<(PathBuf, Vec<String>)> =
@@ -99,9 +110,69 @@ impl Source {
         for rf in &self.x.roots_from {
             roots.extend(roots_from(rf, &vars).0);
         }
+        roots
+    }
+
+    /// 파일 하나를 읽을 자리. 루트는 그 파일을 품은 가장 깊은 루트다.
+    /// 사이드카는 읽을 때마다 stat하고 mtime이 같으면 캐시한 값을 쓴다(스펙 2.0).
+    /// ponytail: 루트를 찾으려고 읽을 때마다 루트 틀을 다시 편다. 폴 비용이 보이면 `files()`가 루트를 적어 둔다.
+    fn file_ctx(&mut self, path: &Path) -> FileCtx {
+        let root = self
+            .roots()
+            .into_iter()
+            .map(|(r, _)| r)
+            .filter(|r| path.starts_with(r))
+            .max_by_key(|r| r.as_os_str().len());
+        let dir = path.parent().unwrap_or(Path::new(""));
+        let mut side = HashMap::new();
+        let vars = Vars { root: root.as_deref(), ctx: &|_| None };
+        for (name, template) in &self.x.sidecars {
+            // 상대 경로는 데이터 파일 기준, 절대 경로(`~`, `$root`, 환경 변수)는 그대로
+            let Some(p) = expand(template, &vars).ok().flatten().and_then(|v| v.into_iter().next()) else {
+                continue;
+            };
+            let p = dir.join(p);
+            let Ok(stat) = fs::metadata(&p) else { continue };
+            let mtime = mtime_of(&stat);
+            let value = match self.side.get(&p) {
+                Some((m, v)) if *m == mtime => v.clone(),
+                _ => {
+                    if self.side.len() > 10_000 {
+                        self.side.clear();
+                    }
+                    let v = read_outside(&p);
+                    self.side.insert(p, (mtime, v.clone()));
+                    v
+                }
+            };
+            if let Some(v) = value {
+                side.insert(name.clone(), v);
+            }
+        }
+        let name = |s: Option<&std::ffi::OsStr>| s.map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        FileCtx {
+            key: path_key(path),
+            vars: FileVars {
+                path: path_key(path),
+                name: name(path.file_name()),
+                stem: name(path.file_stem()),
+                dirs: dir
+                    .components()
+                    .filter_map(|c| match c {
+                        std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+                        _ => None,
+                    })
+                    .collect(),
+            },
+            root: root.map(|r| r.to_string_lossy().into_owned()),
+            side,
+        }
+    }
+
+    fn files(&self) -> Vec<PathBuf> {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
-        for (root, patterns) in roots {
+        for (root, patterns) in self.roots() {
             // 없는 루트는 stat 한 번
             if !root.is_dir() {
                 continue;
@@ -254,17 +325,18 @@ impl ServiceReader {
     fn read_in(&mut self, src: &mut Source, path: &Path, emit: bool) -> Vec<TokenDelta> {
         let mut out = Vec::new();
         src.rolling = false;
+        let file = src.file_ctx(path);
         if src.spec.format == "json" {
-            self.read_json(src, path, &mut out, emit);
+            self.read_json(src, path, &file, &mut out, emit);
         } else if src.spec.format == "sqlite" {
-            self.read_sqlite(src, path, &mut out, emit);
+            self.read_sqlite(src, path, &file, &mut out, emit);
         } else {
-            self.read_jsonl(src, path, &mut out, emit);
+            self.read_jsonl(src, path, &file, &mut out, emit);
         }
         out
     }
 
-    fn read_json(&mut self, src: &mut Source, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {
+    fn read_json(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, emit: bool) {
         let Ok(stat) = fs::metadata(path) else { return };
         let Ok(raw) = fs::read_to_string(path) else {
             return;
@@ -276,12 +348,12 @@ impl ServiceReader {
         let Ok(obj) = serde_json::from_str::<Value>(raw) else {
             return;
         };
-        self.handle(src, &obj, path, out, emit);
+        self.handle(src, &obj, file, out, emit);
         src.mtime.insert(path_key(path), mtime_of(&stat));
     }
 
     /// 폴 사이에 연결·트랜잭션을 들고 있지 않는다: 열고, 문장 하나를 끝까지 돌리고, 닫는다.
-    fn read_sqlite(&mut self, src: &mut Source, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {
+    fn read_sqlite(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, emit: bool) {
         let key = path_key(path);
         let Some(stamp) = sqlite::stamp(path) else { return };
         let now = now_secs();
@@ -309,7 +381,7 @@ impl ServiceReader {
                 for row in &rows {
                     // 행 사이에는 문맥을 잇지 않는다(파일 문맥 기억 없음)
                     src.ctx.remove(&key);
-                    self.handle(src, row, path, out, emit);
+                    self.handle(src, row, file, out, emit);
                 }
                 src.ctx.remove(&key);
                 st.cursor = st.cursor.max(max);
@@ -338,7 +410,7 @@ impl ServiceReader {
         src.db.insert(key, st);
     }
 
-    fn read_jsonl(&mut self, src: &mut Source, path: &Path, out: &mut Vec<TokenDelta>, emit: bool) {
+    fn read_jsonl(&mut self, src: &mut Source, path: &Path, file: &FileCtx, out: &mut Vec<TokenDelta>, emit: bool) {
         let Ok(stat) = fs::metadata(path) else { return };
         let key = path_key(path);
         let size = stat.len();
@@ -350,14 +422,14 @@ impl ServiceReader {
             src.mtime.insert(key, mtime_of(&stat));
             return;
         }
-        let Ok(mut file) = fs::File::open(path) else {
+        let Ok(mut fh) = fs::File::open(path) else {
             return;
         };
-        if file.seek(SeekFrom::Start(offset)).is_err() {
+        if fh.seek(SeekFrom::Start(offset)).is_err() {
             return;
         }
         let mut buf = Vec::with_capacity((size - offset).min(1024 * 1024) as usize);
-        if file.read_to_end(&mut buf).is_err() {
+        if fh.read_to_end(&mut buf).is_err() {
             return;
         }
         let Some(end) = buf.iter().rposition(|b| *b == b'\n') else {
@@ -375,7 +447,7 @@ impl ServiceReader {
                 continue;
             }
             if let Ok(obj) = serde_json::from_str::<Value>(text) {
-                self.handle(src, &obj, path, out, emit);
+                self.handle(src, &obj, file, out, emit);
             }
         }
         src.offset.insert(key.clone(), pos);

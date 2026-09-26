@@ -49,8 +49,15 @@ pub struct ServiceSpec {
     pub input_includes: Vec<String>,
     #[serde(default)]
     pub fields: HashMap<String, serde_yaml::Value>,
+    /// 이름 → 식, 또는 `{path: 식, when: match}`(F6).
     #[serde(default)]
     pub context: HashMap<String, serde_yaml::Value>,
+    /// 레코드를 원소마다 펼치는 식(F4).
+    #[serde(default)]
+    pub each: serde_yaml::Value,
+    /// 이름 → 데이터 파일 기준 상대 경로 또는 F10 경로 틀(F6).
+    #[serde(default)]
+    pub sidecars: HashMap<String, String>,
     #[serde(default)]
     pub ctx_tokens: serde_yaml::Value,
     #[serde(default)]
@@ -133,7 +140,10 @@ pub struct Compiled {
     pub fields: [Option<Pick>; 4],
     /// `input_includes`의 `TOKEN_FIELDS` 번호.
     pub input_includes: Vec<usize>,
-    pub context: Vec<(String, Pick)>,
+    pub context: Vec<Ctx>,
+    pub each: Option<Pick>,
+    /// (이름, 경로 틀). 틀 문법은 로딩 때 본다.
+    pub sidecars: Vec<(String, String)>,
     pub key: Option<Pick>,
     pub conds: Vec<Cond>,
     pub ctx_tokens: Option<Pick>,
@@ -148,6 +158,13 @@ pub struct Compiled {
     pub endpoint_key: Option<Pick>,
     pub exclude: Vec<glob::Pattern>,
     pub roots_from: Vec<RootsFrom>,
+}
+
+/// 문맥 자리 하나(F6). `when`이 있으면 그 조건에 맞는 레코드에서만 배운다.
+pub struct Ctx {
+    pub name: String,
+    pub pick: Pick,
+    pub when: Option<Vec<Cond>>,
 }
 
 impl Compiled {
@@ -190,9 +207,42 @@ impl Compiled {
         }
         let mut context = Vec::new();
         for (name, v) in &spec.context {
-            if let Some(p) = site(&format!("context.{name}"), v)? {
-                context.push((name.clone(), p));
+            let at = format!("context.{name}");
+            let (path, when) = match v.as_mapping() {
+                Some(m) => {
+                    if let Some(k) = m.keys().map(yaml_scalar).find(|k| k != "path" && k != "when") {
+                        return Err(crate::l10n!(
+                            "{at}: unknown key {k} (path, when)",
+                            "{at}: 모르는 키 {k}(path, when)"
+                        ));
+                    }
+                    let when = match m.get("when") {
+                        None => None,
+                        Some(serde_yaml::Value::Mapping(w)) => {
+                            Some(cond::parse(w, false).map_err(|e| format!("{at}.when: {e}"))?)
+                        }
+                        Some(w) => {
+                            return Err(crate::l10n!(
+                                "{at}.when: expected conditions like {{a: b}}, got {w:?}",
+                                "{at}.when: {{a: b}} 같은 조건이어야 하는데 {w:?}가 왔습니다"
+                            ))
+                        }
+                    };
+                    let path = site(&format!("{at}.path"), m.get("path").unwrap_or(&NONE))?
+                        .ok_or_else(|| crate::l10n!("{at}.path: required", "{at}.path: 필요합니다"))?;
+                    (Some(path), when)
+                }
+                None => (site(&at, v)?, None),
+            };
+            if let Some(pick) = path {
+                context.push(Ctx { name: name.clone(), pick, when });
             }
+        }
+        let mut sidecars = Vec::new();
+        for (name, t) in &spec.sidecars {
+            let vars = Vars { root: None, ctx: &|_| None };
+            roots::expand(t, &vars).map_err(|e| format!("sidecars.{name}: {e}"))?;
+            sidecars.push((name.clone(), t.clone()));
         }
         // 루트 틀(F10): 와일드카드·중괄호와 틀 문법 오류는 로딩 때 막는다
         let template = |t: &str| {
@@ -232,6 +282,8 @@ impl Compiled {
             fields,
             input_includes,
             context,
+            each: site("each", &spec.each)?,
+            sidecars,
             key: site("key", &spec.key)?,
             conds: cond::parse(&spec.match_fields, false).map_err(|e| format!("match: {e}"))?,
             ctx_tokens: site("ctx_tokens", &spec.ctx_tokens)?,
@@ -378,6 +430,10 @@ struct YamlService {
     #[serde(default)]
     context: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
+    each: serde_yaml::Value,
+    #[serde(default)]
+    sidecars: HashMap<String, String>,
+    #[serde(default)]
     ctx_tokens: serde_yaml::Value,
     #[serde(default)]
     ctx_window: serde_yaml::Value,
@@ -422,7 +478,7 @@ include!(concat!(env!("OUT_DIR"), "/adapters.rs"));
 /// 모르는 키는 `LoadReport::warnings`로 간다.
 pub const KNOWN_SOURCE_KEYS: &[&str] = &[
     "roots", "patterns", "exclude", "roots_from", "format", "query", "cursor", "match", "mode", "key", "input_includes", "fields",
-    "context", "ctx_tokens", "ctx_window", "subagent", "duration_ms", "cost_usd", "rebase_on", "timestamp",
+    "context", "each", "sidecars", "ctx_tokens", "ctx_window", "subagent", "duration_ms", "cost_usd", "rebase_on", "timestamp",
 ];
 
 /// 서비스 수준에만 두는 키(F11). 소스 항목에 있으면 그 서비스가 빠진다.
@@ -716,11 +772,24 @@ fn check_source(s: &ServiceSpec) -> Result<(), String> {
         return Err(format!("mode: unknown value {:?} (delta, cumulative)", s.mode));
     }
     // 파일 안 위치로는 레코드를 가를 수 없다(F2). SQLite는 커서가 경계 행을 다시 읽는다(F1).
-    if Compiled::new(s)?.key.is_none() && s.format != "jsonl" {
+    let x = Compiled::new(s)?;
+    if x.key.is_none() && s.format != "jsonl" {
         return Err(crate::l10n!(
             "key: required when format is {}",
             "key: format이 {}이면 필요합니다",
             s.format
+        ));
+    }
+    if x.each.is_some() && x.key.is_none() {
+        return Err(crate::l10n!("key: required with each", "key: each가 있으면 필요합니다"));
+    }
+    // 원소들이 기준값 하나를 번갈아 덮어쓰지 않게(F4)
+    // ponytail: 식 글자에서 찾는다. 따옴표 키 안의 "$key"도 통과시키지만 그런 키를 쓰는 로그는 없다.
+    let per_elem = |v: &serde_yaml::Value| serde_yaml::to_string(v).is_ok_and(|t| t.contains("$key") || t.contains("$index"));
+    if x.each.is_some() && s.mode == "cumulative" && !per_elem(&s.key) {
+        return Err(crate::l10n!(
+            "key: with each and mode cumulative, the key needs $key or $index",
+            "key: each와 mode cumulative를 같이 쓰면 키에 $key나 $index가 있어야 합니다"
         ));
     }
     Ok(())
@@ -811,6 +880,8 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             input_includes: raw.input_includes,
             fields: raw.fields,
             context: raw.context,
+            each: raw.each,
+            sidecars: raw.sidecars,
             ctx_tokens: raw.ctx_tokens,
             ctx_window: raw.ctx_window,
             subagent: raw.subagent,

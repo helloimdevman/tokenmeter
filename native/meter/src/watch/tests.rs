@@ -1537,3 +1537,209 @@ fn wal_shm_journal_files_do_not_match_patterns() {
     names.sort();
     assert_eq!(names, ["opencode-dev.db", "opencode.db"]);
 }
+
+// ---- 펼치기(F4)와 레코드 밖 문맥(F6), Task 2.8 ----
+
+fn outs(got: &[TokenDelta]) -> Vec<i64> {
+    got.iter().map(|d| d.output_tokens).collect()
+}
+
+#[test]
+fn each_over_array_map_and_root_array() {
+    let (_g, tmp) = crate::test_home("each-shapes");
+    let root = tmp.join("logs");
+    append(&root.join("a.jsonl"), &lines(&[
+        json!({"id": "r1", "calls": [{"n": 3}, {"n": 4}]}),
+        json!({"id": "r2", "calls": {"x": {"n": 5}, "y": {"n": 6}}}),
+    ]));
+    let mut reader = inline(&root, r#"each: calls, key: "$.id & $index", fields: {output: n}"#);
+    let got = reader.poll();
+    assert_eq!(outs(&got), [3, 4, 5, 6], "배열은 원소마다, 맵은 값마다");
+    assert_eq!(calls(&got), 4, "원소가 각자 호출이다");
+
+    let json_root = tmp.join("json");
+    write_json(&json_root.join("chat.json"), &json!([{"ts": 1, "n": 7}, {"ts": 2, "n": 8}]), 1);
+    let mut reader = inline(&json_root, r#"format: json, patterns: ["*.json"], each: "$", key: ts, fields: {output: n}"#);
+    assert_eq!(outs(&reader.poll()), [7, 8], "`each: \"$\"`는 최상위 배열");
+    write_json(&json_root.join("chat.json"), &json!([{"ts": 1, "n": 7}, {"ts": 2, "n": 8}, {"ts": 3, "n": 9}]), 2);
+    assert_eq!(outs(&reader.poll()), [9], "통파일을 다시 읽어도 본 원소는 키 장부가 거른다");
+}
+
+#[test]
+fn each_key_binds_model() {
+    let (_g, tmp) = crate::test_home("each-key");
+    let root = tmp.join("grok");
+    let turn = |prompt: &str, usage: Value| {
+        json!({"params": {"update": {"sessionUpdate": "turn_completed", "prompt_id": prompt,
+                                     "usage": {"modelUsage": usage}}}})
+    };
+    append(&root.join("s.jsonl"), &lines(&[turn("p1", json!({
+        "grok-4": {"inputTokens": 100, "cachedReadTokens": 40, "outputTokens": 10},
+        "grok-3-mini": {"inputTokens": 7, "outputTokens": 2},
+    }))]));
+    let mut reader = inline(&root, r#"each: params.update.usage.modelUsage,
+        match: {$.params.update.sessionUpdate: turn_completed}, key: "$.params.update.prompt_id & $key",
+        fields: {input: inputTokens, cache_read: cachedReadTokens, output: outputTokens}, context: {model: $key}"#);
+    let mut got: Vec<(String, (i64, i64, i64, i64))> = reader.poll().iter().map(|d| (d.model.clone(), vec4(d))).collect();
+    got.sort();
+    assert_eq!(got, [("grok-3-mini".into(), (7, 0, 0, 2)), ("grok-4".into(), (100, 40, 0, 10))]);
+}
+
+#[test]
+fn match_runs_per_element_with_dollar_outer() {
+    let (_g, tmp) = crate::test_home("each-match");
+    let root = tmp.join("logs");
+    append(&root.join("a.jsonl"), &lines(&[
+        json!({"type": "turn", "id": "t1", "items": [{"kind": "usage", "n": 3}, {"kind": "note", "n": 50}]}),
+        json!({"type": "draft", "id": "t2", "items": [{"kind": "usage", "n": 70}]}),
+    ]));
+    let mut reader = inline(&root, r#"each: items, match: {$.type: turn, kind: usage}, key: "$.id & $index", fields: {output: n}"#);
+    assert_eq!(outs(&reader.poll()), [3]);
+    assert_eq!((reader.stats.records, reader.stats.matched, reader.stats.dropped_by_match), (2, 1, 2), "match는 원소마다 센다");
+}
+
+#[test]
+fn no_elements_no_deltas() {
+    let (_g, tmp) = crate::test_home("each-empty");
+    let root = tmp.join("logs");
+    append(&root.join("a.jsonl"), &lines(&[
+        json!({"id": "a", "items": [], "n": 9}),
+        json!({"id": "b", "n": 9}),
+        json!({"id": "c", "items": 4, "n": 9}),
+    ]));
+    let mut reader = inline(&root, r#"each: items, key: "$.id & $index", fields: {output: "$.n"}"#);
+    assert!(reader.poll().is_empty(), "빈 목록, 없는 경로, 스칼라는 원소가 없다");
+    assert_eq!(reader.stats.matched, 0);
+}
+
+#[test]
+fn context_learned_before_each_is_the_fallback() {
+    let (_g, tmp) = crate::test_home("each-ctx");
+    let root = tmp.join("logs");
+    append(&root.join("a.jsonl"), &lines(&[
+        json!({"id": "r1", "model": "outer-m", "sid": "s-1", "items": [{"n": 1, "model": "inner-m"}, {"n": 2}]}),
+        json!({"id": "r2", "items": [{"n": 3}]}),
+    ]));
+    let mut reader = inline(&root, r#"each: items, key: "$.id & $index", fields: {output: n},
+        context: {model: model, session: sid}"#);
+    let got: Vec<(i64, String, String)> =
+        reader.poll().iter().map(|d| (d.output_tokens, d.model.clone(), d.session.clone())).collect();
+    assert_eq!(got, [
+        (1, "inner-m".into(), "s-1".into()),
+        (2, "outer-m".into(), "s-1".into()),
+        (3, "outer-m".into(), "s-1".into()),
+    ], "원소 값이 먼저, 없으면 펼치기 전에 배운 값(앞 레코드 것 포함)");
+}
+
+#[test]
+fn each_without_key_is_rejected() {
+    let (_g, root) = crate::test_home("each-no-key");
+    write_user_services(
+        &root,
+        "services:\n  nk:\n    roots: [\"~/x\"]\n    each: items\n    fields: {output: n}\n  ok:\n    roots: [\"~/x\"]\n    each: items\n    key: \"$.id & $index\"\n    fields: {output: n}\n",
+    );
+    let names = loaded_names();
+    assert!(!names.contains(&"nk".to_string()) && names.contains(&"ok".to_string()));
+    let report = load_report();
+    assert!(report.skipped.iter().any(|(id, why)| id == "nk" && why.starts_with("key")), "{:?}", report.skipped);
+    assert!(report.warnings.is_empty(), "each는 아는 키: {:?}", report.warnings);
+}
+
+#[test]
+fn cumulative_each_key_needs_key_or_index() {
+    let (_g, root) = crate::test_home("each-cumulative");
+    write_user_services(
+        &root,
+        "services:\n  bad:\n    roots: [\"~/x\"]\n    mode: cumulative\n    each: byModel\n    key: $.sid\n    fields: {output: n}\n  byk:\n    roots: [\"~/x\"]\n    mode: cumulative\n    each: byModel\n    key: \"$.sid & $key\"\n    fields: {output: n}\n  byi:\n    roots: [\"~/x\"]\n    mode: cumulative\n    each: byModel\n    key: [\"$.sid & $index\"]\n    fields: {output: n}\n",
+    );
+    let names = loaded_names();
+    assert!(!names.contains(&"bad".to_string()));
+    assert!(names.contains(&"byk".to_string()) && names.contains(&"byi".to_string()));
+    let skipped = load_report().skipped;
+    assert!(skipped.iter().any(|(id, why)| id == "bad" && why.starts_with("key")), "{skipped:?}");
+}
+
+#[test]
+fn context_when_learns_only_from_header() {
+    let (_g, tmp) = crate::test_home("ctx-when");
+    let root = tmp.join("pi");
+    append(&root.join("a.jsonl"), &lines(&[
+        json!({"type": "session", "id": "sess-A"}),
+        json!({"type": "message", "id": "m1", "n": 3}),
+        json!({"type": "message", "id": "m2", "n": 4}),
+    ]));
+    let mut reader = inline(&root, r#"match: {type: message}, key: id, fields: {output: n},
+        context: {session: {path: id, when: {type: session}}}"#);
+    let got: Vec<String> = reader.poll().iter().map(|d| d.session.clone()).collect();
+    assert_eq!(got, ["sess-A", "sess-A"], "모든 줄에 id가 있어도 머리 줄에서만 배운다");
+    append(&root.join("b.jsonl"), &lines(&[json!({"type": "message", "id": "m3", "n": 5})]));
+    assert_eq!(reader.poll()[0].session, "", "머리 줄이 없는 파일은 배운 값이 없다");
+}
+
+#[test]
+fn context_with_bad_when_or_keys_is_rejected() {
+    let (_g, root) = crate::test_home("ctx-when-bad");
+    write_user_services(
+        &root,
+        "services:\n  a:\n    roots: [\"~/x\"]\n    fields: {output: n}\n    context: {session: {path: id, if: {type: s}}}\n  b:\n    roots: [\"~/x\"]\n    fields: {output: n}\n    context: {session: {when: {type: s}}}\n",
+    );
+    let skipped = load_report().skipped;
+    for id in ["a", "b"] {
+        assert!(skipped.iter().any(|(s, why)| s == id && why.starts_with("context.session")), "{id}: {skipped:?}");
+    }
+}
+
+#[test]
+fn file_vars_give_session_from_path() {
+    let (_g, tmp) = crate::test_home("file-vars");
+    let root = tmp.join("kimi");
+    let path = root.join("proj-1/sess-42/agent/wire.jsonl");
+    append(&path, &lines(&[json!({"id": "a", "n": 2})]));
+    let mut reader = inline(&root, r#"key: "$file.path & id", fields: {output: n},
+        context: {session: "$file.dir[-2]", cwd: "$root & $file.stem & $file.name"}"#);
+    let got = reader.poll();
+    assert_eq!(got[0].session, "sess-42");
+    assert_eq!(got[0].cwd, format!("{}|wire|wire.jsonl", root.display()));
+}
+
+#[test]
+fn sidecar_value_and_mtime_reload() {
+    let (_g, tmp) = crate::test_home("sidecar");
+    let root = tmp.join("gemini/tmp");
+    let chat = root.join("h1/chats/session.jsonl");
+    let side = root.join("h1/.project_root");
+    fs::create_dir_all(side.parent().unwrap()).unwrap();
+    let set_side = |text: &str, tick: u64| {
+        fs::write(&side, text).unwrap();
+        let when = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + tick);
+        fs::File::options().write(true).open(&side).unwrap().set_modified(when).unwrap();
+    };
+    set_side("/work/p1\n", 1);
+    fs::write(root.join("../workspaces.json"), r#"{"workspaces": {"h1": {"name": "alpha"}}, // 주석
+    }"#).unwrap();
+    append(&chat, &lines(&[json!({"id": "a", "n": 1})]));
+    let mut reader = inline(&root, r#"key: id, fields: {output: n}, patterns: ["*/chats/*.jsonl"],
+        sidecars: {root: ../.project_root, ws: "$root/../workspaces.json", gone: ../nope.json},
+        context: {cwd: [cwd, $side.root], session: "$side.ws.workspaces[$file.dir[-2]].name", effort: $side.gone}"#);
+    let got = reader.poll();
+    assert_eq!((got[0].cwd.as_str(), got[0].session.as_str(), got[0].effort.as_str()), ("/work/p1", "alpha", ""));
+    set_side("/work/p2", 2);
+    append(&chat, &lines(&[json!({"id": "b", "n": 1}), json!({"id": "c", "n": 1, "cwd": "/own"})]));
+    let got: Vec<String> = reader.poll().iter().map(|d| d.cwd.clone()).collect();
+    assert_eq!(got, ["/work/p2", "/own"], "mtime이 바뀌면 다시 읽고, 레코드 값이 먼저다");
+}
+
+#[test]
+fn sqlite_rows_have_no_file_context_memory() {
+    let (_g, tmp) = crate::test_home("sql-no-ctx");
+    let root = tmp.join("oc");
+    let conn = sql_db(&root.join("x.db"), "CREATE TABLE t(id TEXT, kind TEXT, sid TEXT, n INTEGER);");
+    conn.execute_batch(
+        "INSERT INTO t VALUES ('h', 'session', 'S1', 0); INSERT INTO t VALUES ('a', 'msg', 'S2', 3); INSERT INTO t VALUES ('b', 'msg', NULL, 4);",
+    )
+    .unwrap();
+    let mut reader = inline(&root, r#"format: sqlite, patterns: ["x.db"], key: id, query: "SELECT * FROM t ORDER BY rowid",
+        match: {kind: msg}, fields: {output: n}, context: {session: sid, cwd: {path: sid, when: {kind: session}}}"#);
+    let got: Vec<(String, String)> = reader.poll().iter().map(|d| (d.session.clone(), d.cwd.clone())).collect();
+    assert_eq!(got, [("S2".into(), "".into()), ("".into(), "".into())], "행은 제 열만 쓴다(머리 행도 잇지 않는다)");
+}

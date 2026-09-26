@@ -1,0 +1,104 @@
+label: Cline
+# 두 형식을 같이 센다. 4.1.x 확장은 창마다 옛 번들이나 SDK 번들을 켜서 한 사람이 둘 다 쓴다(cline.md §0).
+# 옛 작업 로그: VS Code 계열 앱마다 <앱>/User/globalStorage/saoudrizwan.claude-dev/tasks/<작업>/ui_messages.json,
+# VS Code 밖의 옛 호스트는 <clineDataDir>/tasks/<작업>/. 루트는 앱마다 하나(macOS, Linux, 원격 서버).
+# ui_messages.json.tmp.* 사본은 패턴이 거른다.
+roots:
+  - "~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/VSCodium/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/Cursor/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/Windsurf/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/Trae/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/Trae CN/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/CodeBuddy/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/Kiro/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/Antigravity/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/Library/Application Support/Positron/User/globalStorage/saoudrizwan.claude-dev"
+  - "${XDG_CONFIG_HOME:-~/.config}/Code/User/globalStorage/saoudrizwan.claude-dev"
+  - "${XDG_CONFIG_HOME:-~/.config}/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev"
+  - "${XDG_CONFIG_HOME:-~/.config}/VSCodium/User/globalStorage/saoudrizwan.claude-dev"
+  - "${XDG_CONFIG_HOME:-~/.config}/Cursor/User/globalStorage/saoudrizwan.claude-dev"
+  - "${XDG_CONFIG_HOME:-~/.config}/Windsurf/User/globalStorage/saoudrizwan.claude-dev"
+  - "${XDG_CONFIG_HOME:-~/.config}/CodeBuddy/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/.vscode-server/data/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/.vscode-server-insiders/data/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/.cursor-server/data/User/globalStorage/saoudrizwan.claude-dev"
+  - "~/.windsurf-server/data/User/globalStorage/saoudrizwan.claude-dev"
+  - "${CLINE_DATA_DIR:-${CLINE_DIR:-~/.cline}/data}"
+patterns: ["tasks/*/ui_messages.json"]
+format: json
+mode: delta
+default_model: default
+# 자기 키를 쓰는 확장이다. 로그에 요금제 신호가 없다.
+plan: api
+sources:
+  # 옛 작업 로그: ClineMessage 배열 하나, 저장할 때마다 통째로 다시 쓰인다. api_req_started 행은 같은 ts로
+  # 제자리에서 고쳐 쓰인다(자리표시 → 조각마다 누계 → 최종): 작업과 ts가 키, 칸마다 늘어난 만큼만 센다.
+  # subagent_usage는 use_subagents 한 번의 합으로 한 번 쓰이고 서브에이전트 호출의 유일한 기록이다.
+  # 체크포인트 복원이 붙이는 deleted_api_reqs 합계 행은 이미 센 행이라 받지 않는다.
+  # tokensIn은 대부분의 제공자(anthropic, cline, openrouter, openai-native)에서 캐시를 뺀 값이다.
+  - each: "$"
+    match:
+      type: say
+      say: [api_req_started, subagent_usage]
+      modelInfo.providerId: {$not: openai}
+    key: "$file.dir[-1] & ts"
+    timestamp: ts
+    fields:
+      input: text@json.tokensIn
+      cache_read: text@json.cacheReads
+      cache_write: text@json.cacheWrites
+      # 추론은 tokensOut 안에 있다
+      output: text@json.tokensOut
+    cost_usd: text@json.cost
+    context:
+      session: $file.dir[-1]
+      # 행마다 적힌 modelInfo. 없던 옛 빌드는 default
+      model: modelInfo.modelId
+      vendor: modelInfo.providerId
+  # 일반 OpenAI 호환 제공자(providerId openai)만 tokensIn이 캐시 읽기를 포함하고, cacheWrites는
+  # DeepSeek의 prompt_cache_miss_tokens(input의 일부이지 쓰기가 아님)다(openai.ts:178-182).
+  - each: "$"
+    match:
+      type: say
+      say: [api_req_started, subagent_usage]
+      modelInfo.providerId: openai
+    key: "$file.dir[-1] & ts"
+    timestamp: ts
+    input_includes: [cache_read]
+    fields:
+      input: text@json.tokensIn
+      cache_read: text@json.cacheReads
+      output: text@json.tokensOut
+    cost_usd: text@json.cost
+    context:
+      session: $file.dir[-1]
+      model: modelInfo.modelId
+      vendor: modelInfo.providerId
+  # SDK 세션(CLI, SDK 번들, JetBrains): <sessionDataDir>/<세션>/<세션>.messages.json과 서브에이전트·팀원
+  # <에이전트>.messages.json. 매니페스트 <세션>.json은 패턴이 거른다. 파일은 통째로 다시 쓰인다.
+  - roots: ["${CLINE_SESSION_DATA_DIR:-${CLINE_DATA_DIR:-${CLINE_DIR:-~/.cline}/data}/sessions}"]
+    patterns: ["*/*.messages.json"]
+    each: messages
+    match:
+      role: assistant
+      metrics: {$exists: true}
+    # 체크포인트 복원이 이전 메시지를 새 세션에 옮겨 적을 수 있어 id는 서비스 전체에서 본다(cline.md §6.5)
+    key: [id, "$.sessionId & $index"]
+    timestamp: ts
+    # inputTokens는 두 캐시를 포함한 전체 프롬프트다(sdk usage.ts:69-75)
+    input_includes: [cache_read, cache_write]
+    fields:
+      input: metrics.inputTokens
+      cache_read: metrics.cacheReadTokens
+      cache_write: metrics.cacheWriteTokens
+      output: metrics.outputTokens
+    cost_usd: metrics.cost
+    subagent: $.origin.parentThreadId
+    # ponytail: 모델이 없는 행은 앞 행이나 매니페스트 model을 이어 받지 않고 default다. 작업 폴더(매니페스트
+    # workspace_root)도 읽지 않는다. 사이드카 경로에 $file.stem을 쓸 수 있게 되면 매니페스트를 읽는다.
+    context:
+      session: ["$.sessionId", "$file.dir[-1]"]
+      model: modelInfo.id
+      vendor: modelInfo.provider

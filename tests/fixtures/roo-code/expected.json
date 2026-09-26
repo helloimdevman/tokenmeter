@@ -1,0 +1,17 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/roocode.rs:302-340 (task-abc), :386-415 (task-switch) (MIT © Junho Yeo); TokenTracker test/roocode-parser.test.js:121-210 (task-alpha), :212-295 (task-backfill) (MIT © xiufengsun). history_item.json and settings.json are synthetic: roo-code.md §5 (history_item.workspace), §1 (customStoragePath, relative here so it resolves under the fake HOME)",
+  "steps": [
+    {"calls": 4, "input": 555, "cache_read": 520, "cache_write": 55, "output": 303, "cost_usd": 0.432,
+     "by_model": {"default": {"input": 525, "cache_read": 520, "cache_write": 55, "output": 300},
+                  "gpt-5.1": {"input": 10, "cache_read": 0, "cache_write": 0, "output": 1},
+                  "claude-sonnet-5": {"input": 20, "cache_read": 0, "cache_write": 0, "output": 2}},
+     "sessions": ["task-abc", "task-alpha", "task-switch"],
+     "project": ["", "work/roo"], "plan": "api"},
+    {"calls": 5, "input": 1755, "cache_read": 520, "cache_write": 55, "output": 603, "cost_usd": 0.432,
+     "by_model": {"default": {"input": 1725, "cache_read": 520, "cache_write": 55, "output": 600},
+                  "gpt-5.1": {"input": 10, "cache_read": 0, "cache_write": 0, "output": 1},
+                  "claude-sonnet-5": {"input": 20, "cache_read": 0, "cache_write": 0, "output": 2}},
+     "sessions": ["task-abc", "task-alpha", "task-backfill", "task-switch"]}
+  ],
+  "differs": "tokensIn includes both caches since Roo 3.29.5 (Task.ts:2662, cost.ts), so uncached input is tokensIn - cacheReads - cacheWrites: task-abc 100 -> 75, task-alpha 1000 -> 450. tokscale and TokenTracker read it as uncached (100 and 1000). tokscale takes the model from the <model> tag in api_conversation_history.json (claude-sonnet-4, claude-3-7-sonnet-20250219); we do not read that file, so those rows are default. TokenTracker counts the api_req_deleted row (800/100); we do not, because an incremental reader already counted the removed rows. The zero api_req_started row gives nothing, and the placeholder counts once when it is back-filled (step 2: +1200/300)."
+}

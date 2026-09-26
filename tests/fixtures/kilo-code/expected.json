@@ -1,0 +1,10 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/kilocode.rs:19-59, :61-81 (kilo-task-1) (MIT © Junho Yeo); TokenTracker test/kilo-parser.test.js:191-286 (…808), :288-347 (…809 placeholder) (MIT © xiufengsun)",
+  "steps": [
+    {"calls": 2, "input": 830, "cache_read": 207, "cache_write": 3, "output": 65, "cost_usd": 0.05,
+     "sessions": ["019c0242-5d2c-722d-ba0e-0164225df808", "kilo-task-1"], "plan": "api"},
+    {"calls": 3, "input": 1730, "cache_read": 207, "cache_write": 3, "output": 165, "cost_usd": 0.05,
+     "sessions": ["019c0242-5d2c-722d-ba0e-0164225df808", "019c0242-5d2c-722d-ba0e-0164225df809", "kilo-task-1"]}
+  ],
+  "differs": "Final legacy builds carry Roo PR #8954, so tokensIn includes both caches (kilo-code.md §4): kilo-task-1 40 -> 30, …808 1000 -> 800. tokscale and TokenTracker read tokensIn as uncached. TokenTracker also counts api_req_deleted (500/25/100) for a total of 1875; we skip it because an incremental reader already counted the removed rows, so our …808 total is 800+200+50 = 1050. Neither our adapter nor TokenTracker reads the model (tokscale: <model> tag gpt-5); the cost 0 row is priced from the table. The placeholder counts once when back-filled (step 2: +900/100)."
+}

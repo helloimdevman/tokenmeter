@@ -1,0 +1,18 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/cline.rs:274-314, :316-336 (cline-task-1), :338-407 (cline-cli-session, workspace_root replaced by /work/project), roocode.rs:346-381 (task-cline4 task and api_req_started rows) (MIT © Junho Yeo). Synthetic: the openai row in cline-task-1 (cline.md §4, openai.ts:178-182), the subagent_usage and deleted_api_reqs rows in task-cline4 (cline.md §3A, §5), cline-task-3 placeholder and back-fill (cline.md §3A, core/task/utils.ts:28-53)",
+  "steps": [
+    {"calls": 5, "input": 16935, "cache_read": 12457, "cache_write": 3, "output": 1375, "cost_usd": 0.0963892,
+     "by_model": {"default": {"input": 40, "cache_read": 7, "cache_write": 3, "output": 15},
+                  "gpt-5.1": {"input": 600, "cache_read": 400, "cache_write": 0, "output": 20},
+                  "claude-sonnet-5": {"input": 8838, "cache_read": 12000, "cache_write": 0, "output": 1209},
+                  "cline-free/glm-5.2": {"input": 7457, "cache_read": 50, "cache_write": 0, "output": 131}},
+     "sessions": ["cline-cli-session", "cline-task-1", "task-cline4"], "plan": "api"},
+    {"calls": 6, "input": 18935, "cache_read": 12457, "cache_write": 3, "output": 1475, "cost_usd": 0.0963892,
+     "by_model": {"default": {"input": 40, "cache_read": 7, "cache_write": 3, "output": 15},
+                  "gpt-5.1": {"input": 600, "cache_read": 400, "cache_write": 0, "output": 20},
+                  "claude-sonnet-5": {"input": 10838, "cache_read": 12000, "cache_write": 0, "output": 1309},
+                  "cline-free/glm-5.2": {"input": 7457, "cache_read": 50, "cache_write": 0, "output": 131}},
+     "sessions": ["cline-cli-session", "cline-task-1", "cline-task-3", "task-cline4"]}
+  ],
+  "differs": "tokscale reads only api_req_started, so it misses subagent_usage (5200/12000/800 here), and it reads the openai-compatible row as uncached 1000 with cache write 600; Cline's own openai.ts logs prompt_tokens (cache read included) and prompt_cache_miss_tokens as cacheWrites, so we count 600 uncached, 400 read, 0 write. tokscale takes cline-task-1's model from the <model> tag (claude-sonnet-4); we do not read api_conversation_history.json, so it is default. deleted_api_reqs is skipped, as in tokscale. SDK row: 7507 - 50 = 7457 uncached, the same as tokscale; the zero-metrics row gives nothing."
+}

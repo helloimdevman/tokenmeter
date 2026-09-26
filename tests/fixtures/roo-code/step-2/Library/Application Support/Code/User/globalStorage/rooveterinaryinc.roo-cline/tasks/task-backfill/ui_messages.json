@@ -1,0 +1,8 @@
+[
+ {
+  "type": "say",
+  "say": "api_req_started",
+  "ts": 1779372000000,
+  "text": "{\"tokensIn\":1200,\"tokensOut\":300,\"cacheReads\":0,\"cacheWrites\":0,\"apiProtocol\":\"anthropic\"}"
+ }
+]

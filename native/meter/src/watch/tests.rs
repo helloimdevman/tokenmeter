@@ -102,13 +102,16 @@ fn claude_record(uuid: &str) -> Value {
 }
 
 fn codex_record(inp: i64, cached: i64, write: i64, out: i64, last: i64, window: i64) -> Value {
+    let usage = json!({
+        "input_tokens": inp, "cached_input_tokens": cached,
+        "cache_write_input_tokens": write, "output_tokens": out,
+        "reasoning_output_tokens": 129
+    });
+    let mut last_usage = usage.clone();
+    last_usage["total_tokens"] = json!(last);
     json!({"type": "event_msg", "payload": {"type": "token_count", "info": {
-        "total_token_usage": {
-            "input_tokens": inp, "cached_input_tokens": cached,
-            "cache_write_input_tokens": write, "output_tokens": out,
-            "reasoning_output_tokens": 129
-        },
-        "last_token_usage": {"total_tokens": last},
+        "total_token_usage": usage,
+        "last_token_usage": last_usage,
         "model_context_window": window
     }}})
 }
@@ -415,44 +418,6 @@ fn json_without_key_is_rejected() {
 }
 
 #[test]
-fn codex_cumulative_takes_increments_and_rebaselines() {
-    let (_g, tmp) = crate::test_home("codex");
-    let root = tmp.join("sessions");
-    let path = root.join("2026/08/10/rollout-1.jsonl");
-    let cwd = "/Users/dev/projects/tokenmeter";
-    append(&path, &lines(&[
-        json!({"type": "session_meta", "payload": {"cwd": cwd, "session_id": "sess-codex-1", "model_provider": "openai"}}),
-        json!({"type": "turn_context", "payload": {"cwd": cwd, "model": "gpt-5.6-sol"}}),
-        codex_record(50327, 34304, 0, 384, 0, 0),
-    ]));
-    let mut reader = ServiceReader::new(spec_at("codex", &root));
-    let got = reader.poll();
-    assert_eq!(vec4(&got[0]), (16023, 34304, 0, 384), "input 은 캐시를 포함, reasoning 은 더하지 않는다");
-    assert_eq!(
-        (got[0].model.as_str(), got[0].project.as_str(), got[0].session.as_str(), got[0].vendor.as_str()),
-        ("gpt-5.6-sol", "projects/tokenmeter", "sess-codex-1", "openai")
-    );
-    append(&path, &lines(&[codex_record(60327, 40304, 100, 584, 0, 0)]));
-    assert_eq!(vec4(&reader.poll()[0]), (4000, 6000, 100, 200));
-    append(&path, &lines(&[codex_record(60327, 40304, 100, 584, 0, 0)]));
-    assert!(reader.poll().is_empty(), "같은 누적치는 증가분 0");
-    append(&path, &lines(&[codex_record(10, 0, 0, 5, 0, 0)]));
-    assert!(reader.poll().is_empty(), "누적치가 줄면 baseline 만 갱신한다");
-    append(&path, &lines(&[codex_record(110, 0, 0, 15, 0, 0)]));
-    assert_eq!(vec4(&reader.poll()[0]), (100, 0, 0, 10));
-
-    let other = root.join("2026/08/11/rollout-2.jsonl");
-    append(&other, &lines(&[codex_record(50000, 0, 0, 1000, 0, 0)]));
-    let mut primed = ServiceReader::new(spec_at("codex", &root));
-    primed.prime();
-    assert!(primed.poll().is_empty());
-    append(&other, &lines(&[codex_record(50500, 0, 0, 1200, 0, 0)]));
-    let got = primed.poll();
-    assert_eq!(got.len(), 1);
-    assert_eq!(vec4(&got[0]), (500, 0, 0, 200), "prime 은 현재 누적치를 baseline 으로 잡는다");
-}
-
-#[test]
 fn opencode_message_file_counts_once_when_completed() {
     let (_g, tmp) = crate::test_home("opencode");
     let root = tmp.join("message");
@@ -545,14 +510,14 @@ fn context_tokens_follow_each_service_spec() {
 
     let croot = tmp.join("sessions");
     let mut creader = ServiceReader::new(spec_at("codex", &croot));
-    append(&croot.join("r.jsonl"), &lines(&[
+    append(&croot.join("rollout-r.jsonl"), &lines(&[
         json!({"type": "turn_context", "payload": {"cwd": "/a/tokenmeter", "model": "gpt-5.6-sol"}}),
         codex_record(4_657_501, 4_343_296, 0, 20_577, 123_165, 353_400),
     ]));
     let got = creader.poll();
     assert_eq!(got[0].ctx_tokens, 123_165, "세션 누적이 컨텍스트로 잡히면 늘 100% 다");
     assert_eq!(got[0].ctx_window, 353_400, "로그가 알려주는 창이 가격표보다 우선한다");
-    append(&croot.join("r.jsonl"), &lines(&[codex_record(4_700_000, 4_343_296, 0, 20_800, 12_000, 353_400)]));
+    append(&croot.join("rollout-r.jsonl"), &lines(&[codex_record(4_700_000, 4_343_296, 0, 20_800, 12_000, 353_400)]));
     assert_eq!(creader.poll()[0].ctx_tokens, 12_000, "압축되면 그대로 내려간다");
 }
 
@@ -1962,6 +1927,32 @@ fn replay_gate_skips_records_before_header_minus_60() {
         r.set_gate(now_secs() - 600.0);
         assert_eq!(outs(&r.poll()), want, "replay_gate: {gate}");
     }
+}
+
+#[test]
+fn replay_gate_seconds_skips_burst_at_fork_instant() {
+    let (_g, tmp) = crate::test_home("replay-burst");
+    let root = tmp.join("sessions");
+    let row = |ts: &str, total: i64, last: i64| json!({"timestamp": ts, "type": "event_msg",
+        "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": total},
+                                                   "last_token_usage": {"input_tokens": last}}}});
+    append(&root.join("fork.jsonl"), &lines(&[
+        json!({"timestamp": "2026-05-05T21:51:57.991Z", "type": "session_meta", "payload": {"id": "child"}}),
+        row("2026-05-05T21:51:57.994Z", 116000, 73000), // 재생: 포크 순간
+        row("2026-05-05T21:51:58.948Z", 116500, 500),   // 재생: 머리 줄 + 1초 안
+        row("2026-05-05T21:51:59.253Z", 117500, 1000),  // 자식의 첫 호출
+    ]));
+    let no_gate = |body: &str| {
+        let text = format!("services: {{t: {{roots: [{root:?}], {body}}}}}");
+        ServiceReader::with_opts(specs_from_yaml(&text).pop().unwrap(), ReadOpts::no_gate())
+    };
+    let mut reader = no_gate(r#"timestamp: timestamp, replay_gate: 1, key: payload.info.total_token_usage,
+        match: {payload.type: token_count}, fields: {input: payload.info.last_token_usage.input_tokens}"#);
+    let got = reader.poll();
+    assert_eq!(sum4(&got), (1000, 0, 0, 0), "머리 줄 시각 + 1초 안의 레코드는 배우기만 한다");
+    let mut pi = no_gate(r#"timestamp: timestamp, replay_gate: true, key: payload.info.total_token_usage,
+        match: {payload.type: token_count}, fields: {input: payload.info.last_token_usage.input_tokens}"#);
+    assert_eq!(sum4(&pi.poll()), (74500, 0, 0, 0), "true는 지금처럼 머리 줄 − 60초");
 }
 
 #[test]

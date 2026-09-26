@@ -174,8 +174,9 @@ impl ServiceReader {
             let gate = self.opts.gate;
             let late = |t: f64| gate.is_none_or(|g| t >= g);
             let old = gate.is_some() && at.is_some_and(|t| t < now_secs() - BACKLOG_SECS);
-            let replay = src.spec.replay_gate
-                && at.is_some_and(|t| src.first.get(&key).is_some_and(|f| t < f - 60.0));
+            let replay = src.spec.replay_gate.is_some_and(|s| {
+                at.is_some_and(|t| src.first.get(&key).is_some_and(|f| t < f + s))
+            });
             let when = at.unwrap_or(src.file_mtime);
             match pass {
                 Pass::Learn => true,

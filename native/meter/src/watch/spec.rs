@@ -85,9 +85,10 @@ pub struct ServiceSpec {
     /// 레코드 시각(F8). 없으면 읽은 시각.
     #[serde(default)]
     pub timestamp: serde_yaml::Value,
-    /// 모르는 파일에서 그 파일의 첫 시각 − 60초보다 이른 레코드는 배우기만 한다(스펙 4.5).
+    /// 모르는 파일에서 그 파일의 첫 시각 + 이 초보다 이른 레코드는 배우기만 한다(스펙 4.5).
+    /// YAML `true`는 −60, 숫자는 그 초.
     #[serde(default)]
-    pub replay_gate: bool,
+    pub replay_gate: Option<f64>,
     /// 실제 로그로 맞춰 본 어댑터인지. false면 `doctor`가 "검증 안 됨"으로 보인다.
     #[serde(default = "default_true")]
     pub verified: bool,
@@ -463,7 +464,7 @@ struct YamlService {
     #[serde(default)]
     timestamp: serde_yaml::Value,
     #[serde(default)]
-    replay_gate: bool,
+    replay_gate: serde_yaml::Value,
     #[serde(default)]
     verified: Option<bool>,
     #[serde(default)]
@@ -866,6 +867,17 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             .ok_or_else(bad_query)?,
         _ => return Err(bad_query()),
     };
+    let replay_gate = match &raw.replay_gate {
+        serde_yaml::Value::Null | serde_yaml::Value::Bool(false) => None,
+        serde_yaml::Value::Bool(true) => Some(-60.0),
+        serde_yaml::Value::Number(n) => n.as_f64(),
+        _ => {
+            return Err(crate::l10n!(
+                "replay_gate: expected true, false or a number of seconds",
+                "replay_gate: true, false나 초 수여야 합니다"
+            ))
+        }
+    };
     let name = name.to_string();
     let enabled = raw.enabled != Some(false);
     Ok((
@@ -901,7 +913,7 @@ fn parse_block(name: &str, block: &serde_yaml::Value) -> Result<(ServiceSpec, Ve
             cost_usd: raw.cost_usd,
             rebase_on: raw.rebase_on,
             timestamp: raw.timestamp,
-            replay_gate: raw.replay_gate,
+            replay_gate,
             verified: raw.verified != Some(false),
             install: raw.install.unwrap_or_default(),
             sources: Vec::new(),

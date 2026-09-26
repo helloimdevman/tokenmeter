@@ -449,3 +449,76 @@ fn toggle_file_switches_measurement_services_and_overlay() {
     fs::write(&toggle, "{망가짐").unwrap();
     assert!(settings().enabled, "깨진 파일 하나 때문에 측정이 멈추면 안 된다");
 }
+
+fn write_user_services(root: &Path, text: &str) {
+    let dir = root.join("config/tokenmeter");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("services.yaml"), text).unwrap();
+}
+
+fn loaded_names() -> Vec<String> {
+    load_all_specs().into_iter().map(|s| s.name).collect()
+}
+
+#[test]
+fn adapters_dir_is_the_builtin_list() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("adapters");
+    let mut files: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok()?.strip_suffix(".yaml").map(str::to_string))
+        .collect();
+    files.sort();
+    let ids: Vec<&str> = ADAPTERS.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, files);
+    let (_g, _t) = crate::test_home("adapters-list");
+    let mut loaded = loaded_names();
+    loaded.sort();
+    assert_eq!(loaded, files);
+}
+
+#[test]
+fn a_bad_user_block_drops_only_that_service() {
+    let (_g, root) = crate::test_home("bad-block");
+    write_user_services(
+        &root,
+        "services:\n  codex:\n    roots: \"not-a-list\"\n  mine:\n    roots: [\"~/x\"]\n    format: jsonl\n    fields: {output: n}\n    colour: red\n",
+    );
+    let names = loaded_names();
+    assert!(!names.contains(&"codex".to_string()));
+    assert!(names.contains(&"claude-code".to_string()) && names.contains(&"mine".to_string()));
+    let report = load_report();
+    assert!(report.skipped.iter().any(|(id, why)| id == "codex" && why.contains("roots")), "{:?}", report.skipped);
+    assert_eq!(report.warnings, vec!["mine: unknown key colour".to_string()], "사용자 블록의 모르는 키는 경고뿐");
+}
+
+#[test]
+fn unknown_format_or_mode_is_a_validation_error() {
+    let (_g, root) = crate::test_home("bad-enum");
+    write_user_services(
+        &root,
+        "services:\n  a:\n    roots: [\"~/a\"]\n    format: jsnl\n    fields: {output: n}\n  b:\n    roots: [\"~/b\"]\n    mode: cumulativ\n    fields: {output: n}\n",
+    );
+    let names = loaded_names();
+    assert!(!names.contains(&"a".to_string()) && !names.contains(&"b".to_string()));
+    assert!(names.contains(&"codex".to_string()));
+    let skipped = load_report().skipped;
+    assert!(skipped.iter().any(|(id, why)| id == "a" && why.contains("format")), "{skipped:?}");
+    assert!(skipped.iter().any(|(id, why)| id == "b" && why.contains("mode")), "{skipped:?}");
+}
+
+#[test]
+fn disabled_builtin_is_still_builtin() {
+    let (_g, root) = crate::test_home("disabled-builtin");
+    write_user_services(&root, "services:\n  cursor:\n    enabled: false\n  mine:\n    roots: [\"~/x\"]\n    fields: {output: n}\n");
+    assert!(!load_runtime_config().specs.iter().any(|s| s.name == "cursor"));
+    assert!(is_builtin_service("cursor"), "꺼 둔 기본 서비스도 리그에서 제 이름으로 간다");
+    assert!(!is_builtin_service("mine"));
+}
+
+#[test]
+fn builtin_adapters_have_no_unknown_keys() {
+    let (_g, _t) = crate::test_home("unknown-keys");
+    let report = load_report();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+}

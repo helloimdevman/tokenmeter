@@ -6,7 +6,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use tokenmeter_hook::data_dir;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -114,12 +113,6 @@ fn yaml_scalar(value: &serde_yaml::Value) -> String {
     }
 }
 
-#[derive(Deserialize)]
-struct YamlFile {
-    #[serde(default)]
-    services: HashMap<String, YamlService>,
-}
-
 #[derive(Deserialize, Default)]
 struct YamlService {
     #[serde(default)]
@@ -170,19 +163,52 @@ struct YamlService {
     install: Option<InstallSpec>,
 }
 
+/// `settings`만 든다. 기본 서비스는 `ADAPTERS`(adapters/*.yaml)에서 온다.
 const DEFAULT_YAML: &str = include_str!("../../services.yaml");
 
-pub fn default_specs() -> Vec<ServiceSpec> {
-    specs_from_yaml(DEFAULT_YAML)
+include!(concat!(env!("OUT_DIR"), "/adapters.rs"));
+
+/// 서비스 블록의 최상위 키(`YamlService` 필드). 모르는 키는 `LoadReport::warnings`로 간다.
+pub const KNOWN_SERVICE_KEYS: &[&str] = &[
+    "enabled", "label", "roots", "patterns", "format", "match", "mode", "key",
+    "input_includes_cache", "fields", "context", "ctx_tokens", "ctx_window", "subagent",
+    "default_model", "vendor", "plan", "plan_probe", "endpoint", "endpoint_probe",
+    "live_chars", "duration_ms", "install",
+];
+
+/// 로딩에서 빠진 서비스(id, 이유)와 모르는 키 경고. 데몬 로그와 `doctor`가 보인다.
+#[derive(Debug, Default)]
+pub struct LoadReport {
+    pub skipped: Vec<(String, String)>,
+    pub warnings: Vec<String>,
 }
 
-/// 패키지에 들어 있는 서비스인지. 사용자가 추가한 서비스 이름은 업로드하지 않는다.
+/// 기본 어댑터만(사용자 덮어쓰기 없이), 켜진 것만.
+pub fn default_specs() -> Vec<ServiceSpec> {
+    let mut specs = load_specs(&builtin_services()).0;
+    specs.retain(|s| s.enabled);
+    specs
+}
+
+/// 패키지에 들어 있는 서비스인지(켜짐과 상관없이). 사용자가 추가한 서비스 이름은 업로드하지 않는다.
 pub fn is_builtin_service(name: &str) -> bool {
-    static NAMES: OnceLock<Vec<String>> = OnceLock::new();
-    NAMES
-        .get_or_init(|| default_specs().into_iter().map(|s| s.name).collect())
+    ADAPTERS.iter().any(|(id, _)| *id == name)
+}
+
+/// 사용자 덮어쓰기까지 합친 설정을 읽을 때 빠진 서비스와 경고.
+pub fn load_report() -> LoadReport {
+    load_specs(&load_merged_yaml()).1
+}
+
+/// `{services: {<id>: <adapters/id.yaml>}}`. 깨진 파일은 빈 블록이 되어 로딩에서 빠진다.
+fn builtin_services() -> serde_yaml::Value {
+    let services: serde_yaml::Mapping = ADAPTERS
         .iter()
-        .any(|n| n == name)
+        .map(|(id, text)| ((*id).into(), serde_yaml::from_str(text).unwrap_or_default()))
+        .collect();
+    let mut root = serde_yaml::Mapping::new();
+    root.insert("services".into(), serde_yaml::Value::Mapping(services));
+    serde_yaml::Value::Mapping(root)
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +246,7 @@ pub struct RuntimeConfig {
 pub fn load_merged_yaml() -> serde_yaml::Value {
     let mut raw = serde_yaml::from_str::<serde_yaml::Value>(DEFAULT_YAML)
         .unwrap_or(serde_yaml::Value::Mapping(Default::default()));
+    deep_merge_yaml(&mut raw, builtin_services());
     let user_path = config_dir().join("services.yaml");
     if let Ok(text) = fs::read_to_string(user_path) {
         if let Ok(user) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
@@ -272,14 +299,13 @@ pub fn setting_list(path: &[&str]) -> Vec<String> {
 }
 
 pub fn load_all_specs() -> Vec<ServiceSpec> {
-    let text = serde_yaml::to_string(&load_merged_yaml()).unwrap_or_default();
-    specs_from_yaml_opts(&text, true)
+    load_specs(&load_merged_yaml()).0
 }
 
 pub fn load_runtime_config() -> RuntimeConfig {
     let raw = load_merged_yaml();
-    let text = serde_yaml::to_string(&raw).unwrap_or_default();
-    let mut specs = specs_from_yaml(&text);
+    let mut specs = load_specs(&raw).0;
+    specs.retain(|s| s.enabled);
     let mut settings = RuntimeSettings {
         poll_seconds: yaml_f64(&raw, &["settings", "poll_seconds"])
             .unwrap_or(2.0)
@@ -318,16 +344,56 @@ pub fn specs_from_yaml(text: &str) -> Vec<ServiceSpec> {
     specs_from_yaml_opts(text, false)
 }
 
+/// `services:` 아래 블록을 읽기만 한다(타입이 틀린 블록은 빠진다). `format`·`mode` 검증은 로더 몫.
 pub fn specs_from_yaml_opts(text: &str, include_disabled: bool) -> Vec<ServiceSpec> {
-    let parsed: YamlFile = serde_yaml::from_str(text).unwrap_or(YamlFile {
-        services: HashMap::new(),
+    let raw = serde_yaml::from_str(text).unwrap_or_default();
+    let mut specs = read_services(&raw, &mut LoadReport::default());
+    specs.retain(|s| include_disabled || s.enabled);
+    specs
+}
+
+/// 합친 설정의 서비스를 모두(꺼진 것 포함) 읽고 검증한다(B5: 틀린 블록 하나는 그 서비스만 빠진다).
+fn load_specs(raw: &serde_yaml::Value) -> (Vec<ServiceSpec>, LoadReport) {
+    let mut report = LoadReport::default();
+    let mut specs = read_services(raw, &mut report);
+    specs.retain(|s| {
+        let why = if !["jsonl", "json"].contains(&s.format.as_str()) {
+            format!("format: unknown value {:?} (jsonl, json)", s.format)
+        } else if !["delta", "cumulative"].contains(&s.mode.as_str()) {
+            format!("mode: unknown value {:?} (delta, cumulative)", s.mode)
+        } else {
+            return true;
+        };
+        report.skipped.push((s.name.clone(), why));
+        false
     });
+    (specs, report)
+}
+
+/// 서비스 블록마다 따로 `YamlService`로 읽는다. 실패하면 `skipped`, 모르는 키는 `warnings`.
+fn read_services(raw: &serde_yaml::Value, report: &mut LoadReport) -> Vec<ServiceSpec> {
+    let Some(services) = yaml_at(raw, &["services"]).and_then(|v| v.as_mapping()) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    for (name, raw) in parsed.services {
-        let enabled = raw.enabled != Some(false);
-        if !enabled && !include_disabled {
-            continue;
+    for (name, block) in services {
+        let name = yaml_scalar(name);
+        for key in block.as_mapping().into_iter().flat_map(|m| m.keys()) {
+            let key = yaml_scalar(key);
+            if !KNOWN_SERVICE_KEYS.contains(&key.as_str()) {
+                report.warnings.push(format!("{name}: unknown key {key}"));
+            }
         }
+        // 글로 다시 읽어야 오류에 틀린 키 이름이 붙는다(`from_value`는 경로를 잃는다).
+        let text = serde_yaml::to_string(block).unwrap_or_default();
+        let raw = match serde_yaml::from_str::<YamlService>(&text) {
+            Ok(raw) => raw,
+            Err(e) => {
+                report.skipped.push((name, e.to_string()));
+                continue;
+            }
+        };
+        let enabled = raw.enabled != Some(false);
         out.push(ServiceSpec {
             name: name.clone(),
             label: raw.label.unwrap_or(name),

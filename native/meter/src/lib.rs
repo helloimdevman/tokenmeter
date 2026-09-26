@@ -412,12 +412,10 @@ mod tests {
 
     #[test]
     fn default_yaml_loads_known_agents() {
-        let specs = watch::default_specs();
-        let names: Vec<_> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"claude-code"));
-        assert!(names.contains(&"codex"));
-        assert!(names.contains(&"opencode"));
-        assert!(names.contains(&"grok"));
+        let ids: Vec<_> = watch::ADAPTERS.iter().map(|(id, _)| *id).collect();
+        for id in ["claude-code", "codex", "opencode", "grok", "cursor"] {
+            assert!(ids.contains(&id), "{id}");
+        }
     }
 
     #[test]

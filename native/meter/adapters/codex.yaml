@@ -1,0 +1,43 @@
+label: Codex
+roots: ["~/.codex/sessions"]
+patterns: ["**/*.jsonl"]
+match:
+  payload.type: token_count
+# total_token_usage 는 세션 누적치. 이벤트가 중복돼도 안전하도록 누적 모드 사용.
+mode: cumulative
+key: null # 파일(=세션) 단위 누적
+input_includes_cache: true
+fields:
+  input: payload.info.total_token_usage.input_tokens
+  cache_read: payload.info.total_token_usage.cached_input_tokens
+  cache_write: payload.info.total_token_usage.cache_write_input_tokens
+  # reasoning_output_tokens 는 output_tokens 의 부분집합이라 더하지 않음
+  output: payload.info.total_token_usage.output_tokens
+# 누적 서비스라 fields 합계는 세션 총량이다 — 지금 컨텍스트는 last_token_usage 를 봐야 한다
+ctx_tokens: payload.info.last_token_usage.total_tokens
+ctx_window: payload.info.model_context_window
+context:
+  cwd: payload.cwd
+  model: payload.model
+  session: payload.session_id      # session_meta 줄에서 학습
+  vendor: payload.model_provider   # 〃
+  effort: payload.effort           # turn_context 줄에서 학습
+default_model: gpt-5.6-sol
+vendor: openai
+plan_probe:
+  path: ~/.codex/auth.json
+  key: auth_mode
+  map: { chatgpt: subscription, apikey: api }
+  default: unknown
+endpoint_probe:
+  env: [OPENAI_BASE_URL]
+  path: ~/.codex/config.toml           # [model_providers.<벤더>] base_url
+  key: model_providers.{vendor}.base_url
+  # 구독(ChatGPT)과 종량제(API)는 애초에 다른 곳으로 간다
+  default:
+    subscription: https://chatgpt.com/backend-api/codex
+    api: https://api.openai.com/v1
+install:
+  target: claude_json
+  path: ~/.codex/hooks.json
+  events: [SessionStart, UserPromptSubmit, PermissionRequest, Stop, SessionEnd]

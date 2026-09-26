@@ -1,0 +1,23 @@
+label: Cursor
+# IDE 만 잰다. CLI 빌드 id(2026.09.22-161cc10)는 훅이 버리고, IDE stop 에 토큰이
+# 있을 때만 usage.jsonl 이 남는다.
+roots: ["$TOKENMETER_HOME/cursor"]
+patterns: ["usage.jsonl"]
+mode: delta
+key: generation_id
+fields:
+  input: input_tokens
+  cache_read: cache_read_tokens
+  cache_write: cache_write_tokens
+  output: output_tokens
+context:
+  cwd: cwd
+  model: model
+  session: session_id
+default_model: default
+vendor: cursor
+plan: subscription
+install:
+  target: cursor_json
+  path: ~/.cursor/hooks.json
+  events: [sessionStart, sessionEnd, beforeSubmitPrompt, stop, afterAgentThought, afterAgentResponse, postToolUse]

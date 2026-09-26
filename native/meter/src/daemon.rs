@@ -3,7 +3,7 @@
 use crate::engine::{lock_file, pid_file, Meter};
 use crate::live_rate::LiveRate;
 use crate::overlay::{snapshot_from_scale, SharedMeter};
-use crate::watch::{load_runtime_config, ServiceReader};
+use crate::watch::{load_report, load_runtime_config, ServiceReader};
 use std::collections::HashMap;
 use std::fs;
 use std::process::{Command, Stdio};
@@ -43,6 +43,9 @@ pub fn run(no_window: bool) -> i32 {
     let mut meter = Meter::load();
     meter.set_session_history(runtime.settings.session_history);
     let mut rate = LiveRate::new();
+    for (id, why) in load_report().skipped {
+        eprintln!("[TokenMeter] skipped service {id}: {why}");
+    }
     let mut readers: Vec<ServiceReader> =
         runtime.specs.into_iter().map(ServiceReader::new).collect();
     if readers.is_empty() {

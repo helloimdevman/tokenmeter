@@ -45,6 +45,7 @@ pub struct SyncState {
 }
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static KICK: AtomicBool = AtomicBool::new(false);
 static STATE: OnceLock<Mutex<SyncState>> = OnceLock::new();
 static NEXT_LOOK: Mutex<f64> = Mutex::new(0.0);
 
@@ -239,6 +240,17 @@ pub fn due(s: &SyncState, now: f64, last_seen: f64) -> bool {
     now - s.last_ok >= wait
 }
 
+/// 경기 시작·끝처럼 곧바로 보내야 할 때. 다음 tick(5초 안)이 주기를 기다리지 않고 보낸다.
+pub fn kick() {
+    KICK.store(true, Ordering::SeqCst);
+    *NEXT_LOOK.lock().unwrap() = 0.0;
+}
+
+/// 재촉받았어도 426과 실패 백오프는 지킨다.
+fn kick_due(s: &SyncState, now: f64) -> bool {
+    s.upgrade_for != VERSION && now >= s.retry_at
+}
+
 /// 공유가 켜져 있거나 리그에 로그인했을 때만 보낸다. 로그인만 했으면 칸마다 합계 셀 하나다(경기 계산용).
 pub fn wanted() -> bool {
     (crate::share::on() || crate::league::has_auth()) && !server::base().is_empty()
@@ -256,10 +268,15 @@ pub fn tick(committed: &Value) {
         *next = now + LOOK_EVERY;
     }
     let last_seen = committed.pointer("/total/last_seen").and_then(Value::as_f64).unwrap_or(0.0);
-    let is_due = due(&state().lock().unwrap(), now, last_seen);
+    let kicked = KICK.load(Ordering::SeqCst);
+    let is_due = {
+        let s = state().lock().unwrap();
+        due(&s, now, last_seen) || (kicked && kick_due(&s, now))
+    };
     if !is_due || !wanted() || RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
+    KICK.store(false, Ordering::SeqCst);
     let snap = serde_json::json!({ "seq": committed["seq"], "recent": committed["recent"], "hour": committed["hour"] });
     std::thread::spawn(move || {
         let _ = run_once(&snap, server::NORMAL);
@@ -571,6 +588,17 @@ mod tests {
         s.upgrade_for = VERSION.into();
         assert!(!due(&s, 9000.0, 8000.0), "426이면 새 바이너리까지 멈춤");
         assert_eq!((backoff(1), backoff(2), backoff(9)), (60.0, 120.0, 900.0));
+    }
+
+    #[test]
+    fn a_kick_skips_the_wait_but_not_backoff_or_upgrade() {
+        let mut s = SyncState { last_ok: 1000.0, ..SyncState::default() };
+        assert!(!due(&s, 1010.0, 1005.0) && kick_due(&s, 1010.0), "경기 시작·끝은 60초를 기다리지 않는다");
+        s.retry_at = 2000.0;
+        assert!(!kick_due(&s, 1010.0), "실패 백오프는 지킨다");
+        s.retry_at = 0.0;
+        s.upgrade_for = VERSION.into();
+        assert!(!kick_due(&s, 1010.0), "426이면 멈춘 채");
     }
 
     #[test]

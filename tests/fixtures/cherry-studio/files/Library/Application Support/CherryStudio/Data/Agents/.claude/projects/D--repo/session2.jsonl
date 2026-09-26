@@ -1,0 +1,2 @@
+{"type":"assistant","sessionId":"s2","uuid":"early","timestamp":"2026-04-27T13:59:02.000Z","message":{"id":"message-1","model":"deepseek-v4-pro","usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":5,"output_tokens":10}}}
+{"type":"assistant","sessionId":"s2","uuid":"final","timestamp":"2026-04-27T13:59:03.000Z","message":{"id":"message-1","model":"deepseek-v4-pro","usage":{"input_tokens":80,"cache_read_input_tokens":30,"cache_creation_input_tokens":2,"output_tokens":300}}}

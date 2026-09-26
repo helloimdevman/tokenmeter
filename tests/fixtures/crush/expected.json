@@ -1,0 +1,7 @@
+{
+  "source": "tokscale crates/tokscale-core/src/sessions/crush.rs:252-285,386-464 (MIT © 2025 Junho Yeo); registry shape: charmbracelet/crush internal/projects/projects.go:17-26",
+  "steps": [{"calls": 3, "input": 0, "cache_read": 0, "cache_write": 0, "output": 0, "cost_usd": 36.5,
+             "by_model": {"session-total": {"calls": 3, "input": 0, "output": 0}},
+             "sessions": ["root-1", "root-2"], "model_label": "other"}],
+  "differs": "tokscale splits each root session's cost across the local days of its assistant messages (7.5 + 22.5 for root-1). We read the root session as one cumulative stream and put each increase in the hour of updated_at, so root-1's 30.0 lands in one hour. Totals are the same."
+}

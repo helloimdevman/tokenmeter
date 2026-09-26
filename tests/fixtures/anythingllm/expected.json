@@ -1,0 +1,7 @@
+{
+  "source": "TokenTracker test/anythingllm-parser.test.js:24-39,112-254 (MIT © 2026 xiufengsun)",
+  "steps": [{"calls": 2, "input": 150, "cache_read": 0, "cache_write": 0, "output": 35,
+             "by_model": {"deepseek-v4": {"calls": 2, "input": 150, "output": 35}},
+             "sessions": ["1"], "vendor": "DeepSeek"}],
+  "differs": "TokenTracker derives reasoning = total_tokens − prompt − completion (5 for the first row, total 190 for both). AnythingLLM computes total_tokens as prompt + completion (anythingllm-perfmon.js:101), so we take output = completion_tokens (35, total 185). The in-progress agent row with response {} counts nothing until it is rewritten."
+}

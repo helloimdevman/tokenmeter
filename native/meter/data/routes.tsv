@@ -59,6 +59,8 @@ api.anyapi.ai	anyapi	-
 api.arcee.ai	arcee	-
 api.arcee.ai/api	arcee	-
 api.auriko.ai	auriko	-
+api.bee.heossi.com	bee	-
+api.bee.heossi.com/bee	bee	-
 api.berget.ai	berget	-
 api.cerebras.ai	cerebras	-
 api.clarifai.com	clarifai	-
@@ -78,6 +80,8 @@ api.deepseek.com	deepseek	-
 api.dinference.com	dinference	-
 api.edenai.run	edenai	-
 api.empiriolabs.ai	empiriolabs	-
+api.engy.ai	engy	-
+api.fastino.ai	pioneer	-
 api.fireworks.ai	fireworks-ai	-
 api.fireworks.ai/inference	fireworks-ai	-
 api.freemodel.dev	freemodel	-
@@ -148,10 +152,10 @@ api.openreason.app	openreason	-
 api.opper.ai	opper	-
 api.opper.ai/v3/compat	opper	-
 api.orcarouter.ai	orcarouter	-
+api.paretoinference.com	pareto	-
 api.pendra.ai	pendra	-
 api.pendra.ai/api	pendra	-
 api.perplexity.ai	perplexity	-
-api.pioneer.ai	pioneer	-
 api.poe.com	poe	-
 api.qhaigc.net	qihang-ai	-
 api.qnaigc.com	qiniu-ai	-
@@ -213,6 +217,7 @@ azure-cognitive-services	azure-cognitive-services	-
 bailing	bailing	-
 baseten	baseten	-
 bedrock	amazon-bedrock	-
+bee	bee	-
 berget	berget	-
 blueclaw	blueclaw	-
 bothub	bothub	-
@@ -261,6 +266,7 @@ echo	echo	-
 echo.tracerml.ai	echo	-
 edenai	edenai	-
 empiriolabs	empiriolabs	-
+engy	engy	-
 evroc	evroc	-
 fastrouter	fastrouter	-
 fireworks-ai	fireworks-ai	-
@@ -395,6 +401,7 @@ opper	opper	-
 orcarouter	orcarouter	-
 oss	local	local
 ovhcloud	ovhcloud	-
+pareto	pareto	-
 pass.wafer.ai	wafer.ai	-
 pendra	pendra	-
 perplexity	perplexity	-

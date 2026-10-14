@@ -47,7 +47,7 @@ jobs:
           cp native/target/release/tokenmeter "dist/tokenmeter-${{ matrix.tag }}"
           cp native/target/release/tokenmeter-hook "dist/tokenmeter-hook-${{ matrix.tag }}"
           (cd dist && shasum -a 256 tokenmeter-${{ matrix.tag }} tokenmeter-hook-${{ matrix.tag }} > SHA256SUMS)
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-${{ matrix.tag }}
           path: dist/

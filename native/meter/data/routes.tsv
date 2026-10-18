@@ -22,6 +22,7 @@ ai.zenifra.com	zenifra	-
 ai21	ai21	-
 aiand	aiand	-
 aihubmix	aihubmix	-
+aimlapi	aimlapi	-
 ainetcafe	ainetcafe	-
 aiplatform.googleapis.com	google-vertex	-
 aixy	aixy	-
@@ -52,6 +53,7 @@ api.ai-router.dev	ai-router	-
 api.ai21.com	ai21	-
 api.ai21.com/studio	ai21	-
 api.aiand.com	aiand	-
+api.aimlapi.com	aimlapi	-
 api.aixy-gateway.com	aixy	-
 api.ambient.xyz	ambient	-
 api.anthropic.com	anthropic	-
@@ -59,6 +61,8 @@ api.anyapi.ai	anyapi	-
 api.arcee.ai	arcee	-
 api.arcee.ai/api	arcee	-
 api.auriko.ai	auriko	-
+api.bee.heossi.com	bee	-
+api.bee.heossi.com/bee	bee	-
 api.berget.ai	berget	-
 api.cerebras.ai	cerebras	-
 api.clarifai.com	clarifai	-
@@ -71,6 +75,8 @@ api.code.umans.ai	umans-ai	-
 api.cohere.ai	cohere	-
 api.cohere.ai/compatibility	cohere	-
 api.cohere.com	cohere	-
+api.commandcode.ai	commandcode	-
+api.commandcode.ai/provider	commandcode	-
 api.cortecs.ai	cortecs	-
 api.crossmodel.ai	crossmodel	-
 api.deepinfra.com	deepinfra	-
@@ -78,6 +84,8 @@ api.deepseek.com	deepseek	-
 api.dinference.com	dinference	-
 api.edenai.run	edenai	-
 api.empiriolabs.ai	empiriolabs	-
+api.engy.ai	engy	-
+api.fastino.ai	pioneer	-
 api.fireworks.ai	fireworks-ai	-
 api.fireworks.ai/inference	fireworks-ai	-
 api.freemodel.dev	freemodel	-
@@ -94,6 +102,7 @@ api.impossibl.com	impossibl	-
 api.inceptionlabs.ai	inception	-
 api.inceptron.io	inceptron	-
 api.inco.ai	inco	-
+api.inference.boundless.network	boundless	-
 api.inference.crusoecloud.com	crusoe	-
 api.inference.wandb.ai	wandb	-
 api.infomaniak.com	infomaniak	-
@@ -120,6 +129,7 @@ api.llmgateway.io	llmgateway	-
 api.llmtech.eu	llmtech	-
 api.longcat.chat	longcat	-
 api.longcat.chat/openai	longcat	-
+api.lowrouter.ai	lowrouter	-
 api.lucidquery.com	lucidquery	-
 api.meganova.ai	meganova	-
 api.melious.ai	melious	-
@@ -148,17 +158,22 @@ api.openreason.app	openreason	-
 api.opper.ai	opper	-
 api.opper.ai/v3/compat	opper	-
 api.orcarouter.ai	orcarouter	-
+api.paretoinference.com	pareto	-
 api.pendra.ai	pendra	-
 api.pendra.ai/api	pendra	-
 api.perplexity.ai	perplexity	-
-api.pioneer.ai	pioneer	-
+api.pinference.ai	prime	-
+api.pinference.ai/api	prime	-
 api.poe.com	poe	-
 api.qhaigc.net	qihang-ai	-
 api.qnaigc.com	qiniu-ai	-
+api.reflection.ai	reflection	-
+api.reflection.ai/openai	reflection	-
 api.regolo.ai	regolo-ai	-
 api.routing.run	routing-run	-
 api.runinfra.ai	runinfra	-
 api.sakana.ai	sakana	-
+api.sambanova.ai	sambanova	-
 api.sarvam.ai	sarvam	-
 api.scaleway.ai	scaleway	-
 api.scnet.cn	scnet-token-plan	-
@@ -213,9 +228,11 @@ azure-cognitive-services	azure-cognitive-services	-
 bailing	bailing	-
 baseten	baseten	-
 bedrock	amazon-bedrock	-
+bee	bee	-
 berget	berget	-
 blueclaw	blueclaw	-
 bothub	bothub	-
+boundless	boundless	-
 cc.freemodel.dev	freemodel	-
 cerebras	cerebras	-
 chat.d.run	drun	-
@@ -235,6 +252,7 @@ coding-intl.dashscope.aliyuncs.com	alibaba-coding-plan	sub
 coding-plan-endpoint.kuaecloud.net	kuae-cloud-coding-plan	sub
 coding.dashscope.aliyuncs.com	alibaba-coding-plan-cn	sub
 cohere	cohere	-
+commandcode	commandcode	-
 coralbricks	coralbricks	-
 cortecs	cortecs	-
 crof	crof	-
@@ -261,6 +279,7 @@ echo	echo	-
 echo.tracerml.ai	echo	-
 edenai	edenai	-
 empiriolabs	empiriolabs	-
+engy	engy	-
 evroc	evroc	-
 fastrouter	fastrouter	-
 fireworks-ai	fireworks-ai	-
@@ -330,6 +349,7 @@ llmtr	llmtr	-
 llmtr.com	llmtr	-
 lmstudio	local	local
 longcat	longcat	-
+lowrouter	lowrouter	-
 lucidquery	lucidquery	-
 lynkr	lynkr	-
 maas-api.ebcloud.com	ebcloud	-
@@ -385,6 +405,12 @@ openai.bothub.ru	bothub	-
 opencode	opencode	-
 opencode-go	opencode-go	-
 opencode.ai	opencode	-
+opencode.ai/inference/anthropic	opencode	-
+opencode.ai/inference/go/anthropic	opencode-go	-
+opencode.ai/inference/go/google	opencode-go	-
+opencode.ai/inference/go/openai	opencode-go	-
+opencode.ai/inference/google	opencode	-
+opencode.ai/inference/openai	opencode	-
 opencode.ai/zen	opencode	-
 opencode.ai/zen/go	opencode-go	-
 openreason	openreason	-
@@ -395,6 +421,7 @@ opper	opper	-
 orcarouter	orcarouter	-
 oss	local	local
 ovhcloud	ovhcloud	-
+pareto	pareto	-
 pass.wafer.ai	wafer.ai	-
 pendra	pendra	-
 perplexity	perplexity	-
@@ -402,10 +429,12 @@ perplexity-agent	perplexity-agent	-
 pioneer	pioneer	-
 poe	poe	-
 poolside	poolside	-
+prime	prime	-
 privatemode-ai	privatemode-ai	-
 qihang-ai	qihang-ai	-
 qiniu-ai	qiniu-ai	-
 qvac	qvac	-
+reflection	reflection	-
 regolo-ai	regolo-ai	-
 requesty	requesty	-
 routellm.abacus.ai	abacus	-
@@ -416,6 +445,7 @@ routing-run	routing-run	-
 runinfra	runinfra	-
 sakana	sakana	-
 salad-cloud	salad-cloud	-
+sambanova	sambanova	-
 sap-ai-core	sap-ai-core	-
 sarvam	sarvam	-
 scaleway	scaleway	-
@@ -461,7 +491,6 @@ umans-ai	umans-ai	-
 umans-ai-coding-plan	umans-ai-coding-plan	sub
 unorouter	unorouter	-
 upstage	upstage	-
-v0	v0	-
 vancine	vancine	-
 vancine.com	vancine	-
 venice	venice	-

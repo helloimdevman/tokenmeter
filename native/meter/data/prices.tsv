@@ -5,11 +5,12 @@ aion-3.0-mini	aion-labs	0.7	1.4	0.18		131072	o
 aion-3.5	aion-labs	3	6	0.75		262144	o
 aion-3.5-mini	aion-labs	0.7	1.4	0.18		262144	o
 aion-rp-llama-3.1-8b	aion-labs	0.8	1.6			32768	o
+beam-1.0-501b-a23b	reflection	1	3	0.1		1048576	o
 claude-3-5-haiku	anthropic	1	5			200000	p
 claude-3-5-haiku-20241022	anthropic	0.8	4	0.08	1	200000	p
 claude-3-5-sonnet	anthropic	3	15			200000	p
-claude-3-5-sonnet-20240620	anthropic	3	15	0.3	3.75	1000000	p	200000	6	30	0.6	7.5
-claude-3-5-sonnet-20241022	anthropic	3	15	0.3	3.75	1000000	p	200000	6	30	0.6	7.5
+claude-3-5-sonnet-20240620	anthropic	3	15	0.3	3.75	200000	p
+claude-3-5-sonnet-20241022	anthropic	3	15	0.3	3.75	200000	p
 claude-3-7-sonnet-20240620	anthropic	3.6	18	0.36	4.5	200000	p
 claude-3-7-sonnet-20250219	anthropic	3	15	0.3	3.75	200000	p
 claude-3-haiku	anthropic	0.25	1.25			200000	p
@@ -20,6 +21,7 @@ claude-fable-5	anthropic	10	50	1	12.5	1000000	m
 claude-fable-5-1	anthropic	10	50	0.25	12.5	1000000	m
 claude-haiku-4-5	anthropic	1	5	0.1	1.25	200000	m
 claude-haiku-4-5-20251001	anthropic	1	5	0.1	1.25	200000	m
+claude-haiku-5-5	anthropic	0.1	0.5	0.01	0.125	1000000	m	100000	0.5	2.5	0.05	0.625
 claude-instant	anthropic	0.8	2.4			100000	p
 claude-mythos-5	anthropic	10	50	1	12.5	1000000	l
 claude-mythos-5-1	anthropic	10	50	0.25	12.5	1000000	l
@@ -36,14 +38,15 @@ claude-opus-4-8	anthropic	5	25	0.5	6.25	1000000	m
 claude-opus-4.1	anthropic	15	75	1.5	18.75	200000	o
 claude-opus-5	anthropic	5	25	0.5	6.25	1000000	m
 claude-opus-5-5	anthropic	4	20	0.2	5	1000000	m
-claude-sonnet-4	anthropic	3	15	0.3	3.75	200000	o	200000	6	22.5	0.6	7.5
-claude-sonnet-4-20250514	anthropic	3	15	0.3	3.75	1000000	p	200000	6	22.5	0.6	7.5
-claude-sonnet-4-5	anthropic	3	15	0.3	3.75	1000000	m	200000	6	22.5	0.6	7.5
-claude-sonnet-4-5-20250929	anthropic	3	15	0.3	3.75	1000000	m	200000	6	22.5	0.6	7.5
+claude-sonnet-4	anthropic	3	15	0.3	3.75	200000	k	200000	6	22.5	0.6	7.5
+claude-sonnet-4-20250514	anthropic	3	15	0.3	3.75	200000	p	200000	6	22.5	0.6	7.5
+claude-sonnet-4-5	anthropic	3	15	0.3	3.75	200000	m
+claude-sonnet-4-5-20250929	anthropic	3	15	0.3	3.75	200000	m
 claude-sonnet-4-6	anthropic	3	15	0.3	3.75	1000000	m
 claude-sonnet-5	anthropic	2	10	0.2	2.5	1000000	m
-codestral-2508	mistral	0.3	0.9	0.03		128000	l
-codestral-latest	mistral	0.3	0.9			256000	m
+claude-sonnet-5-5	anthropic	2	10	0.1	2.5	1000000	m
+codestral-2508	mistral	0.3	0.9	0.03		256000	m
+codestral-latest	mistral	0.3	0.9	0.03		256000	m
 codestral-mamba-latest	mistral	0.25	0.25	0.025		256000	l
 codex-auto-review	openai	0.2	1.2	0.02	0.25	1050000	c	272000	0.4	1.8	0.04	0.5
 codex-mini	openai	1.5	6	0.375		200000	p
@@ -62,25 +65,26 @@ command-r7b-arabic-02-2025	cohere	0.0375	0.15			128000	m
 command-text	cohere	1	2			4096	p
 cydonia-24b-v4.1	thedrummer	0.3	0.5	0.15		131072	o
 deepseek-chat	deepseek	0.28	0.42	0.028		131072	l
-deepseek-chat-v3-0324	deepseek	0.25	1			163840	o
+deepseek-chat-v3-0324	deepseek	0.29	1.14	0.11		163840	o
 deepseek-chat-v3.1	deepseek	0.25	0.95	0.13		163840	o
 deepseek-coder	deepseek	0.14	0.28	0.014		128000	l
 deepseek-flash	deepseek	0.15	0.6	0.003		1000000	m
 deepseek-r1	deepseek	0.55	2.19	0.14		65536	l
 deepseek-r1-0528	deepseek	0.5	2.15	0.35		163840	o
-deepseek-r1-distill-llama-70b	deepseek	0.8	0.8			8192	o
+deepseek-r1-distill-llama-70b	deepseek	0.8	0.8			8192	k
 deepseek-reasoner	deepseek	0.28	0.42	0.028		131072	l
 deepseek-v3	deepseek	0.27	1.1	0.07	0	65536	l
-deepseek-v3.1-terminus	deepseek	0.27	1	0.135		163840	o
+deepseek-v3.1-terminus	deepseek	0.27	1			163840	o
 deepseek-v3.2	deepseek	0.28	0.4	0.028		163840	l
 deepseek-v3.2-exp	deepseek	0.27	0.41			163840	o
 deepseek-v4-flash	deepseek	0.15	0.6	0.003		1000000	m
-deepseek-v4-flash-0731	deepseek	0.021	0.32	0.016		1310720	o
-deepseek-v4-flash-latest	deepseek	0.021	0.32	0.016		1310720	o
+deepseek-v4-flash-0731	deepseek	0.1	0.3	0.03		1048576	o
+deepseek-v4-flash-latest	deepseek	0.0086	1.28	0.0086		1048576	o
 deepseek-v4-flash-vision-exp	deepseek	0.15	0.6	0.003		1000000	m
-deepseek-v4-pro	deepseek	0.435	0.87	0.003625		1000000	m
-deepseek-v4-pro-0813	deepseek	0.264	0.792	0.0088		1048576	o
-deepseek-v4.1-flash	deepseek	0.14	0.42	0.0042		1048576	o
+deepseek-v4-pro	deepseek	0.66	1.98	0.022		1000000	m
+deepseek-v4-pro-0813	deepseek	0.66	1.98	0.022		1048576	o
+deepseek-v4.1-flash	deepseek	0.0648	0.144	0.0016		1048576	o
+deepseek-v4.1-flash-1017	deepseek	0.15	0.6	0.003		1048576	o
 devstral-2-123b	mistral	0.4	2			256000	p
 devstral-2512	mistral	0.4	2			262144	m
 devstral-latest	mistral	0.4	2			262144	m
@@ -91,7 +95,7 @@ devstral-small-2507	mistral	0.1	0.3			128000	m
 devstral-small-latest	mistral	0.1	0.3	0.01		256000	l
 dolphin-mistral-24b-venice-edition	cognitivecomputations	0.2	0.9			128000	o
 ember-1	fireworks	3	15	0.3		1048576	o
-ernie-4.5-vl-424b-a47b	baidu	0.42	1.25			123000	o
+ernie-4.5-vl-424b-a47b	baidu	0.42	1.25			123000	k
 fugu-max	sakana	2	6	0.25		1000000	c
 fugu-ultra	sakana	5	30	0.5		1000000	c	272000	10	45	1
 fugu-ultra-v2	sakana	5	30	0.5		1000000	o	272000	10	45	1
@@ -124,6 +128,7 @@ gemini-3.6-flash	google	0.75	3.75	0.075		1048576	m
 gemini-3.7-flash	google	0.75	3.75	0.075		1048576	m
 gemini-3.8-flash	google	0.75	3.75	0.075		1048576	m
 gemini-3.8-flash-cyber	google	1.5	7.5	0.15		1048576	p
+gemini-4-argon	google	2	10	0.1		1048576	m
 gemini-embedding-001	google	0.15	0			2048	m
 gemini-embedding-2	google	0.2	0			8192	m
 gemini-exp-1206	google	0.3	2.5	0.03		1048576	l
@@ -131,26 +136,27 @@ gemini-flash-latest	google	0.75	3.75	0.075		1048576	m
 gemini-flash-lite-latest	google	0.3	2.5	0.03		1048576	m
 gemini-gemma-2-27b-it	google	0.35	1.05				l
 gemini-gemma-2-9b-it	google	0.35	1.05				l
+gemini-nano-banana-2.1	google	1.5	7.5			65536	o
 gemini-omni-1.1-flash	google	1.5	9			1048576	l
 gemini-omni-flash-preview	google	1.5	17.5			131072	m
 gemini-pro-latest	google	2	12	0.2		1048576	l	200000	4	18	0.4
 gemini-robotics-er-1.5-preview	google	0.3	2.5	0		1048576	p
 gemini-robotics-er-2-preview	google	1	5	0.1		131072	l
-gemini-robotics-er-2-streaming-preview	google	1	5				l
+gemini-robotics-er-2-streaming-preview	google	1	5			131072	l
 gemma-2-27b-it	google	0.65	0.65			8192	o
 gemma-3-12b-it	google	0.09	0.29			128000	p
 gemma-3-27b-it	google	0.23	0.38			128000	p
 gemma-3-4b-it	google	0.04	0.08			128000	p
 gemma-4-26b-a4b-it	google	0.0675	0.225	0.0375		262144	o
-gemma-4-31b-it	google	0.09	0.34	0.05		262144	o
+gemma-4-31b-it	google	0.2	0.4			262144	o
 glm-4-32b-0414-128k	zai	0.1	0.1			128000	l
 glm-4.5	zai	0.6	2.2	0.11	0	131072	m
 glm-4.5-air	zai	0.2	1.1	0.03	0	131072	m
 glm-4.5-airx	zai	1.1	4.5			128000	l
 glm-4.5-x	zai	2.2	8.9			128000	l
-glm-4.5v	zai	0.6	1.8			64000	m
+glm-4.5v	zai	0.6	1.8	0.11		64000	m
 glm-4.6	zai	0.6	2.2	0.11	0	204800	m
-glm-4.6v	zai	0.3	0.9			128000	m
+glm-4.6v	zai	0.3	0.9	0.05		128000	m
 glm-4.7	zai	0.6	2.2	0.11	0	204800	m
 glm-4.7-flash	zai	0.07	0.4			203000	p
 glm-4.7-flashx	zai	0.07	0.4	0.01	0	200000	m
@@ -181,7 +187,7 @@ gpt-4-32k	openai	60	120			32768	p
 gpt-4-32k-0613	openai	60	120			32768	p
 gpt-4-turbo	openai	10	30			128000	m
 gpt-4-turbo-2024-04-09	openai	10	30			128000	l
-gpt-4-turbo-vision-preview	openai	10	30			128000	p
+gpt-4-turbo-vision-preview	openai	11	33			128000	p
 gpt-4.1	openai	2	8	0.5		1047576	m
 gpt-4.1-2025-04-14	openai	2	8	0.5		1047576	l
 gpt-4.1-mini	openai	0.4	1.6	0.1		1047576	m
@@ -199,7 +205,9 @@ gpt-4o-mini	openai	0.15	0.6	0.075		128000	m
 gpt-4o-mini-2024-07-18	openai	0.15	0.6	0.075		128000	l
 gpt-4o-mini-audio-preview-2024-12-17	openai	0.15	0.6			128000	l
 gpt-4o-mini-search-preview	openai	0.15	0.6	0.075		128000	l
+gpt-4o-mini-search-preview-2025-03-11	openai	0.15	0.6	0.075		128000	l
 gpt-4o-search-preview	openai	2.5	10	1.25		128000	l
+gpt-4o-search-preview-2025-03-11	openai	2.5	10	1.25		128000	l
 gpt-5	openai	1.25	10	0.125		400000	m
 gpt-5-2025-08-07	openai	1.25	10	0.125		272000	l
 gpt-5-chat	openai	1.25	10	0.125		128000	l
@@ -247,8 +255,9 @@ gpt-5.4-pro	openai	30	180			1050000	m	272000	60	270
 gpt-5.4-pro-2026-03-05	openai	30	180			1050000	l	272000	60	270
 gpt-5.5	openai	5	30	0.5		1050000	m	272000	10	45	1
 gpt-5.5-2026-04-23	openai	5	30	0.5		1050000	l	272000	10	45	1
-gpt-5.5-2026-04-24	openai	5	30	0.5		1050000	p	272000	10	45	1
+gpt-5.5-2026-04-24	openai	5	30	0.5		922000	p	272000	10	45	1
 gpt-5.5-cyber	openai	12.5	75	1.25			l
+gpt-5.5-cyber-preview	openai	12.5	75	1.25			l
 gpt-5.5-pro	openai	30	180			1050000	m	272000	60	270
 gpt-5.5-pro-2026-04-23	openai	30	180			1050000	l	272000	60	270
 gpt-5.6	openai	4	20	0.4	5	1050000	m	272000	8	30	0.8	10
@@ -258,7 +267,7 @@ gpt-5.6-luna-2026-07-09	openai	0.2	1.2	0.02	0.25	922000	p	272000	0.4	1.8	0.04	0.
 gpt-5.6-luna-pro	openai	0.2	1.2	0.02	0.25	1050000	o	272000	0.4	1.8	0.04	0.5
 gpt-5.6-sol	openai	4	20	0.4	5	1050000	m	272000	8	30	0.8	10
 gpt-5.6-sol-2026-07-09	openai	4	20	0.4	5	922000	p	272000	8	30	0.8	10
-gpt-5.6-sol-pro	openai	2	10	0.2	2.5	1050000	o	272000	4	15	0.4	5
+gpt-5.6-sol-pro	openai	4	20	0.4	5	1050000	o	272000	8	30	0.8	10
 gpt-5.6-terra	openai	2	12	0.2	2.5	1050000	m	272000	4	18	0.4	5
 gpt-5.6-terra-2026-07-09	openai	2	12	0.2	2.5	922000	p	272000	4	18	0.4	5
 gpt-5.6-terra-pro	openai	2	12	0.2	2.5	1050000	o	272000	4	18	0.4	5
@@ -271,25 +280,29 @@ gpt-6-luna-pro	openai	0.1	0.5	0.01	0.125	1050000	o	272000	0.2	0.75	0.02	0.25
 gpt-6-sol	openai	2	10	0.2	2.5	1050000	m	272000	4	15	0.4	5
 gpt-6-sol-2026-09-22	openai	2	10	0.2	2.5	922000	p	272000	4	15	0.4	5
 gpt-6-sol-pro	openai	2	10	0.2	2.5	1050000	o	272000	4	15	0.4	5
+gpt-6.1-sol	openai	2	10	0.1	2.5	1050000	m	272000	4	15	0.2	5
+gpt-6.1-sol-2026-09-29	openai	2	10	0.1	2.5	922000	p	272000	4	15	0.2	5
+gpt-6.1-sol-pro	openai	2	10	0.1	2.5	1050000	o	272000	4	15	0.2	5
 gpt-audio	openai	2.5	10			128000	l
 gpt-audio-1.5	openai	2.5	10			128000	l
 gpt-audio-1.5-2026-02-23	openai	2.5	10			128000	p
 gpt-audio-2025-08-28	openai	2.5	10			128000	l
 gpt-audio-mini	openai	0.6	2.4			128000	l
-gpt-audio-mini-2025-10-06	openai	0.6	2.4			128000	p
+gpt-audio-mini-2025-10-06	openai	0.6	2.4			128000	l
 gpt-audio-mini-2025-12-15	openai	0.6	2.4			128000	l
 gpt-chat-latest	openai	5	30	0.5		272000	p
-gpt-daybreak-blue-latest	openai	4	20	0.4	5	922000	l	272000	8	30	0.8	10
-gpt-daybreak-red-latest	openai	12.5	75	1.25	15.625	400000	l	272000	25	112.5	2.5	31.25
+gpt-daybreak-blue-latest	openai	4	20	0.4	5	1050000	m	272000	8	30	0.8	10
+gpt-daybreak-red-latest	openai	12.5	75	1.25	15.625	400000	m	272000	25	112.5	2.5	31.25
 gpt-image-2	openai	5	30	1.25			m
 gpt-oss-120b	openai	0.15	0.6	0.075		131072	o
 gpt-oss-120b-1:0	openai	0.15	0.6			128000	p
-gpt-oss-20b	openai	0.018	0.09			131072	o
+gpt-oss-20b	openai	0.018	0.09	0.009		131072	o
 gpt-oss-20b-1:0	openai	0.07	0.3			128000	p
 gpt-oss-safeguard-120b	openai	0.15	0.6			128000	p
 gpt-oss-safeguard-20b	openai	0.07	0.2			128000	p
 gpt-realtime-2.1	openai	4	24	0.4		128000	m
 gpt-reserve	openai	0.2	1.2	0.02	0.25	1050000	c	272000	0.4	1.8	0.04	0.5
+gpt-rosalind-discovery	openai	5	25	0.5			l
 gpt-rosalind-research	openai	5	25	0.5			l
 granite-4.0-h-micro	ibm-granite	0.017	0.112			131000	o
 granite-4.2-8b	ibm-granite	0.06	0.25	0.015		131072	o
@@ -346,34 +359,36 @@ hy-mt2-7b	tencent	0.074	0.295			8192	o
 hy3	tencent	0.132	0.528	0.033		262144	o
 hy3-preview	tencent	0.18	0.6	0.06		262144	o
 hy4-preview	tencent	0.834	2.501	0.042		1048576	o
-kat-coder-pro-v2.5	kwaipilot	0.74	2.96	0.15		262144	o
+kat-coder-pro-v2.5	kwaipilot	0.74	2.96	0.15		262144	k
 kimi-k2	moonshotai	0.57	2.3			131072	o
 kimi-k2-0905	moonshotai	0.6	2.5			262144	o
-kimi-k2-thinking	moonshotai	0.73	3.03			262144	p
+kimi-k2-thinking	moonshotai	0.6	2.5			262144	p
 kimi-k2.5	moonshotai	0.6	3	0.1		262144	l
 kimi-k2.6	moonshotai	0.95	4	0.16		262144	m
 kimi-k2.7-code	moonshotai	0.95	4	0.19		262144	m
 kimi-k2.7-code-highspeed	moonshotai	1.9	8	0.38		262144	m
-kimi-k3	moonshotai	3	15	0.3		1048576	m
+kimi-k3	moonshotai	3	15	0.3	3	1048576	m
 l3-lunaris-8b	sao10k	0.04	0.05			8192	o
 l3.1-euryale-70b	sao10k	0.85	0.85			131072	o
 l3.3-euryale-70b	sao10k	0.65	0.75			131072	o
 laguna-s-2.1	poolside	0.09	0.18	0.009		1048576	o
 laguna-xs-2.1	poolside	0.06	0.12	0.03		262144	o
+lfm-2.5-24b-a2b	liquid	0.05	0.7	0.025		128000	o
 ling-3.0-flash	inclusionai	0.021	0.063	0.0042		262144	o
-ling-3.0-flash-fin	inclusionai	0.06	0.18	0.012		262144	o
-ling-3.0-flash-vl	inclusionai	0.021	0.0616	0.0042		262144	o
+ling-3.0-flash-fin	inclusionai	0.06	0.18	0.012		262144	k
+ling-3.0-flash-vl	inclusionai	0.06	0.18	0.012		131072	o
+ling-3.1-flash	inclusionai	0.075	0.225	0.015		262144	o
 llama-3.1-70b-instruct	meta	0.4	0.4			131072	o
 llama-3.1-8b-instruct	meta	0.05	0.08	0.025		131072	o
 llama-3.2-1b-instruct	meta	0.027	0.201			60000	o
 llama-3.2-3b-instruct	meta	0.05	0.33			131072	o
 llama-3.3-70b-instruct	meta	0.1	0.32			131072	o
-llama-4-maverick	meta	0.1875	0.6525			1048576	o
+llama-4-maverick	meta	0.1875	0.6525	0.05		1048576	o
 llama-4-scout	meta	0.1	0.3			1310720	o
 llama-guard-4-12b	meta	0.18	0.18			163840	o
 longcat-2.0	meituan	0.3	1.2	0.006		1048756	o
-magistral-medium-latest	mistral	2	5			128000	m
-magistral-small	mistral	0.5	1.5			128000	m
+magistral-medium-latest	mistral	2	5			262144	m
+magistral-small	mistral	0.5	1.5			128000	k
 magistral-small-2509	mistral	0.5	1.5			128000	p
 magistral-small-latest	mistral	0.15	0.6	0.015		262144	l
 magnum-v4-72b	anthracite-org	2.5	5			32768	o
@@ -389,18 +404,18 @@ mimo-v2.6-flash	xiaomi	0.14	0.28	0.0028		1048576	m
 mimo-v2.6-pro	xiaomi	0.435	0.87	0.0036		1048576	m
 mimo-v2.6-pro-ultraspeed	xiaomi	4.35	8.7	0.036		1048576	m
 minimax-01	minimax	0.2	1.1			1000192	o
-minimax-m1	minimax	0.4	2.2			1000000	o
+minimax-m1	minimax	0.55	2.2			1000000	o
 MiniMax-M2	minimax	0.3	1.2			204800	m
 minimax-m2-her	minimax	0.3	1.2	0.03		65536	o
 MiniMax-M2.1	minimax	0.3	1.2	0.03	0.375	204800	m
 MiniMax-M2.1-lightning	minimax	0.3	2.4	0.03	0.375	1000000	l
 MiniMax-M2.5	minimax	0.3	1.2	0.03	0.375	204800	m
-MiniMax-M2.5-highspeed	minimax	0.6	2.4	0.06	0.375	204800	m
+MiniMax-M2.5-highspeed	minimax	0.6	2.4	0.03	0.375	204800	m
 MiniMax-M2.5-lightning	minimax	0.3	2.4	0.03	0.375	1000000	l
 MiniMax-M2.7	minimax	0.3	1.2	0.06	0.375	204800	m
 MiniMax-M2.7-highspeed	minimax	0.6	2.4	0.06	0.375	204800	m
 MiniMax-M3	minimax	0.3	1.2	0.06		1000000	m	512000	0.6	2.4	0.12
-ministral-14b-2512	mistral	0.2	0.2	0.02		262144	l
+ministral-14b-2512	mistral	0.2	0.2	0.02		262144	m
 ministral-14b-latest	mistral	0.2	0.2	0.02		262144	l
 ministral-3-14b-2512	mistral	0.2	0.2	0.02		262144	l
 ministral-3-14b-instruct	mistral	0.2	0.2			128000	p
@@ -408,44 +423,48 @@ ministral-3-3b-2512	mistral	0.1	0.1	0.01		131072	l
 ministral-3-3b-instruct	mistral	0.1	0.1			128000	p
 ministral-3-8b-2512	mistral	0.15	0.15	0.015		262144	l
 ministral-3-8b-instruct	mistral	0.15	0.15			128000	p
-ministral-3b-2512	mistral	0.1	0.1	0.01		131072	l
-ministral-3b-latest	mistral	0.04	0.04			128000	m
-ministral-8b-2512	mistral	0.15	0.15	0.015		262144	l
-ministral-8b-latest	mistral	0.1	0.1			128000	m
+ministral-3b-2512	mistral	0.1	0.1	0.01		131072	m
+ministral-3b-latest	mistral	0.04	0.04			131072	m
+ministral-8b-2512	mistral	0.15	0.15	0.015		262144	m
+ministral-8b-latest	mistral	0.1	0.1			262144	m
 mistral-7b-instruct	mistral	0.15	0.2			32000	p
 mistral-code-agent-latest	mistral	0.4	2	0.04		256000	l
 mistral-code-fim-latest	mistral	0.3	0.9	0.03		128000	l
 mistral-code-latest	mistral	0.3	0.9	0.03		128000	l
 mistral-embed	mistral	0.1	0			8000	m
 mistral-large-2402	mistral	8	24			32000	p
-mistral-large-2407	mistral	3	9			128000	p
+mistral-large-2407	mistral	2	6			128000	p
 mistral-large-2411	mistral	2	6			131072	m
-mistral-large-2512	mistral	0.5	1.5			262144	m
+mistral-large-2512	mistral	0.5	1.5	0.05		262144	m
 mistral-large-3	mistral	0.5	1.5	0.05		262144	l
 mistral-large-3-675b-instruct	mistral	0.5	1.5			256000	p
-mistral-large-latest	mistral	0.5	1.5			262144	m
+mistral-large-4	mistral	0.68	2.09	0.07		1048576	m
+mistral-large-4-0	mistral	0.68	2.09	0.068		1048576	l
+mistral-large-latest	mistral	0.5	1.5	0.05		262144	m
 mistral-medium	mistral	1.5	7.5	0.15		262144	l
 mistral-medium-2505	mistral	0.4	2			131072	m
 mistral-medium-2508	mistral	0.4	2			262144	m
-mistral-medium-2604	mistral	1.5	7.5			262144	m
+mistral-medium-2604	mistral	1.5	7.5	0.15		262144	m
 mistral-medium-3	mistral	1.5	7.5	0.15		262144	l
 mistral-medium-3-5	mistral	1.5	7.5	0.15		262144	l
 mistral-medium-3.1	mistral	0.4	2	0.04		131072	o
-mistral-medium-latest	mistral	1.5	7.5			262144	m
+mistral-medium-latest	mistral	1.5	7.5	0.15		262144	m
 mistral-nemo	mistral	0.15	0.15			128000	m
 mistral-small	mistral	0.1	0.3	0.01		32000	l
 mistral-small-2402	mistral	1	3			32000	p
 mistral-small-24b-instruct-2501	mistral	0.05	0.08			32768	o
 mistral-small-2506	mistral	0.1	0.3			128000	m
-mistral-small-2603	mistral	0.15	0.6			256000	m
+mistral-small-2603	mistral	0.15	0.6	0.015		262144	m
 mistral-small-3.1-24b-instruct	mistral	0.351	0.555			128000	o
 mistral-small-3.2-24b-instruct	mistral	0.09375	0.25			256000	o
-mistral-small-latest	mistral	0.15	0.6			256000	m
+mistral-small-latest	mistral	0.15	0.6	0.015		262144	m
 mistral-tiny	mistral	0.25	0.25	0.025		32000	l
 mistral-vibe-cli-fast	mistral	0.15	0.6	0.015		262144	l
 mistral-vibe-cli-latest	mistral	1.5	7.5	0.15		262144	l
 mistral-vibe-cli-with-tools	mistral	1.5	7.5	0.15		262144	l
 mixtral-8x22b-instruct	mistral	2	6	0.2		65536	o
+moondream3-preview	moondream	0.3	2.5			32000	o
+moondream3.1-9b-a2b	moondream	0.3	2.5			32000	o
 morph-v3-fast	morph	0.8	1.2			81920	o
 morph-v3-large	morph	0.9	1.9			262144	o
 muse-glimmer-30b	meta	0.3	1.2	0.04		131072	o
@@ -455,11 +474,14 @@ muse-spark-1.2-contributor	meta	0.1	0.2	0.002		1048576	o
 muse-spark-1.3	meta	1.25	4.25	0.15		1048576	o
 muse-spark-1.3-contributor	meta	0.1	0.2	0.002		1048576	o
 mythomax-l2-13b	gryphe	0.08	0.11			8192	o
-nemotron-3-nano-30b-a3b	nvidia	0.05	0.2	0.03		262144	o
+nemotron-3-nano-30b-a3b	nvidia	0.06	0.24			262144	o
 nemotron-3-super-120b-a12b	nvidia	0.08	0.45			262144	o
 nemotron-3-ultra-550b-a55b	nvidia	0.6	2.4	0.12		262144	o
 nemotron-3.5-content-safety	nvidia	0.2	0.2			131072	o
-nemotron-3.5-lightning	nvidia	0.08	0.2	0.04		1000000	o
+nemotron-3.5-lightning	nvidia	0.07	0.2	0.04		262144	o
+nemotron-3.5-super-vl	nvidia	0.1	0.4	0.08		1048576	o
+nex-n2.5-mini	nex-agi	0.025	0.1	0.0025		262144	o
+nex-n2.5-pro	nex-agi	0.075	0.25	0.015		262144	o
 nova-2-lite-v1	amazon	0.3	2.5			1000000	o
 nova-lite-v1	amazon	0.06	0.24			300000	o
 nova-micro-v1	amazon	0.035	0.14			128000	o
@@ -475,6 +497,7 @@ o1-pro-2025-03-19	openai	150	600			200000	l
 o3	openai	2	8	0.5		200000	m
 o3-2025-04-16	openai	2	8	0.5		200000	l
 o3-deep-research	openai	10	40	2.5		200000	l
+o3-deep-research-2025-06-26	openai	10	40	2.5		200000	l
 o3-mini	openai	1.1	4.4	0.55		200000	m
 o3-mini-2025-01-31	openai	1.1	4.4	0.55		200000	l
 o3-mini-high	openai	1.1	4.4	0.55		200000	o
@@ -483,12 +506,15 @@ o3-pro-2025-06-10	openai	20	80			200000	l
 o4-mini	openai	1.1	4.4	0.275		200000	m
 o4-mini-2025-04-16	openai	1.1	4.4	0.275		200000	l
 o4-mini-deep-research	openai	2	8	0.5		200000	l
+o4-mini-deep-research-2025-06-26	openai	2	8	0.5		200000	l
 o4-mini-high	openai	1.1	4.4	0.275		200000	o
 open-mistral-7b	mistral	0.25	0.25			8000	m
 open-mistral-nemo	mistral	0.15	0.15			128000	m
 open-mixtral-8x22b	mistral	2	6			64000	m
 open-mixtral-8x7b	mistral	0.7	0.7			32000	m
 palmyra-x5	writer	0.6	6			1040000	o
+pareto-26.10	unbiased	0.8	3.2	0.03		1048576	o
+pareto-26.9	unbiased	2.5	7.5	0.25		262144	o
 perceptron-mk1	perceptron	0.15	1.5			32768	o
 perceptron-mk1.5	perceptron	0.15	1.5			36864	o
 phi-4	microsoft	0.07	0.14			16384	o
@@ -510,14 +536,14 @@ qwen-plus	alibaba	0.4	1.2			1000000	m
 qwen-plus-2025-01-25	alibaba	0.4	1.2			129024	l
 qwen-plus-2025-04-28	alibaba	0.4	1.2			129024	l
 qwen-plus-2025-07-14	alibaba	0.4	1.2			129024	l
-qwen-plus-2025-07-28	alibaba	0.26	0.78			1000000	o	256000	0.78	2.34
+qwen-plus-2025-07-28	alibaba	0.26	0.78			1000000	k	256000	0.78	2.34
 qwen-plus-character-ja	alibaba	0.5	1.4			8192	m
 qwen-turbo	alibaba	0.05	0.2			1000000	m
 qwen-turbo-2024-11-01	alibaba	0.05	0.2			1000000	l
 qwen-turbo-2025-04-28	alibaba	0.05	0.2			1000000	l
 qwen-turbo-latest	alibaba	0.05	0.2			1000000	l
 qwen-vl-max	alibaba	0.8	3.2			131072	m
-qwen-vl-ocr	alibaba	0.72	0.72			34096	m
+qwen-vl-ocr	alibaba	0.07	0.16			34096	m
 qwen-vl-plus	alibaba	0.21	0.63			131072	m
 qwen2-5-14b-instruct	alibaba	0.35	1.4			131072	m
 qwen2-5-32b-instruct	alibaba	0.7	2.8			131072	m
@@ -529,24 +555,24 @@ qwen2-5-vl-7b-instruct	alibaba	0.35	1.05			131072	m
 qwen3-14b	alibaba	0.35	1.4			131072	m
 qwen3-235b-a22b	alibaba	0.7	2.8			131072	m
 qwen3-235b-a22b-2507	alibaba	0.22	0.88			262144	p
-qwen3-235b-a22b-thinking-2507	alibaba	0.23	2.3			131072	o
-qwen3-30b-a3b	alibaba	0.12	0.5			131072	o
-qwen3-30b-a3b-instruct-2507	alibaba	0.1	0.3			262144	o
-qwen3-30b-a3b-thinking-2507	alibaba	0.2	2.4			81920	o
+qwen3-235b-a22b-thinking-2507	alibaba	0.45	3.5			128000	o
+qwen3-30b-a3b	alibaba	0.12	0.5			40960	o
+qwen3-30b-a3b-instruct-2507	alibaba	0.09	0.3			262144	o
+qwen3-30b-a3b-thinking-2507	alibaba	0.2	2.4			81920	k
 qwen3-32b	alibaba	0.7	2.8			131072	m
 qwen3-8b	alibaba	0.18	0.7			131072	m
 qwen3-asr-flash	alibaba	0.035	0.035			53248	m
 qwen3-coder	alibaba	0.3	1	0.1		262144	o
 qwen3-coder-30b-a3b	alibaba	0.15	0.6			262144	p
 qwen3-coder-30b-a3b-instruct	alibaba	0.45	2.25			262144	m	32000	0.75	3.75
-qwen3-coder-480b-a35b	alibaba	0.45	1.8			262000	p
+qwen3-coder-480b-a35b	alibaba	0.45	1.8			131072	p
 qwen3-coder-480b-a35b-instruct	alibaba	1.5	7.5			262144	m	32000	2.7	13.5
 qwen3-coder-flash	alibaba	0.3	1.5			1000000	m
 qwen3-coder-next	alibaba	0.5	1.2			256000	p
 qwen3-coder-plus	alibaba	1	5			1048576	m
 qwen3-livetranslate-flash-realtime	alibaba	10	10			53248	m
 qwen3-max	alibaba	1.2	6			262144	m
-qwen3-max-thinking	alibaba	0.78	3.9			262144	o	32000	1.56	7.8
+qwen3-max-thinking	alibaba	0.78	3.9			262144	k	32000	1.56	7.8
 qwen3-next-80b-a3b	alibaba	0.15	1.2			256000	p
 qwen3-next-80b-a3b-instruct	alibaba	0.5	2			131072	m
 qwen3-next-80b-a3b-thinking	alibaba	0.5	6			131072	m
@@ -557,17 +583,18 @@ qwen3-vl-235b-a22b-instruct	alibaba	0.4	1.6			131072	l
 qwen3-vl-235b-a22b-thinking	alibaba	0.4	4			131072	l
 qwen3-vl-30b-a3b	alibaba	0.2	0.8			131072	m
 qwen3-vl-30b-a3b-instruct	alibaba	0.15	0.6			262144	o
-qwen3-vl-30b-a3b-thinking	alibaba	0.2	2.4			262144	o
+qwen3-vl-30b-a3b-thinking	alibaba	0.29	1			262144	o
 qwen3-vl-32b-instruct	alibaba	0.16	0.64			131072	l
 qwen3-vl-32b-thinking	alibaba	0.16	2.87			131072	l
-qwen3-vl-8b-instruct	alibaba	0.117	0.455			262144	o
-qwen3-vl-8b-thinking	alibaba	0.18	2.1			131072	o
+qwen3-vl-8b-instruct	alibaba	0.25	0.75	0.12		262144	o
+qwen3-vl-8b-thinking	alibaba	0.18	2.1			131072	k
 qwen3-vl-plus	alibaba	0.2	1.6			262144	m
 qwen3.5-122b-a10b	alibaba	0.4	3.2			262144	m
 qwen3.5-27b	alibaba	0.3	2.4			262144	m
 qwen3.5-35b-a3b	alibaba	0.25	2			262144	m
 qwen3.5-397b-a17b	alibaba	0.6	3.6			262144	m
 qwen3.5-9b	alibaba	0.1	0.15			262144	o
+qwen3.5-flash	alibaba	0.1	0.4	0.01	0.125	1000000	m
 qwen3.5-flash-02-23	alibaba	0.065	0.26			1000000	o
 qwen3.5-plus	alibaba	0.4	2.4			1000000	m
 qwen3.5-plus-02-15	alibaba	0.26	1.56			1000000	o	256000	0.325	1.95
@@ -577,16 +604,16 @@ qwen3.6-35b-a3b	alibaba	0.248	1.485			262144	m
 qwen3.6-flash	alibaba	0.1875	1.125		0.234375	1000000	m
 qwen3.6-max-preview	alibaba	1.3	7.8	0.13	1.625	262144	m
 qwen3.6-plus	alibaba	0.5	3	0.05	0.625	1000000	m	256000	2	6	0.2	2.5
-qwen3.7-flash	alibaba	0.03	0.13	0.006	0.038	1000000	o	32000	0.1	0.4	0.02	0.125
+qwen3.7-flash	alibaba	0.03	0.13	0.003	0.0375	1000000	m	32000	0.1	0.4	0.01	0.125
 qwen3.7-max	alibaba	2.5	7.5	0.5	3.125	1000000	m
-qwen3.7-plus	alibaba	0.5	3	0.05	0.625	1000000	m	256000	2	6	0.2	2.5
+qwen3.7-plus	alibaba	0.4	1.6	0.04	0.5	1000000	m	256000	1.2	4.8	0.12	1.5
 qwen3.8-2.4t-a95b	alibaba	2	6	0.25		1048576	o
-qwen3.8-27b	alibaba	0.42	3	0.085		1000000	o
+qwen3.8-27b	alibaba	0.24	2.2	0.05		1000000	o
 qwen3.8-flash	alibaba	0.15	0.47	0.016	0.2	1000000	m
 qwen3.8-max	alibaba	2	6	0.25	2.5	1000000	m
-qwen3.8-max-0902	alibaba	2	6	0.25	2.5	1000000	o
+qwen3.8-max-0902	alibaba	2	6	0.25		1000000	o
 qwen3.8-max-prime	alibaba	4	12	0.5		1000000	o
-qwen3.8-omni-flash	alibaba	0.15	0.47	0.016		991808	l
+qwen3.8-omni-flash	alibaba	0.15	0.47	0.016		1000000	m
 qwq-plus	alibaba	0.8	2.4			131072	m
 reka-flash-3	rekaai	0.1	0.2			65536	o
 relace-apply-3	relace	0.85	1.25			256000	o
@@ -618,11 +645,11 @@ step-3.5-flash	stepfun-ai	0.1	0.3	0.02		256000	m
 step-3.5-flash-2603	stepfun-ai	0.1	0.3	0.02		256000	m
 step-3.7-flash	stepfun-ai	0.185	1.11	0.037		256000	m
 step-5-preview	stepfun-ai	1	2.7	0.05		1024000	m
-ternary-bonsai-2-27b	prism-ml	0.075	0.5			262144	o
+ternary-bonsai-2-27b	prism-ml	0.075	0.5	0.0375		262144	o
 ui-tars-1.5-7b	bytedance	0.1	0.2	0.1		128000	o
 unslopnemo-12b	thedrummer	0.4	0.4			1024000	o
-voxtral-mini-3b-2507	mistral	0.04	0.04			128000	p
-voxtral-small-24b-2507	mistral	0.1	0.3			128000	p
-voxtral-small-2507	mistral	0.1	0.4	0.01		32768	l
-voxtral-small-latest	mistral	0.1	0.3			32000	m
+voxtral-mini-3b-2507	mistral	0.04	0.04			32768	p
+voxtral-small-24b-2507	mistral	0.1	0.3			32768	p
+voxtral-small-2507	mistral	0.1	0.4			32768	m
+voxtral-small-latest	mistral	0.1	0.3			32768	m
 wizardlm-2-8x22b	microsoft	0.62	0.62			65535	o
